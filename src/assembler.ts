@@ -6,7 +6,8 @@ export function chunkToTimestamp(chunkIndex: number, chunkDurationSeconds: numbe
   const time = new Date(start.getTime() + offsetMs);
   const h = String(time.getHours()).padStart(2, "0");
   const m = String(time.getMinutes()).padStart(2, "0");
-  return `${h}:${m}`;
+  const s = String(time.getSeconds()).padStart(2, "0");
+  return `${h}:${m}:${s}`;
 }
 
 export function entriesFromSession(session: Session, results: Map<string, string>): TranscriptEntry[] {

@@ -4,3 +4,4 @@ dist/
 *.wav.tmp
 .DS_Store
 meet-*/
+.build/

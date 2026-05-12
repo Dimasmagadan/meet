@@ -1,6 +1,7 @@
 import Foundation
 import ScreenCaptureKit
 import CoreMedia
+import AudioToolbox
 
 class SystemAudioCapture: NSObject, SCStreamOutput {
     private var wavWriter: WAVWriter
@@ -8,6 +9,7 @@ class SystemAudioCapture: NSObject, SCStreamOutput {
     private let targetSampleRate: Int = 16000
     private var isRunning = false
     private let onChunkFinalized: (String) -> Void
+    private var formatLogged = false
 
     init(outputDir: URL, chunkDurationSeconds: Int, onChunkFinalized: @escaping (String) -> Void) {
         self.wavWriter = WAVWriter(outputDir: outputDir, prefix: "sys", chunkDurationSeconds: chunkDurationSeconds)
@@ -46,6 +48,16 @@ class SystemAudioCapture: NSObject, SCStreamOutput {
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard isRunning, type == .audio else { return }
+
+        guard let formatDesc = sampleBuffer.formatDescription,
+              let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) else { return }
+        let asbd = asbdPtr.pointee
+
+        if !formatLogged {
+            fputs("SystemAudio format: sampleRate=\(asbd.mSampleRate) channels=\(asbd.mChannelsPerFrame) formatID=\(asbd.mFormatID) bitsPerChannel=\(asbd.mBitsPerChannel) formatFlags=\(asbd.mFormatFlags)\n", stderr)
+            formatLogged = true
+        }
+
         guard let blockBuffer = sampleBuffer.dataBuffer else { return }
 
         var length = 0
@@ -53,17 +65,52 @@ class SystemAudioCapture: NSObject, SCStreamOutput {
         let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &dataPointer)
         guard status == kCMBlockBufferNoErr, dataPointer != nil, length > 0 else { return }
 
-        let sampleCount = length / 2
-        var samples = [Int16]()
-        samples.reserveCapacity(sampleCount)
-        dataPointer?.withMemoryRebound(to: Int16.self, capacity: sampleCount) { ptr in
-            for i in 0..<sampleCount {
-                samples.append(ptr[i].bigEndian == ptr[i] ? Int16(bigEndian: ptr[i]) : ptr[i])
+        let isFloat = asbd.mFormatID == kAudioFormatLinearPCM &&
+                      (asbd.mFormatFlags & UInt32(kAudioFormatFlagIsFloat)) != 0
+
+        let bytesPerSample = Int(asbd.mBytesPerFrame) / Int(asbd.mChannelsPerFrame)
+        let frameCount = length / Int(asbd.mBytesPerFrame)
+
+        var samples16 = [Int16]()
+        samples16.reserveCapacity(frameCount)
+
+        if isFloat && bytesPerSample == 4 {
+            dataPointer?.withMemoryRebound(to: Float32.self, capacity: length / 4) { floatPtr in
+                for i in 0..<frameCount {
+                    let sample = Float32(floatPtr[i])
+                    let clamped = max(-1.0, min(1.0, sample))
+                    samples16.append(Int16(clamped * 32767.0))
+                }
             }
+        } else if isFloat && bytesPerSample == 8 {
+            dataPointer?.withMemoryRebound(to: Float64.self, capacity: length / 8) { doublePtr in
+                for i in 0..<frameCount {
+                    let sample = Float32(doublePtr[i])
+                    let clamped = max(-1.0, min(1.0, sample))
+                    samples16.append(Int16(clamped * 32767.0))
+                }
+            }
+        } else if !isFloat && bytesPerSample == 2 {
+            dataPointer?.withMemoryRebound(to: Int16.self, capacity: length / 2) { intPtr in
+                for i in 0..<frameCount {
+                    samples16.append(intPtr[i].littleEndian)
+                }
+            }
+        } else if !isFloat && bytesPerSample == 4 {
+            dataPointer?.withMemoryRebound(to: Int32.self, capacity: length / 4) { intPtr in
+                for i in 0..<frameCount {
+                    samples16.append(Int16(clamping: intPtr[i] >> 16))
+                }
+            }
+        } else {
+            if !formatLogged {
+                fputs("SystemAudio: unknown PCM format bytesPerSample=\(bytesPerSample) isFloat=\(isFloat), skipping\n", stderr)
+            }
+            return
         }
 
         do {
-            let chunkReady = try wavWriter.appendSamplesIfNeeded(samples)
+            let chunkReady = try wavWriter.appendSamplesIfNeeded(samples16)
             if chunkReady {
                 if let name = try wavWriter.finalizeChunk() {
                     onChunkFinalized(name)

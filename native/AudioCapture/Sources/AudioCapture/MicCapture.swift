@@ -7,6 +7,7 @@ class MicCapture {
     private let targetSampleRate: Int = 16000
     private var isRunning = false
     private let onChunkFinalized: (String) -> Void
+    private var formatLogged = false
 
     init(outputDir: URL, chunkDurationSeconds: Int, onChunkFinalized: @escaping (String) -> Void) {
         self.wavWriter = WAVWriter(outputDir: outputDir, prefix: "mic", chunkDurationSeconds: chunkDurationSeconds)
@@ -15,7 +16,7 @@ class MicCapture {
 
     func start() throws {
         let inputNode = engine.inputNode
-        let hardwareFormat = inputNode.outputFormat(forBus: 0)
+        let _ = inputNode.outputFormat(forBus: 0)
 
         try inputNode.setVoiceProcessingEnabled(true)
 
@@ -24,14 +25,20 @@ class MicCapture {
             duckingLevel: .min
         )
 
-        let hwSampleRate = hardwareFormat.sampleRate
-        let hwChannels = hardwareFormat.channelCount
+        let vpFormat = inputNode.outputFormat(forBus: 0)
+        let hwSampleRate = vpFormat.sampleRate
+        let hwChannels = vpFormat.channelCount
         let ratio = Double(hwSampleRate) / Double(targetSampleRate)
+
+        if !formatLogged {
+            fputs("MicCapture VP format: rate=\(hwSampleRate) channels=\(hwChannels) interleaved=\(vpFormat.isInterleaved)\n", stderr)
+            formatLogged = true
+        }
 
         try wavWriter.startChunk()
         isRunning = true
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: vpFormat) { [weak self] buffer, _ in
             guard let self, self.isRunning else { return }
             self.processBuffer(buffer, hwSampleRate: hwSampleRate, hwChannels: hwChannels, ratio: ratio)
         }
@@ -45,13 +52,21 @@ class MicCapture {
 
         var monoSamples = [Int16]()
 
-        if let channelData = buffer.floatChannelData?[0] {
+        if let floatData = buffer.floatChannelData {
+            let bestChannel = findLoudestChannel(floatData, channels: Int(hwChannels), frames: frameLength)
+
             for i in 0..<frameLength {
-                let sample = channelData[i]
+                let sample = floatData[bestChannel][i]
                 let clamped = max(-1.0, min(1.0, sample))
                 monoSamples.append(Int16(clamped * 32767.0))
             }
+        } else if let int16Data = buffer.int16ChannelData {
+            for i in 0..<frameLength {
+                monoSamples.append(int16Data[0][i])
+            }
         }
+
+        guard !monoSamples.isEmpty else { return }
 
         let resampled = linearInterpolate(monoSamples, ratio: ratio)
 
@@ -68,8 +83,25 @@ class MicCapture {
         }
     }
 
+    private func findLoudestChannel(_ floatData: UnsafePointer<UnsafeMutablePointer<Float>>, channels: Int, frames: Int) -> Int {
+        var bestChannel = 0
+        var bestEnergy: Float = -1
+        for ch in 0..<channels {
+            var energy: Float = 0
+            for i in 0..<frames {
+                let s = floatData[ch][i]
+                energy += s * s
+            }
+            if energy > bestEnergy {
+                bestEnergy = energy
+                bestChannel = ch
+            }
+        }
+        return bestChannel
+    }
+
     private func linearInterpolate(_ samples: [Int16], ratio: Double) -> [Int16] {
-        guard ratio > 0, !samples.isEmpty else { return samples }
+        guard ratio > 1.0, !samples.isEmpty else { return samples }
         let outputCount = Int(Double(samples.count) / ratio)
         guard outputCount > 0 else { return samples }
 
