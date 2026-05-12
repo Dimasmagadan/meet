@@ -23,8 +23,9 @@ export function createProgram(): Command {
     .description("Start a foreground recording session")
     .argument("<title>", "Meeting title")
     .option("--mic", "Mic-only mode (no system audio)")
-    .action(async (title: string, opts: { mic?: boolean }) => {
-      await startSession(title, opts.mic ? "mic" : "full");
+    .option("--silence <seconds>", "Auto-stop after N seconds of silence", parseInt, 300)
+    .action(async (title: string, opts: { mic?: boolean; silence?: number }) => {
+      await startSession(title, opts.mic ? "mic" : "full", opts.silence);
     });
 
   program
@@ -44,7 +45,7 @@ export function createProgram(): Command {
   return program;
 }
 
-async function startSession(title: string, mode: "full" | "mic") {
+async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 300) {
   const config = loadConfig();
 
   const stale = findStaleSessions();
@@ -90,6 +91,7 @@ async function startSession(title: string, mode: "full" | "mic") {
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
   await ensureDir(config.outputDir);
+  console.log(chalk.gray("Press Ctrl-C or q to stop recording\n"));
 
   const pipeline = new Pipeline(session);
   let micChunks = 0;
@@ -106,6 +108,7 @@ async function startSession(title: string, mode: "full" | "mic") {
     "--output-dir", sessionDir,
     "--chunk-duration", String(config.chunkDurationSeconds),
     "--mode", mode,
+    "--silence-timeout", String(silenceTimeout),
   ];
 
   let captureProcess: ChildProcess | null = null;
@@ -197,6 +200,17 @@ async function startSession(title: string, mode: "full" | "mic") {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("data", (data: Buffer) => {
+      const key = data.toString();
+      if (key === "q" || key === "Q") {
+        shutdown();
+      }
+    });
+  }
 
   await new Promise<void>((resolve) => {
     captureProcess?.on("exit", () => {

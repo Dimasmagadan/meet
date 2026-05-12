@@ -14,8 +14,11 @@ struct AudioCaptureCLI: AsyncParsableCommand {
     @Option(name: .long, help: "Capture mode: full (mic + system) or mic")
     var mode: String = "full"
 
+    @Option(name: .long, help: "Stop after N seconds of silence (0 = disabled)")
+    var silenceTimeout: Int = 300
+
     func run() async throws {
-        let runner = CaptureRunner(outputDir: outputDir, chunkDuration: chunkDuration, mode: mode)
+        let runner = CaptureRunner(outputDir: outputDir, chunkDuration: chunkDuration, mode: mode, silenceTimeout: silenceTimeout)
         try await runner.run()
     }
 }
@@ -25,14 +28,16 @@ class CaptureRunner {
     let outputDir: String
     let chunkDuration: Int
     let mode: String
+    let silenceTimeout: Int
     var micCapture: MicCapture?
     var systemCapture: SystemAudioCapture?
     var shouldStop = false
 
-    init(outputDir: String, chunkDuration: Int, mode: String) {
+    init(outputDir: String, chunkDuration: Int, mode: String, silenceTimeout: Int) {
         self.outputDir = outputDir
         self.chunkDuration = chunkDuration
         self.mode = mode
+        self.silenceTimeout = silenceTimeout
     }
 
     func run() async throws {
@@ -42,7 +47,7 @@ class CaptureRunner {
         signal(SIGINT) { _ in CaptureRunnerSignalRelay.shared.trigger() }
         signal(SIGTERM) { _ in CaptureRunnerSignalRelay.shared.trigger() }
 
-        fputs("AudioCapture started: mode=\(mode) dir=\(outputDir)\n", stderr)
+        fputs("AudioCapture started: mode=\(mode) dir=\(outputDir) silence=\(silenceTimeout)s\n", stderr)
 
         if mode == "full" || mode == "mic" {
             let mic = MicCapture(outputDir: dir, chunkDurationSeconds: chunkDuration) { name in
@@ -72,7 +77,14 @@ class CaptureRunner {
         }
 
         while !CaptureRunnerSignalRelay.shared.shouldStop {
-            try await Task.sleep(nanoseconds: 500_000_000)
+            if silenceTimeout > 0, let mic = micCapture {
+                let silentFor = Date().timeIntervalSince(mic.lastVoiceTime)
+                if silentFor > Double(silenceTimeout) {
+                    fputs("Silence timeout: no voice for \(Int(silentFor))s (limit \(silenceTimeout)s)\n", stderr)
+                    break
+                }
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
         }
 
         stopAll()

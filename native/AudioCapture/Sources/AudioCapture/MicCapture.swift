@@ -8,6 +8,8 @@ class MicCapture {
     private var isRunning = false
     private let onChunkFinalized: (String) -> Void
     private var formatLogged = false
+    private(set) var lastVoiceTime: Date = Date()
+    private let voiceRmsThreshold: Float = 200.0
 
     init(outputDir: URL, chunkDurationSeconds: Int, onChunkFinalized: @escaping (String) -> Void) {
         self.wavWriter = WAVWriter(outputDir: outputDir, prefix: "mic", chunkDurationSeconds: chunkDurationSeconds)
@@ -67,6 +69,11 @@ class MicCapture {
         }
 
         guard !monoSamples.isEmpty else { return }
+
+        let rms: Double = sqrt(monoSamples.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(monoSamples.count))
+        if Float(rms) > voiceRmsThreshold {
+            lastVoiceTime = Date()
+        }
 
         let resampled = linearInterpolate(monoSamples, ratio: ratio)
 
