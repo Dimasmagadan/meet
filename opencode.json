@@ -1,0 +1,42 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["PLAN.md"],
+  "permission": {
+    "bash": {
+      "*": "ask",
+      "npm *": "allow",
+      "npx *": "allow",
+      "swift build*": "allow",
+      "swift run*": "allow",
+      "swift test*": "allow",
+      "swift package*": "allow",
+      "whisper-cli *": "allow",
+      "brew *": "allow",
+      "git *": "allow",
+      "rg *": "allow",
+      "ls *": "allow",
+      "cat *": "allow",
+      "which *": "allow",
+      "mkdir *": "allow",
+      "node *": "allow",
+      "tsc *": "allow",
+      "eslint *": "allow"
+    },
+    "external_directory": {
+      "~/.meet/**": "allow",
+      "/tmp/meet-*": "allow"
+    }
+  },
+  "mcp": {
+    "xcodebuild": {
+      "command": ["npx", "-y", "xcodebuildmcp"],
+      "enabled": true,
+      "type": "local"
+    },
+    "whisper": {
+      "command": ["npx", "-y", "whisper-mcp"],
+      "enabled": true,
+      "type": "local"
+    }
+  }
+}
