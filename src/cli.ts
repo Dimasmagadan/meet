@@ -3,10 +3,12 @@ import chalk from "chalk";
 import { loadConfig, getOutputPath, getOutputDir, ensureDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
 import { assembleMarkdown, entriesFromSession, appendEntry, makeHeader, rewriteMarkdown, chunkToTimestamp } from "./assembler.js";
-import { spawn, ChildProcess } from "node:child_process";
+import { runOpencodeSummary, runOpencodeQuestion } from "./opencode.js";
+import { spawn, ChildProcess, execSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { nanoid } from "nanoid";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 
@@ -96,7 +98,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
-  console.log(chalk.gray("Press Ctrl-C or q to stop recording\n"));
+  console.log(chalk.gray("Press q to stop, s to summarize, a to ask opencode\n"));
 
   const pipeline = new Pipeline(session);
   let micChunks = 0;
@@ -158,8 +160,10 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
     const secs = String(elapsed % 60).padStart(2, "0");
     const now = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    const lagSec = (micChunks + sysChunks - stats.totalDone) * config.chunkDurationSeconds;
+    const lagStr = lagSec > 0 ? `lag ~${lagSec}s` : "up to date";
     process.stdout.write(
-      `\r${chalk.cyan(`Recording ${mins}:${secs}`)} | chunks: mic ${micChunks}, sys ${sysChunks} | transcribed: ${stats.totalDone} | last: ${now}  `
+      `\r${chalk.cyan(`Recording ${mins}:${secs}`)} | chunks: mic ${micChunks}, sys ${sysChunks} | transcribed: ${stats.totalDone} | ${lagStr} | ${now}  `
     );
   }, 5000);
 
@@ -206,6 +210,66 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     process.exit(0);
   };
 
+  let opencodeRunning = false;
+
+  const runSummary = async () => {
+    if (opencodeRunning) {
+      process.stdout.write(`\n${chalk.yellow("opencode request already running...\n")}`);
+      return;
+    }
+    opencodeRunning = true;
+    clearInterval(statusInterval);
+    process.stdout.write("\n");
+    console.log(chalk.cyan("Summarizing transcript so far..."));
+
+    try {
+      const result = await runOpencodeSummary(config, outputFile, title);
+      process.stdout.write("\n");
+      console.log(chalk.bold("--- Summary ---"));
+      console.log(result);
+      console.log(chalk.bold("--- End summary ---\n"));
+    } catch (err) {
+      console.log(chalk.red(`Summary failed: ${err}`));
+    }
+    opencodeRunning = false;
+  };
+
+  const askQuestion = () => {
+    if (opencodeRunning) {
+      process.stdout.write(`\n${chalk.yellow("opencode request already running...\n")}`);
+      return;
+    }
+    opencodeRunning = true;
+    clearInterval(statusInterval);
+    process.stdout.write("\n");
+    process.stdin.setRawMode(false);
+    process.stdout.write(chalk.cyan("Question for opencode: "));
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question("", async (question: string) => {
+      rl.close();
+      process.stdin.setRawMode(true);
+
+      const q = question.trim();
+      if (!q) {
+        process.stdout.write(chalk.gray("(cancelled)\n"));
+        opencodeRunning = false;
+        return;
+      }
+
+      try {
+        const result = await runOpencodeQuestion(config, outputFile, title, q);
+        process.stdout.write("\n");
+        console.log(chalk.bold("--- Answer ---"));
+        console.log(result);
+        console.log(chalk.bold("--- End answer ---\n"));
+      } catch (err) {
+        console.log(chalk.red(`Question failed: ${err}`));
+      }
+      opencodeRunning = false;
+    });
+  };
+
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
@@ -216,6 +280,10 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
       const key = data.toString();
       if (key === "q" || key === "Q") {
         shutdown();
+      } else if (key === "s" || key === "S") {
+        runSummary();
+      } else if (key === "a" || key === "A") {
+        askQuestion();
       }
     });
   }
@@ -291,6 +359,14 @@ async function runSetup() {
   const outputDir = expandPath(config.outputDir);
   await mkdir(outputDir, { recursive: true });
   console.log(chalk.green("  output dir: ") + outputDir);
+
+  try {
+    const opencodePath = execSync("which opencode 2>/dev/null", { encoding: "utf-8" }).trim();
+    console.log(chalk.green("  opencode: ") + opencodePath);
+  } catch {
+    console.log(chalk.yellow("  opencode: NOT FOUND (optional, for s/a hotkeys during recording)"));
+    console.log(chalk.gray("    Install: https://opencode.ai"));
+  }
 
   console.log();
   if (ok) {

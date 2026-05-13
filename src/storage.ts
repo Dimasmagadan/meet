@@ -24,6 +24,7 @@ export function loadConfig(overrides?: Partial<Config>): Config {
     whisperBin: overrides?.whisperBin ?? fileConfig.whisperBin ?? "whisper-cli",
     captureBin: overrides?.captureBin ?? fileConfig.captureBin ?? "",
     prompt: overrides?.prompt ?? fileConfig.prompt ?? "Транскрипция деловой встречи на русском языке.",
+    opencodeBin: overrides?.opencodeBin ?? fileConfig.opencodeBin ?? "opencode",
   };
 }
 
