@@ -28,6 +28,7 @@ export interface Config {
   language: string;
   whisperBin: string;
   captureBin: string;
+  prompt: string;
 }
 
 export interface TranscriptEntry {
@@ -44,4 +45,5 @@ export const DEFAULT_CONFIG: Config = {
   language: "ru",
   whisperBin: "whisper-cli",
   captureBin: "",
+  prompt: "Транскрипция деловой встречи на русском языке.",
 };

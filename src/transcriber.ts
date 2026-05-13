@@ -10,6 +10,34 @@ export interface TranscribeResult {
   text: string;
 }
 
+const HALLUCINATION_PATTERNS: RegExp[] = [
+  /редактор\s+субтитров/i,
+  /корректор/i,
+  /субтитры?\s+(выполнил|делал|сделал)/i,
+  /технические\s+работы/i,
+  /просим\s+прощения/i,
+  /канал\s+обновлен/i,
+  /подписывайтесь/i,
+];
+
+function cleanText(raw: string): string {
+  let text = raw;
+  text = text.replace(/\[[^\]]*\]/g, "");
+  text = text.replace(/\([^)]*\)/g, "");
+  text = text.replace(/\s+/g, " ").trim();
+
+  for (const pattern of HALLUCINATION_PATTERNS) {
+    if (pattern.test(text)) {
+      const before = text;
+      const lines = text.split(/(?<=[.!?])\s*/);
+      text = lines.filter((l) => !pattern.test(l)).join(" ");
+    }
+  }
+
+  text = text.replace(/\s+/g, " ").trim();
+  return text;
+}
+
 export async function transcribeChunk(
   wavPath: string,
   config: Config,
@@ -29,6 +57,12 @@ export async function transcribeChunk(
     "--no-timestamps",
     "-otxt",
     "-of", wavPath.replace(/\.wav$/, ""),
+    "--suppress-nst",
+    "--entropy-thold", "1.5",
+    "--logprob-thold", "-0.5",
+    "--no-speech-thold", "0.6",
+    "--no-prints",
+    "--prompt", config.prompt,
   ];
 
   return new Promise((resolve, reject) => {
@@ -39,16 +73,13 @@ export async function transcribeChunk(
       }
 
       try {
-        const text = (await readFile(outFile, "utf-8")).trim();
+        const raw = (await readFile(outFile, "utf-8")).trim();
         await unlink(outFile).catch(() => {});
+        const text = cleanText(raw);
         resolve({ chunkIndex, source, text });
       } catch {
-        const text = stderr
-          .split("\n")
-          .filter((l: string) => l.startsWith("[") && !l.includes("whisper_"))
-          .join(" ")
-          .trim();
-        resolve({ chunkIndex, source, text: text || "(empty)" });
+        const text = "";
+        resolve({ chunkIndex, source, text });
       }
     });
   });

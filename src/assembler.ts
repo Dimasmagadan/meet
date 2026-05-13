@@ -16,7 +16,8 @@ export function entriesFromSession(session: Session, results: Map<string, string
   for (const chunk of session.processedChunks) {
     if (chunk.status !== "done") continue;
     const key = `${chunk.source}-${String(chunk.index).padStart(3, "0")}`;
-    const text = results.get(key) || "(empty)";
+    const text = results.get(key) || "";
+    if (!text) continue;
     const timestamp = chunkToTimestamp(chunk.index, session.chunkDurationSeconds, session.startedAt);
     entries.push({ source: chunk.source, chunkIndex: chunk.index, timestamp, text });
   }

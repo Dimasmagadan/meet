@@ -23,6 +23,7 @@ export function loadConfig(overrides?: Partial<Config>): Config {
     language: overrides?.language ?? fileConfig.language ?? "ru",
     whisperBin: overrides?.whisperBin ?? fileConfig.whisperBin ?? "whisper-cli",
     captureBin: overrides?.captureBin ?? fileConfig.captureBin ?? "",
+    prompt: overrides?.prompt ?? fileConfig.prompt ?? "Транскрипция деловой встречи на русском языке.",
   };
 }
 
