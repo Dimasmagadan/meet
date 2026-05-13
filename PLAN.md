@@ -56,7 +56,7 @@ CLI tool for macOS (Apple Silicon) that records meetings, transcribes them local
 | FR-007 | The pipeline transcribes each finalized chunk with `whisper-cli` using Russian language mode. |
 | FR-008 | The pipeline persists processed chunk state after each successful transcription. |
 | FR-009 | Ctrl-C/SIGTERM triggers graceful shutdown: stop capture, rescan chunks, drain transcription queue, assemble final markdown. |
-| FR-010 | The final transcript is written to `~/Meetings/YYYY-MM-DD_HH-MM-{title-slug}.md`. |
+| FR-010 | The final transcript is written to `~/Meetings/YYYY-MM-DD_HH-MM-{title-slug}/transcript.md`. |
 | FR-011 | Transcript entries are timestamped from session start time plus chunk offset. |
 | FR-012 | Full mode labels mic transcript entries as `Me` and system transcript entries as `Others`. |
 | FR-013 | The CLI prints periodic recording/transcription status while the session runs. |
@@ -101,7 +101,7 @@ CLI tool for macOS (Apple Silicon) that records meetings, transcribes them local
   "startedAt": "2026-05-12T14:30:00.000Z",
   "chunkDurationSeconds": 15,
   "sessionDir": "/tmp/meet-abc123",
-  "outputFile": "/Users/name/Meetings/2026-05-12_14-30-weekly-standup.md",
+  "outputFile": "/Users/name/Meetings/2026-05-12_14-30-weekly-standup/transcript.md",
   "capturePid": 12345,
   "status": "recording",
   "processedChunks": [
@@ -137,7 +137,7 @@ meet start "Weekly Standup"
 │
 ├─ Create session: /tmp/meet-{id}/
 ├─ Write session metadata: /tmp/meet-{id}/session.json
-├─ Create output:  ~/Meetings/2026-05-12_14-30-Weekly-Standup.md
+├─ Create output:  ~/Meetings/2026-05-12_14-30-Weekly-Standup/transcript.md
 ├─ Start Swift AudioCapture
 │   ├─ Mic (AVAudioEngine, 16kHz mono, VoiceProcessing IO enabled)
 │   │   └─ Every 15s: mic-001.wav.tmp → atomic rename → mic-001.wav
@@ -147,6 +147,7 @@ meet start "Weekly Standup"
 ├─ Node.js pipeline watches finalized *.wav files in /tmp/meet-{id}/
 │   ├─ New mic-NNN.wav → whisper-cli -l ru -m ggml-small.bin → "Me: ..."
 │   ├─ New sys-NNN.wav → whisper-cli -l ru -m ggml-small.bin → "Others: ..."
+│   ├─ Append each transcript entry to output markdown incrementally
 │   ├─ Persist processed chunk state after each successful transcription
 │   └─ Print live status while running
 │
@@ -157,7 +158,7 @@ meet start "Weekly Standup"
     ├─ Drain whisper queue to completion
     ├─ Sort/assemble clean final markdown
     ├─ Keep recoverable session data if shutdown is interrupted
-    └─ Done: ~/Meetings/2026-05-12_14-30-Weekly-Standup.md
+    └─ Done: ~/Meetings/2026-05-12_14-30-Weekly-Standup/transcript.md
 ```
 
 `meet start` is a foreground command for MVP. It remains attached to the terminal until the user presses Ctrl-C. While recording, it prints lightweight status such as:
@@ -197,13 +198,12 @@ meet/
 │           └── SKILL.md    # Skill: AVAudioEngine + ScreenCaptureKit pitfalls reference
 ├── src/
 │   ├── main.ts              # Entry point, loads config, dispatches commands
-│   ├── cli.ts               # commander: start, stop, status, list, setup
-│   ├── types.ts             # Shared types: Session, Chunk, Config
-│   ├── capture.ts           # Spawns Swift process, manages lifecycle
-│   ├── pipeline.ts          # File watcher (chokidar) + chunk processing queue
-│   ├── transcriber.ts       # Calls whisper-cli per chunk, parses output
-│   ├── assembler.ts         # Merges mic + system transcripts → markdown
-│   └── storage.ts           # ~/Meetings/ file management
+│   ├── cli.ts               # commander: start, setup, list; session lifecycle, incremental write
+│   ├── types.ts             # Shared types: Session, Chunk, Config, TranscriptEntry
+│   ├── pipeline.ts          # File watcher (chokidar) + chunk processing queue, dedup, durable state
+│   ├── transcriber.ts       # Calls whisper-cli per chunk, cleanText() noise/hallucination filter
+│   ├── assembler.ts         # Incremental appendEntry + final rewriteMarkdown, makeHeader
+│   └── storage.ts           # getOutputDir/getOutputPath, loadConfig, atomic writes, stale detection
 ├── native/
 │   └── AudioCapture/
 │       ├── Package.swift    # Swift Package, macOS 13+, swift-argument-parser
@@ -221,14 +221,18 @@ meet/
 
 ## Output Format
 
+Each meeting gets its own subdirectory: `~/Meetings/2026-05-12_14-30-Weekly-Standup/transcript.md`
+
+Transcript is written incrementally during recording (append per chunk), then fully rewritten and sorted on shutdown.
+
 ```markdown
-# Weekly Standup — 2026-05-12 14:30
+# Weekly Standup — 12.05.2026 14:30
 
-**[14:30] Me:** Привет, давайте обсудим квартальные цели...
+**[14:30:00] Me:** Привет, давайте обсудим квартальные цели...
 
-**[14:30] Others:** Конечно, у меня есть все данные...
+**[14:30:00] Others:** Конечно, у меня есть все данные...
 
-**[14:31] Me:** Отлично, какие ключевые метрики?
+**[14:31:00] Me:** Отлично, какие ключевые метрики?
 ```
 
 ---
@@ -250,7 +254,7 @@ For MVP, `meet start` is the primary command and remains in the foreground. Ctrl
 
 ## Build Order
 
-### Step 1: Project scaffolding
+### Step 1: Project scaffolding ✅
 
 **Files:** `package.json`, `tsconfig.json`, `.gitignore`, `src/types.ts`
 
@@ -258,7 +262,7 @@ For MVP, `meet start` is the primary command and remains in the foreground. Ctrl
 
 **Command:** `npm install`
 
-### Step 2: Swift AudioCapture skeleton + WAV writer
+### Step 2: Swift AudioCapture skeleton + WAV writer ✅
 
 **Files:** `native/AudioCapture/Package.swift`, `main.swift`, `WAVWriter.swift`
 
@@ -271,7 +275,7 @@ For MVP, `meet start` is the primary command and remains in the foreground. Ctrl
 
 **Build:** `cd native/AudioCapture && swift build -c release`
 
-### Step 3: Mic capture proof
+### Step 3: Mic capture proof ✅
 
 **Files:** `MicCapture.swift`, `WAVWriter.swift`
 
@@ -284,7 +288,7 @@ For MVP, `meet start` is the primary command and remains in the foreground. Ctrl
 
 **Validation:** record mic chunks and verify each finalized WAV is playable and has the expected sample rate/channel/bit depth.
 
-### Step 4: System audio capture proof
+### Step 4: System audio capture proof ✅
 
 **Files:** `SystemAudioCapture.swift`, `WAVWriter.swift`
 
@@ -308,7 +312,7 @@ config.height = 2
 
 **Validation:** play audio through the system, record `sys-NNN.wav`, and verify the file is non-empty, playable, and excludes current-process feedback.
 
-### Step 5: Full dual-stream Swift capture
+### Step 5: Full dual-stream Swift capture ✅
 
 **Files:** All files under `native/AudioCapture/`
 
@@ -320,7 +324,7 @@ AudioCapture --output-dir /tmp/meet-abc123 --chunk-duration 15 --mode full
 # SIGINT/SIGTERM → flush final chunks best-effort and exit cleanly
 ```
 
-### Step 6: Install whisper.cpp + verify Russian transcription
+### Step 6: Install whisper.cpp + verify Russian transcription ✅
 
 **Manual steps:**
 - `brew install whisper-cpp`
@@ -328,16 +332,18 @@ AudioCapture --output-dir /tmp/meet-abc123 --chunk-duration 15 --mode full
 - Record or generate a small Russian test WAV
 - Verify: `whisper-cli -m ~/.meet/models/ggml-small.bin -l ru -f test.wav --no-timestamps`
 
-**File:** `scripts/setup.sh`
+**File:** `scripts/setup.sh` (not yet created)
 
-### Step 7: Node.js pipeline (core logic)
+### Step 7: Node.js pipeline (core logic) ✅
 
 **transcriber.ts** — Wraps whisper-cli:
 ```
-whisper-cli -m <model> -l ru -f <wav> --no-timestamps
+whisper-cli -m <model> -l ru -f <wav> --no-timestamps -otxt -of <base> --suppress-nst --entropy-thold 1.5 --logprob-thold -0.5 --no-speech-thold 0.6 --no-prints --prompt "..."
 ```
 - Returns `{ chunkIndex, source: "mic"|"sys", text: string }`
-- Prefer deterministic text extraction. If whisper.cpp CLI output is noisy, write/read a temp output text file instead of parsing progress logs.
+- Uses temp `.txt` output file for deterministic text extraction
+- `cleanText()` filters noise tokens (`♪`, `♫`, `[music]`) and Russian hallucination patterns
+- Empty results after cleaning are skipped entirely
 
 **pipeline.ts** — Watches session temp dir:
 - Detects new `mic-NNN.wav` / `sys-NNN.wav` via chokidar
@@ -351,15 +357,16 @@ whisper-cli -m <model> -l ru -f <wav> --no-timestamps
 **assembler.ts** — Merges into markdown:
 - Timestamps: chunk index × chunk duration offset + session start time
 - Interleaves "Me" and "Others" by timestamp
-- MVP can write a clean final markdown on Ctrl-C after the queue drains
-- If incremental append is implemented, rewrite/sort the final markdown on graceful exit
+- Incremental: `appendEntry()` writes each chunk during recording
+- Final: `rewriteMarkdown()` sorts and rewrites on graceful exit
 
 **storage.ts** — File management:
 - `~/Meetings/` directory
-- Filename: `YYYY-MM-DD_HH-MM-{title-slug}.md`
-- List/read past meetings
+- Each meeting in subdirectory: `YYYY-MM-DD_HH-MM-{title-slug}/transcript.md`
+- `loadConfig()` reads `~/.meet/config.json` with defaults
+- List/read past meetings (subdirectories)
 
-### Step 8: Foreground CLI commands
+### Step 8: Foreground CLI commands ✅
 
 **cli.ts** — Commander-based commands
 
@@ -386,13 +393,13 @@ whisper-cli -m <model> -l ru -f <wav> --no-timestamps
 - Print recovery instructions and session paths
 - Post-MVP command: `meet recover /tmp/meet-{id}` to process finalized WAV chunks not already present in the transcript
 
-### Step 9: Setup, checks, and polish
+### Step 9: Setup, checks, and polish ⏳
 
-- Config file: `~/.meet/config.json` — model path, output dir, chunk duration, language
-- Permission checks: verify/diagnose Screen Recording + Microphone on `meet setup` and `meet start`
-- Dependency checks: `whisper-cli`, model file, Swift binary, macOS version, Apple Silicon architecture
-- Crash recovery: check for stale sessions in `/tmp/meet-*` and print recovery instructions
-- Process management: PID file in session dir
+- Config file: `~/.meet/config.json` — model path, output dir, chunk duration, language ✅
+- Permission checks: verify/diagnose Screen Recording + Microphone on `meet setup` and `meet start` — partial (checks binary/model only)
+- Dependency checks: `whisper-cli`, model file, Swift binary, macOS version, Apple Silicon architecture — partial
+- Crash recovery: check for stale sessions in `/tmp/meet-*` and print recovery instructions ✅
+- Process management: PID file in session dir ✅
 - Future background mode: implement `meet stop` against persisted PID/session state
 
 ---
