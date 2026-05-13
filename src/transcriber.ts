@@ -1,7 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, writeFile, readFile, unlink } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { readFile, unlink } from "node:fs/promises";
 import type { Config } from "./types.js";
 
 export interface TranscribeResult {
@@ -13,22 +11,33 @@ export interface TranscribeResult {
 const HALLUCINATION_PATTERNS: RegExp[] = [
   /редактор\s+субтитров/i,
   /корректор/i,
-  /субтитры?\s+(выполнил|делал|сделал)/i,
+  /субтитры?\s+(выполнил|делал|сделал|сделала)/i,
   /технические\s+работы/i,
   /просим\s+прощения/i,
   /канал\s+обновлен/i,
   /подписывайтесь/i,
+  /спасибо\s+за\s+просмотр/i,
+  /приятного\s+просмотра/i,
+  /оставайтесь\s+с\s+нами/i,
+];
+
+const NOISE_TOKENS: RegExp[] = [
+  /\[[^\]]*\]/g,
+  /\([^)]*\)/g,
+  /[♪♫]/g,
 ];
 
 function cleanText(raw: string): string {
   let text = raw;
-  text = text.replace(/\[[^\]]*\]/g, "");
-  text = text.replace(/\([^)]*\)/g, "");
+
+  for (const re of NOISE_TOKENS) {
+    text = text.replace(re, "");
+  }
+
   text = text.replace(/\s+/g, " ").trim();
 
   for (const pattern of HALLUCINATION_PATTERNS) {
     if (pattern.test(text)) {
-      const before = text;
       const lines = text.split(/(?<=[.!?])\s*/);
       text = lines.filter((l) => !pattern.test(l)).join(" ");
     }
@@ -78,8 +87,7 @@ export async function transcribeChunk(
         const text = cleanText(raw);
         resolve({ chunkIndex, source, text });
       } catch {
-        const text = "";
-        resolve({ chunkIndex, source, text });
+        resolve({ chunkIndex, source, text: "" });
       }
     });
   });

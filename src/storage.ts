@@ -62,11 +62,15 @@ export function formatStartTime(date: Date): string {
   return `${y}-${m}-${d}_${h}-${min}`;
 }
 
-export function getOutputPath(config: Config, title: string, startedAt: Date): string {
-  const dir = expandPath(config.outputDir);
+export function getOutputDir(config: Config, title: string, startedAt: Date): string {
+  const baseDir = expandPath(config.outputDir);
   const slug = generateSlug(title);
   const ts = formatStartTime(startedAt);
-  return join(dir, `${ts}-${slug}.md`);
+  return join(baseDir, `${ts}-${slug}`);
+}
+
+export function getOutputPath(config: Config, title: string, startedAt: Date): string {
+  return join(getOutputDir(config, title, startedAt), "transcript.md");
 }
 
 export function getCaptureBinPath(): string {

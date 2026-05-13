@@ -1,14 +1,14 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { loadConfig, getOutputPath, ensureDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic } from "./storage.js";
+import { loadConfig, getOutputPath, getOutputDir, ensureDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
-import { assembleMarkdown, entriesFromSession } from "./assembler.js";
+import { assembleMarkdown, entriesFromSession, appendEntry, makeHeader, rewriteMarkdown, chunkToTimestamp } from "./assembler.js";
 import { spawn, ChildProcess } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
-import type { Session, Config } from "./types.js";
+import type { Session, Config, TranscriptEntry } from "./types.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -71,8 +71,14 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   await mkdir(sessionDir, { recursive: true });
 
   const startedAt = new Date();
+  const meetingDir = getOutputDir(config, title, startedAt);
   const outputFile = getOutputPath(config, title, startedAt);
   const captureBin = getCaptureBinPath();
+
+  await mkdir(meetingDir, { recursive: true });
+
+  const header = makeHeader(title, startedAt.toISOString());
+  await writeFile(outputFile, header, "utf-8");
 
   const session: Session = {
     id,
@@ -90,7 +96,6 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
-  await ensureDir(config.outputDir);
   console.log(chalk.gray("Press Ctrl-C or q to stop recording\n"));
 
   const pipeline = new Pipeline(session);
@@ -98,8 +103,13 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   let sysChunks = 0;
 
   pipeline.setTranscribeCallback((source, index, text) => {
+    if (!text) return;
     if (source === "mic") micChunks = Math.max(micChunks, index);
     else sysChunks = Math.max(sysChunks, index);
+
+    const timestamp = chunkToTimestamp(index, session.chunkDurationSeconds, session.startedAt);
+    const entry: TranscriptEntry = { source, chunkIndex: index, timestamp, text };
+    appendEntry(outputFile, header, entry).catch(() => {});
   });
 
   pipeline.start();
@@ -185,16 +195,14 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
     const results = pipeline.getResults();
     const entries = entriesFromSession(finalSession, results);
-    const markdown = assembleMarkdown(title, finalSession.startedAt, entries);
 
-    const { writeFile } = await import("node:fs/promises");
-    await writeFile(outputFile, markdown, "utf-8");
+    await rewriteMarkdown(outputFile, title, finalSession.startedAt, entries);
 
     finalSession.status = "done";
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(finalSession, null, 2));
 
     console.log(chalk.green(`Done: ${outputFile}`));
-    console.log(chalk.gray(`Transcribed ${entries.length} chunks`));
+    console.log(chalk.gray(`Transcribed ${entries.length} segments`));
     process.exit(0);
   };
 
@@ -302,14 +310,18 @@ async function listMeetings() {
   }
 
   const { readdir: readdirSync } = await import("node:fs/promises");
-  const files = (await readdirSync(outputDir)).filter((f) => f.endsWith(".md")).sort().reverse();
+  const entries = (await readdirSync(outputDir, { withFileTypes: true }))
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort()
+    .reverse();
 
-  if (files.length === 0) {
+  if (entries.length === 0) {
     console.log("No meetings found.");
     return;
   }
 
-  for (const f of files) {
-    console.log(`  ${f.replace(".md", "")}`);
+  for (const name of entries) {
+    console.log(`  ${name}`);
   }
 }

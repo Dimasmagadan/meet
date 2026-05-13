@@ -1,3 +1,4 @@
+import { appendFile, writeFile } from "node:fs/promises";
 import type { TranscriptEntry, Session } from "./types.js";
 
 export function chunkToTimestamp(chunkIndex: number, chunkDurationSeconds: number, startedAt: string): string {
@@ -30,21 +31,37 @@ export function entriesFromSession(session: Session, results: Map<string, string
   return entries;
 }
 
-export function assembleMarkdown(title: string, startedAt: string, entries: TranscriptEntry[]): string {
+function formatEntry(entry: TranscriptEntry): string {
+  const label = entry.source === "mic" ? "Me" : "Others";
+  return `**[${entry.timestamp}] ${label}:** ${entry.text}\n`;
+}
+
+export function makeHeader(title: string, startedAt: string): string {
   const date = new Date(startedAt);
   const dateStr = date.toLocaleDateString("ru-RU", { year: "numeric", month: "2-digit", day: "2-digit" });
   const timeStr = date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  return `# ${title} — ${dateStr} ${timeStr}\n\n`;
+}
 
+export async function appendEntry(filePath: string, header: string, entry: TranscriptEntry): Promise<void> {
+  const line = formatEntry(entry);
+  await appendFile(filePath, line);
+}
+
+export function assembleMarkdown(title: string, startedAt: string, entries: TranscriptEntry[]): string {
   const lines: string[] = [
-    `# ${title} — ${dateStr} ${timeStr}`,
+    `# ${title} — ${new Date(startedAt).toLocaleDateString("ru-RU", { year: "numeric", month: "2-digit", day: "2-digit" })} ${new Date(startedAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`,
     "",
   ];
 
   for (const entry of entries) {
-    const label = entry.source === "mic" ? "Me" : "Others";
-    lines.push(`**[${entry.timestamp}] ${label}:** ${entry.text}`);
-    lines.push("");
+    lines.push(formatEntry(entry));
   }
 
-  return lines.join("\n");
+  return lines.join("");
+}
+
+export async function rewriteMarkdown(filePath: string, title: string, startedAt: string, entries: TranscriptEntry[]): Promise<void> {
+  const markdown = assembleMarkdown(title, startedAt, entries);
+  await writeFile(filePath, markdown, "utf-8");
 }
