@@ -31,6 +31,13 @@ export interface Config {
   prompt: string;
   opencodeBin: string;
   micVoiceProcessing: boolean;
+  silenceGate: boolean;
+  micRmsThresholdDb: number;
+  sysRmsThresholdDb: number;
+  normalizeForWhisper: boolean;
+  whisperEntropyThreshold: number;
+  whisperLogprobThreshold: number;
+  whisperNoSpeechThreshold: number;
 }
 
 export interface TranscriptEntry {
@@ -43,11 +50,18 @@ export interface TranscriptEntry {
 export const DEFAULT_CONFIG: Config = {
   modelPath: "~/.meet/models/ggml-small.bin",
   outputDir: "~/Meetings",
-  chunkDurationSeconds: 15,
+  chunkDurationSeconds: 30,
   language: "ru",
   whisperBin: "whisper-cli",
   captureBin: "",
   prompt: "Транскрипция деловой встречи на русском языке.",
   opencodeBin: "opencode",
   micVoiceProcessing: false,
+  silenceGate: true,
+  micRmsThresholdDb: -45,
+  sysRmsThresholdDb: -50,
+  normalizeForWhisper: true,
+  whisperEntropyThreshold: 2.0,
+  whisperLogprobThreshold: -0.35,
+  whisperNoSpeechThreshold: 0.75,
 };

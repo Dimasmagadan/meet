@@ -19,13 +19,20 @@ export function loadConfig(overrides?: Partial<Config>): Config {
   return {
     modelPath: overrides?.modelPath ?? fileConfig.modelPath ?? "~/.meet/models/ggml-small.bin",
     outputDir: overrides?.outputDir ?? fileConfig.outputDir ?? "~/Meetings",
-    chunkDurationSeconds: overrides?.chunkDurationSeconds ?? fileConfig.chunkDurationSeconds ?? 15,
+    chunkDurationSeconds: overrides?.chunkDurationSeconds ?? fileConfig.chunkDurationSeconds ?? 30,
     language: overrides?.language ?? fileConfig.language ?? "ru",
     whisperBin: overrides?.whisperBin ?? fileConfig.whisperBin ?? "whisper-cli",
     captureBin: overrides?.captureBin ?? fileConfig.captureBin ?? "",
     prompt: overrides?.prompt ?? fileConfig.prompt ?? "Транскрипция деловой встречи на русском языке.",
     opencodeBin: overrides?.opencodeBin ?? fileConfig.opencodeBin ?? "opencode",
     micVoiceProcessing: overrides?.micVoiceProcessing ?? fileConfig.micVoiceProcessing ?? false,
+    silenceGate: overrides?.silenceGate ?? fileConfig.silenceGate ?? true,
+    micRmsThresholdDb: overrides?.micRmsThresholdDb ?? fileConfig.micRmsThresholdDb ?? -45,
+    sysRmsThresholdDb: overrides?.sysRmsThresholdDb ?? fileConfig.sysRmsThresholdDb ?? -50,
+    normalizeForWhisper: overrides?.normalizeForWhisper ?? fileConfig.normalizeForWhisper ?? true,
+    whisperEntropyThreshold: overrides?.whisperEntropyThreshold ?? fileConfig.whisperEntropyThreshold ?? 2.0,
+    whisperLogprobThreshold: overrides?.whisperLogprobThreshold ?? fileConfig.whisperLogprobThreshold ?? -0.35,
+    whisperNoSpeechThreshold: overrides?.whisperNoSpeechThreshold ?? fileConfig.whisperNoSpeechThreshold ?? 0.75,
   };
 }
 
