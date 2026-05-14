@@ -3,7 +3,7 @@ import chalk from "chalk";
 import { loadConfig, getOutputPath, getOutputDir, ensureDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
 import { assembleMarkdown, entriesFromSession, appendEntry, makeHeader, rewriteMarkdown, chunkToTimestamp } from "./assembler.js";
-import { runOpencodeSummary, runOpencodeQuestion } from "./opencode.js";
+import { runOpencodeIndex, runOpencodeQuestion } from "./opencode.js";
 import { spawn, ChildProcess, execSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -100,7 +100,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
-  console.log(chalk.gray("Press q to stop, s to summarize, a to ask opencode\n"));
+  console.log(chalk.gray("Press q to stop, s to stop + create index, a to ask opencode\n"));
 
   const pipeline = new Pipeline(session);
   let micChunks = 0;
@@ -183,10 +183,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
   let shuttingDown = false;
 
-  const shutdown = async () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-
+  const finalizeSession = async (): Promise<{ finalSession: Session; entries: TranscriptEntry[] }> => {
     stopStatus();
     process.stdout.write("\n");
     console.log(chalk.yellow("Finalizing..."));
@@ -219,33 +216,56 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     finalSession.status = "done";
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(finalSession, null, 2));
 
+    return { finalSession, entries };
+  };
+
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    const { entries } = await finalizeSession();
     console.log(chalk.green(`Done: ${outputFile}`));
     console.log(chalk.gray(`Transcribed ${entries.length} segments`));
     process.exit(0);
   };
 
-  let opencodeRunning = false;
-
-  const runSummary = async () => {
+  const stopAndIndex = async () => {
     if (opencodeRunning || shuttingDown) return;
-    opencodeRunning = true;
-    stopStatus();
-    process.stdout.write("\n");
-    console.log(chalk.cyan("Summarizing transcript so far (this may take up to 60s)..."));
+    shuttingDown = true;
+
+    let entries: TranscriptEntry[] = [];
+    try {
+      const result = await finalizeSession();
+      entries = result.entries;
+    } catch (err) {
+      console.log(chalk.red(`Finalization failed: ${formatError(err)}`));
+      process.exit(1);
+    }
+
+    console.log(chalk.green(`Transcript: ${outputFile}`));
+    console.log(chalk.gray(`Transcribed ${entries.length} segments`));
+
+    if (entries.length === 0) {
+      console.log(chalk.yellow("No transcript entries — skipping index generation"));
+      process.exit(0);
+    }
+
+    console.log(chalk.cyan("Creating index.md (up to 180s)..."));
 
     try {
-      const result = await runOpencodeSummary(config, outputFile, title);
-      process.stdout.write("\n");
-      console.log(chalk.bold("--- Summary ---"));
-      console.log(result);
-      console.log(chalk.bold("--- End summary ---\n"));
+      const indexMarkdown = await runOpencodeIndex(config, outputFile, title);
+      const meetingDir = getOutputDir(config, title, startedAt);
+      const indexPath = join(meetingDir, "index.md");
+      await writeFile(indexPath, indexMarkdown, "utf-8");
+      console.log(chalk.green(`Index: ${indexPath}`));
     } catch (err) {
-      console.log(chalk.red(`Summary failed: ${formatError(err)}`));
-    } finally {
-      opencodeRunning = false;
-      startStatus();
+      console.log(chalk.red(`Index generation failed: ${formatError(err)}`));
     }
+
+    process.exit(0);
   };
+
+  let opencodeRunning = false;
 
   const askQuestion = () => {
     if (opencodeRunning || shuttingDown) return;
@@ -297,7 +317,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
       if (key === "q" || key === "Q") {
         shutdown();
       } else if (key === "s" || key === "S") {
-        runSummary();
+        stopAndIndex();
       } else if (key === "a" || key === "A") {
         askQuestion();
       }
