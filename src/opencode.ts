@@ -17,9 +17,8 @@ export async function runOpencodeSummary(
 ): Promise<string> {
   const args = [
     "run",
+    `Meeting summary: ${title}. ${SUMMARY_PROMPT}`,
     "-f", transcriptFile,
-    "--title", `Meeting summary: ${title}`,
-    SUMMARY_PROMPT,
   ];
   return runOpencode(config, args);
 }
@@ -30,16 +29,12 @@ export async function runOpencodeQuestion(
   title: string,
   question: string,
 ): Promise<string> {
-  const prompt = `Answer this question using the attached meeting transcript.
-
-Question:
-${question}`;
+  const prompt = `Meeting question: ${title} Answer this question using the attached meeting transcript. Question: ${question}`;
 
   const args = [
     "run",
-    "-f", transcriptFile,
-    "--title", `Meeting question: ${title}`,
     prompt,
+    "-f", transcriptFile,
   ];
   return runOpencode(config, args);
 }
