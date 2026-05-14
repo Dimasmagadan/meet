@@ -30,6 +30,7 @@ export interface Config {
   captureBin: string;
   prompt: string;
   opencodeBin: string;
+  micVoiceProcessing: boolean;
 }
 
 export interface TranscriptEntry {
@@ -48,4 +49,5 @@ export const DEFAULT_CONFIG: Config = {
   captureBin: "",
   prompt: "Транскрипция деловой встречи на русском языке.",
   opencodeBin: "opencode",
+  micVoiceProcessing: false,
 };

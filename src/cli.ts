@@ -26,8 +26,9 @@ export function createProgram(): Command {
     .argument("<title>", "Meeting title")
     .option("--mic", "Mic-only mode (no system audio)")
     .option("--silence <seconds>", "Auto-stop after N seconds of silence", parseInt, 300)
-    .action(async (title: string, opts: { mic?: boolean; silence?: number }) => {
-      await startSession(title, opts.mic ? "mic" : "full", opts.silence);
+    .option("--voice-processing", "Enable VoiceProcessing IO for mic echo cancellation (default: off)")
+    .action(async (title: string, opts: { mic?: boolean; silence?: number; voiceProcessing?: boolean }) => {
+      await startSession(title, opts.mic ? "mic" : "full", opts.silence, opts.voiceProcessing ?? false);
     });
 
   program
@@ -47,8 +48,9 @@ export function createProgram(): Command {
   return program;
 }
 
-async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 300) {
+async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 300, voiceProcessing: boolean = false) {
   const config = loadConfig();
+  const effectiveVP = voiceProcessing || config.micVoiceProcessing;
 
   const stale = findStaleSessions();
   if (stale.length > 0) {
@@ -122,6 +124,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     "--mode", mode,
     "--silence-timeout", String(silenceTimeout),
   ];
+  if (effectiveVP) captureArgs.push("--voice-processing");
 
   let captureProcess: ChildProcess | null = null;
 

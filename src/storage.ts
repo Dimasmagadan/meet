@@ -25,6 +25,7 @@ export function loadConfig(overrides?: Partial<Config>): Config {
     captureBin: overrides?.captureBin ?? fileConfig.captureBin ?? "",
     prompt: overrides?.prompt ?? fileConfig.prompt ?? "Транскрипция деловой встречи на русском языке.",
     opencodeBin: overrides?.opencodeBin ?? fileConfig.opencodeBin ?? "opencode",
+    micVoiceProcessing: overrides?.micVoiceProcessing ?? fileConfig.micVoiceProcessing ?? false,
   };
 }
 

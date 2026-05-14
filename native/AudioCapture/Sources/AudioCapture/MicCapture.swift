@@ -5,14 +5,16 @@ class MicCapture {
     private let engine = AVAudioEngine()
     private var wavWriter: WAVWriter
     private let targetSampleRate: Int = 16000
+    private let voiceProcessing: Bool
     private var isRunning = false
     private let onChunkFinalized: (String) -> Void
     private var formatLogged = false
     private(set) var lastVoiceTime: Date = Date()
     private let voiceRmsThreshold: Float = 200.0
 
-    init(outputDir: URL, chunkDurationSeconds: Int, onChunkFinalized: @escaping (String) -> Void) {
+    init(outputDir: URL, chunkDurationSeconds: Int, voiceProcessing: Bool = false, onChunkFinalized: @escaping (String) -> Void) {
         self.wavWriter = WAVWriter(outputDir: outputDir, prefix: "mic", chunkDurationSeconds: chunkDurationSeconds)
+        self.voiceProcessing = voiceProcessing
         self.onChunkFinalized = onChunkFinalized
     }
 
@@ -20,12 +22,14 @@ class MicCapture {
         let inputNode = engine.inputNode
         let _ = inputNode.outputFormat(forBus: 0)
 
-        try inputNode.setVoiceProcessingEnabled(true)
+        if voiceProcessing {
+            try inputNode.setVoiceProcessingEnabled(true)
 
-        inputNode.voiceProcessingOtherAudioDuckingConfiguration = .init(
-            enableAdvancedDucking: false,
-            duckingLevel: .min
-        )
+            inputNode.voiceProcessingOtherAudioDuckingConfiguration = .init(
+                enableAdvancedDucking: false,
+                duckingLevel: .min
+            )
+        }
 
         let vpFormat = inputNode.outputFormat(forBus: 0)
         let hwSampleRate = vpFormat.sampleRate

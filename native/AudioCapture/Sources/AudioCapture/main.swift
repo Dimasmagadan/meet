@@ -17,8 +17,11 @@ struct AudioCaptureCLI: AsyncParsableCommand {
     @Option(name: .long, help: "Stop after N seconds of silence (0 = disabled)")
     var silenceTimeout: Int = 300
 
+    @Flag(name: .long, help: "Enable VoiceProcessing IO for mic echo cancellation")
+    var voiceProcessing: Bool = false
+
     func run() async throws {
-        let runner = CaptureRunner(outputDir: outputDir, chunkDuration: chunkDuration, mode: mode, silenceTimeout: silenceTimeout)
+        let runner = CaptureRunner(outputDir: outputDir, chunkDuration: chunkDuration, mode: mode, silenceTimeout: silenceTimeout, voiceProcessing: voiceProcessing)
         try await runner.run()
     }
 }
@@ -29,15 +32,17 @@ class CaptureRunner {
     let chunkDuration: Int
     let mode: String
     let silenceTimeout: Int
+    let voiceProcessing: Bool
     var micCapture: MicCapture?
     var systemCapture: SystemAudioCapture?
     var shouldStop = false
 
-    init(outputDir: String, chunkDuration: Int, mode: String, silenceTimeout: Int) {
+    init(outputDir: String, chunkDuration: Int, mode: String, silenceTimeout: Int, voiceProcessing: Bool) {
         self.outputDir = outputDir
         self.chunkDuration = chunkDuration
         self.mode = mode
         self.silenceTimeout = silenceTimeout
+        self.voiceProcessing = voiceProcessing
     }
 
     func run() async throws {
@@ -50,7 +55,7 @@ class CaptureRunner {
         fputs("AudioCapture started: mode=\(mode) dir=\(outputDir) silence=\(silenceTimeout)s\n", stderr)
 
         if mode == "full" || mode == "mic" {
-            let mic = MicCapture(outputDir: dir, chunkDurationSeconds: chunkDuration) { name in
+            let mic = MicCapture(outputDir: dir, chunkDurationSeconds: chunkDuration, voiceProcessing: voiceProcessing) { name in
                 fputs("finalized: \(name)\n", stderr)
             }
             do {
