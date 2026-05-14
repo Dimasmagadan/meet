@@ -49,14 +49,32 @@ function runOpencode(config: Config, args: string[]): Promise<string> {
     execFile(
       config.opencodeBin,
       args,
-      { timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
+      { timeout: 60_000, maxBuffer: 10 * 1024 * 1024 },
       (err, stdout, stderr) => {
         if (err) {
-          reject(new Error(`opencode failed: ${err.message}`));
+          const msg = err.killed
+            ? "opencode timed out after 60s"
+            : cleanError(err.message);
+          reject(new Error(msg));
           return;
         }
         resolve(stdout.trim() || stderr.trim());
       },
     );
   });
+}
+
+function cleanError(msg: string): string {
+  return msg
+    .split("\n")
+    .filter((line) =>
+      !line.includes("Plan Mode") &&
+      !line.includes("READ-ONLY") &&
+      !line.includes("System Reminder") &&
+      !line.includes("operational mode") &&
+      !line.includes("permitted to make")
+    )
+    .join("\n")
+    .trim()
+    .slice(0, 300);
 }

@@ -157,18 +157,29 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     process.exit(1);
   }
 
-  const statusInterval = setInterval(() => {
-    const stats = pipeline.getStats();
-    const elapsed = Math.floor((Date.now() - startedAt.getTime()) / 1000);
-    const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
-    const secs = String(elapsed % 60).padStart(2, "0");
-    const now = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-    const lagSec = (micChunks + sysChunks - stats.totalDone) * config.chunkDurationSeconds;
-    const lagStr = lagSec > 0 ? `lag ~${lagSec}s` : "up to date";
-    process.stdout.write(
-      `\r${chalk.cyan(`Recording ${mins}:${secs}`)} | chunks: mic ${micChunks}, sys ${sysChunks} | transcribed: ${stats.totalDone} | ${lagStr} | ${now}  `
-    );
-  }, 5000);
+  let statusInterval: ReturnType<typeof setInterval> | null = null;
+
+  const startStatus = () => {
+    if (statusInterval) return;
+    statusInterval = setInterval(() => {
+      const stats = pipeline.getStats();
+      const elapsed = Math.floor((Date.now() - startedAt.getTime()) / 1000);
+      const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
+      const secs = String(elapsed % 60).padStart(2, "0");
+      const now = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+      const lagSec = (micChunks + sysChunks - stats.totalDone) * config.chunkDurationSeconds;
+      const lagStr = lagSec > 0 ? `lag ~${lagSec}s` : "up to date";
+      process.stdout.write(
+        `\r${chalk.cyan(`Recording ${mins}:${secs}`)} | chunks: mic ${micChunks}, sys ${sysChunks} | transcribed: ${stats.totalDone} | ${lagStr} | ${now}  `
+      );
+    }, 5000);
+  };
+
+  const stopStatus = () => {
+    if (statusInterval) { clearInterval(statusInterval); statusInterval = null; }
+  };
+
+  startStatus();
 
   let shuttingDown = false;
 
@@ -176,7 +187,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     if (shuttingDown) return;
     shuttingDown = true;
 
-    clearInterval(statusInterval);
+    stopStatus();
     process.stdout.write("\n");
     console.log(chalk.yellow("Finalizing..."));
 
@@ -216,14 +227,11 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   let opencodeRunning = false;
 
   const runSummary = async () => {
-    if (opencodeRunning) {
-      process.stdout.write(`\n${chalk.yellow("opencode request already running...\n")}`);
-      return;
-    }
+    if (opencodeRunning || shuttingDown) return;
     opencodeRunning = true;
-    clearInterval(statusInterval);
+    stopStatus();
     process.stdout.write("\n");
-    console.log(chalk.cyan("Summarizing transcript so far..."));
+    console.log(chalk.cyan("Summarizing transcript so far (this may take up to 60s)..."));
 
     try {
       const result = await runOpencodeSummary(config, outputFile, title);
@@ -232,18 +240,17 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
       console.log(result);
       console.log(chalk.bold("--- End summary ---\n"));
     } catch (err) {
-      console.log(chalk.red(`Summary failed: ${err}`));
+      console.log(chalk.red(`Summary failed: ${formatError(err)}`));
+    } finally {
+      opencodeRunning = false;
+      startStatus();
     }
-    opencodeRunning = false;
   };
 
   const askQuestion = () => {
-    if (opencodeRunning) {
-      process.stdout.write(`\n${chalk.yellow("opencode request already running...\n")}`);
-      return;
-    }
+    if (opencodeRunning || shuttingDown) return;
     opencodeRunning = true;
-    clearInterval(statusInterval);
+    stopStatus();
     process.stdout.write("\n");
     process.stdin.setRawMode(false);
     process.stdout.write(chalk.cyan("Question for opencode: "));
@@ -251,14 +258,18 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     rl.question("", async (question: string) => {
       rl.close();
-      process.stdin.setRawMode(true);
 
       const q = question.trim();
       if (!q) {
         process.stdout.write(chalk.gray("(cancelled)\n"));
         opencodeRunning = false;
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        startStatus();
         return;
       }
+
+      process.stdout.write(chalk.gray("Waiting for opencode (up to 60s)...\n"));
+      if (process.stdin.isTTY) process.stdin.setRawMode(true);
 
       try {
         const result = await runOpencodeQuestion(config, outputFile, title, q);
@@ -267,9 +278,11 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
         console.log(result);
         console.log(chalk.bold("--- End answer ---\n"));
       } catch (err) {
-        console.log(chalk.red(`Question failed: ${err}`));
+        console.log(chalk.red(`Question failed: ${formatError(err)}`));
+      } finally {
+        opencodeRunning = false;
+        startStatus();
       }
-      opencodeRunning = false;
     });
   };
 
@@ -300,6 +313,12 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
       }
     });
   });
+}
+
+function formatError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.length <= 200) return msg;
+  return msg.slice(0, 200).trim() + "...";
 }
 
 function checkSetup(config: Config, mode: string): string[] {
