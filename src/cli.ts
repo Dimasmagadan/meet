@@ -211,7 +211,9 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     const results = pipeline.getResults();
     const entries = entriesFromSession(finalSession, results);
 
-    await rewriteMarkdown(outputFile, title, finalSession.startedAt, entries);
+    if (entries.length > 0) {
+      await rewriteMarkdown(outputFile, title, finalSession.startedAt, entries);
+    }
 
     finalSession.status = "done";
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(finalSession, null, 2));

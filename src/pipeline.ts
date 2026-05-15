@@ -133,23 +133,17 @@ export class Pipeline {
     }
 
     this.processing = false;
-    if (!this.stopped) {
+    if (this.queue.length > 0) {
       this.processNext();
     }
   }
 
   async drainQueue(): Promise<void> {
-    while (this.queue.length > 0) {
-      await new Promise<void>((resolve) => {
-        this.processing = false;
+    while (this.processing || this.queue.length > 0) {
+      if (!this.processing && this.queue.length > 0) {
         this.processNext();
-        const check = setInterval(() => {
-          if (!this.processing) {
-            clearInterval(check);
-            resolve();
-          }
-        }, 100);
-      });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
 
