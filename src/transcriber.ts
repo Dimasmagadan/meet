@@ -111,9 +111,14 @@ export async function transcribeChunk(
   source: "mic" | "sys"
 ): Promise<TranscribeResult> {
   const wavBuffer = await readFile(wavPath);
-  const samples = readPcmSamples(wavBuffer);
+
+  let transcribeBuffer: Buffer = wavBuffer;
+  if (config.normalizeForWhisper) {
+    transcribeBuffer = normalizeWav(wavBuffer) as Buffer;
+  }
 
   if (config.silenceGate) {
+    const samples = readPcmSamples(transcribeBuffer);
     const rmsDb = computeRmsDb(samples);
     const threshold = source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     if (rmsDb < threshold) {
@@ -129,9 +134,8 @@ export async function transcribeChunk(
   let normalizedTmp = false;
 
   if (config.normalizeForWhisper) {
-    const normalized = normalizeWav(wavBuffer);
     const tmpPath = wavPath.replace(/\.wav$/, ".norm.wav");
-    await writeFile(tmpPath, normalized);
+    await writeFile(tmpPath, transcribeBuffer);
     transcribePath = tmpPath;
     normalizedTmp = true;
   }

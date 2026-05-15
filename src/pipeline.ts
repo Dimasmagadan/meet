@@ -116,7 +116,7 @@ export class Pipeline {
         status: "done",
       });
 
-      await writeSession(this.session);
+      await writeSession(this.session).catch(() => {});
 
       if (this.onTranscribed) {
         this.onTranscribed(item.source, item.index, result.text);
@@ -129,7 +129,7 @@ export class Pipeline {
         status: "failed",
       });
       this.session.lastError = String(err);
-      await writeSession(this.session);
+      await writeSession(this.session).catch(() => {});
     }
 
     this.processing = false;
