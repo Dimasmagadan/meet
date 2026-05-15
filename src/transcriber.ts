@@ -49,12 +49,13 @@ function cleanText(raw: string): string {
 
 function readPcmSamples(wavBuffer: Buffer): Int16Array {
   if (wavBuffer.length < 44) return new Int16Array(0);
-  const dataLen = wavBuffer.readUInt32LE(40);
-  const dataOffset = 44;
+  const headerDataLen = wavBuffer.readUInt32LE(40);
+  const actualDataLen = wavBuffer.length - 44;
+  const dataLen = Math.min(headerDataLen, actualDataLen);
   const numSamples = Math.floor(dataLen / 2);
   const samples = new Int16Array(numSamples);
   for (let i = 0; i < numSamples; i++) {
-    samples[i] = wavBuffer.readInt16LE(dataOffset + i * 2);
+    samples[i] = wavBuffer.readInt16LE(44 + i * 2);
   }
   return samples;
 }

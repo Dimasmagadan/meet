@@ -37,6 +37,7 @@ struct WAVWriter {
         let header = WAVWriter.makeHeader(dataSize: 0, sampleRate: sampleRate, channels: channels, bitsPerSample: bitsPerSample)
         FileManager.default.createFile(atPath: tmpPath.path, contents: header)
         currentFileHandle = try FileHandle(forWritingTo: tmpPath)
+        try currentFileHandle?.seekToEnd()
     }
 
     mutating func appendSamples(_ samples: [Int16]) throws {
