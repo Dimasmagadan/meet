@@ -7,6 +7,7 @@ import { writeSession, loadConfig } from "./storage.js";
 import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
 
 type TranscribeCallback = (source: "mic" | "sys", index: number, text: string) => void;
+type FailureCallback = (source: "mic" | "sys", index: number, error: string) => void;
 
 export class Pipeline {
   private session: Session;
@@ -15,6 +16,7 @@ export class Pipeline {
   private processing = false;
   private results = new Map<string, string>();
   private onTranscribed: TranscribeCallback | null = null;
+  private onFailure: FailureCallback | null = null;
   private stopped = false;
 
   constructor(session: Session) {
@@ -23,6 +25,10 @@ export class Pipeline {
 
   setTranscribeCallback(cb: TranscribeCallback) {
     this.onTranscribed = cb;
+  }
+
+  setFailureCallback(cb: FailureCallback) {
+    this.onFailure = cb;
   }
 
   getResults(): Map<string, string> {
@@ -116,11 +122,11 @@ export class Pipeline {
         status: "done",
       });
 
-      await writeSession(this.session).catch(() => {});
-
       if (this.onTranscribed) {
         this.onTranscribed(item.source, item.index, result.text);
       }
+
+      await writeSession(this.session).catch(() => {});
     } catch (err) {
       this.session.processedChunks.push({
         source: item.source,
@@ -130,6 +136,10 @@ export class Pipeline {
       });
       this.session.lastError = String(err);
       await writeSession(this.session).catch(() => {});
+
+      if (this.onFailure) {
+        this.onFailure(item.source, item.index, String(err));
+      }
     }
 
     this.processing = false;

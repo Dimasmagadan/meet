@@ -19,6 +19,10 @@ export interface Session {
   status: "recording" | "finalizing" | "done" | "error";
   processedChunks: Chunk[];
   lastError: string | null;
+  autoStopReason: "max_duration" | "no_text_timeout" | null;
+  latestProcessedOffsetSeconds: number;
+  lastMeaningfulTextAtOffsetSeconds: number | null;
+  hasMeaningfulText: boolean;
 }
 
 export interface Config {
@@ -38,6 +42,8 @@ export interface Config {
   whisperEntropyThreshold: number;
   whisperLogprobThreshold: number;
   whisperNoSpeechThreshold: number;
+  maxDurationMinutes: number;
+  noTextTimeoutMinutes: number;
 }
 
 export interface TranscriptEntry {
@@ -57,11 +63,13 @@ export const DEFAULT_CONFIG: Config = {
   prompt: "Транскрипция деловой встречи на русском языке.",
   opencodeBin: "opencode",
   micVoiceProcessing: false,
-  silenceGate: true,
+  silenceGate: false,
   micRmsThresholdDb: -65,
   sysRmsThresholdDb: -65,
   normalizeForWhisper: true,
   whisperEntropyThreshold: 2.0,
   whisperLogprobThreshold: -0.35,
   whisperNoSpeechThreshold: 0.75,
+  maxDurationMinutes: 60,
+  noTextTimeoutMinutes: 10,
 };

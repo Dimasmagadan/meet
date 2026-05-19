@@ -15,7 +15,7 @@ struct AudioCaptureCLI: AsyncParsableCommand {
     var mode: String = "full"
 
     @Option(name: .long, help: "Stop after N seconds of silence (0 = disabled)")
-    var silenceTimeout: Int = 300
+    var silenceTimeout: Int = 0
 
     @Flag(name: .long, help: "Enable VoiceProcessing IO for mic echo cancellation")
     var voiceProcessing: Bool = false

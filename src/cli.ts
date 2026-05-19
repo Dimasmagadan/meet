@@ -25,10 +25,12 @@ export function createProgram(): Command {
     .description("Start a foreground recording session")
     .argument("<title>", "Meeting title")
     .option("--mic", "Mic-only mode (no system audio)")
-    .option("--silence <seconds>", "Auto-stop after N seconds of silence", parseInt, 300)
+    .option("--silence <seconds>", "Silence timeout for audio capture (0 = disabled)", parseInt, 0)
+    .option("--max-duration <minutes>", "Auto-stop after N minutes (0 = disabled)", parseInt)
+    .option("--no-text-timeout <minutes>", "Auto-stop after N processed minutes without transcript (0 = disabled)", parseInt)
     .option("--voice-processing", "Enable VoiceProcessing IO for mic echo cancellation (default: off)")
-    .action(async (title: string, opts: { mic?: boolean; silence?: number; voiceProcessing?: boolean }) => {
-      await startSession(title, opts.mic ? "mic" : "full", opts.silence, opts.voiceProcessing ?? false);
+    .action(async (title: string, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean }) => {
+      await startSession(title, opts.mic ? "mic" : "full", opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing ?? false);
     });
 
   program
@@ -48,9 +50,11 @@ export function createProgram(): Command {
   return program;
 }
 
-async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 300, voiceProcessing: boolean = false) {
+async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing: boolean = false) {
   const config = loadConfig();
   const effectiveVP = voiceProcessing || config.micVoiceProcessing;
+  const effectiveMaxDuration = maxDurationMinutes ?? config.maxDurationMinutes;
+  const effectiveNoTextTimeout = noTextTimeoutMinutes ?? config.noTextTimeoutMinutes;
 
   const stale = findStaleSessions();
   if (stale.length > 0) {
@@ -96,6 +100,10 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     status: "recording",
     processedChunks: [],
     lastError: null,
+    autoStopReason: null,
+    latestProcessedOffsetSeconds: 0,
+    lastMeaningfulTextAtOffsetSeconds: null,
+    hasMeaningfulText: false,
   };
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
@@ -107,9 +115,18 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   let sysChunks = 0;
 
   pipeline.setTranscribeCallback((source, index, text) => {
-    if (!text) return;
     if (source === "mic") micChunks = Math.max(micChunks, index);
     else sysChunks = Math.max(sysChunks, index);
+
+    const chunkOffset = index * session.chunkDurationSeconds;
+    session.latestProcessedOffsetSeconds = Math.max(session.latestProcessedOffsetSeconds, chunkOffset);
+
+    if (text && text.trim()) {
+      session.hasMeaningfulText = true;
+      session.lastMeaningfulTextAtOffsetSeconds = chunkOffset;
+    }
+
+    if (!text) return;
 
     const timestamp = chunkToTimestamp(index, session.chunkDurationSeconds, session.startedAt);
     const entry: TranscriptEntry = { source, chunkIndex: index, timestamp, text };
@@ -143,6 +160,14 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
         const source = filename.startsWith("mic") ? "mic" : "sys";
         if (source === "mic") micChunks++;
         else sysChunks++;
+      } else if (
+        line.includes("failed") ||
+        line.includes("timeout") ||
+        line.includes("stopped") ||
+        line.includes("error")
+      ) {
+        process.stdout.write("\n");
+        console.log(chalk.gray(`[capture] ${line}`));
       }
     });
 
@@ -157,31 +182,15 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     process.exit(1);
   }
 
-  let statusInterval: ReturnType<typeof setInterval> | null = null;
+  type AutoStopReason = "max_duration" | "no_text_timeout";
 
-  const startStatus = () => {
-    if (statusInterval) return;
-    statusInterval = setInterval(() => {
-      const stats = pipeline.getStats();
-      const elapsed = Math.floor((Date.now() - startedAt.getTime()) / 1000);
-      const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
-      const secs = String(elapsed % 60).padStart(2, "0");
-      const now = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-      const lagSec = (micChunks + sysChunks - stats.totalDone) * config.chunkDurationSeconds;
-      const lagStr = lagSec > 0 ? `lag ~${lagSec}s` : "up to date";
-      process.stdout.write(
-        `\r${chalk.cyan(`Recording ${mins}:${secs}`)} | chunks: mic ${micChunks}, sys ${sysChunks} | transcribed: ${stats.totalDone} | ${lagStr} | ${now}  `
-      );
-    }, 5000);
-  };
+  let autoStopReason: AutoStopReason | null = null;
+  let shuttingDown = false;
+  let statusInterval: ReturnType<typeof setInterval> | null = null;
 
   const stopStatus = () => {
     if (statusInterval) { clearInterval(statusInterval); statusInterval = null; }
   };
-
-  startStatus();
-
-  let shuttingDown = false;
 
   const finalizeSession = async (): Promise<{ finalSession: Session; entries: TranscriptEntry[] }> => {
     stopStatus();
@@ -226,10 +235,86 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     shuttingDown = true;
 
     const { entries } = await finalizeSession();
-    console.log(chalk.green(`Done: ${outputFile}`));
+    const reasonStr = autoStopReason
+      ? ` (${autoStopReason === "max_duration" ? "max duration" : "no text timeout"})`
+      : "";
+    console.log(chalk.green(`Done: ${outputFile}${reasonStr}`));
     console.log(chalk.gray(`Transcribed ${entries.length} segments`));
     process.exit(0);
   };
+
+  const checkAutoStop = () => {
+    if (shuttingDown || autoStopReason) return;
+
+    const elapsedSec = (Date.now() - startedAt.getTime()) / 1000;
+
+    if (effectiveMaxDuration > 0 && elapsedSec >= effectiveMaxDuration * 60) {
+      autoStopReason = "max_duration";
+      session.autoStopReason = "max_duration";
+      writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2)).catch(() => {});
+      console.log(chalk.yellow(`Max duration reached: ${effectiveMaxDuration} minutes. Finalizing...`));
+      shutdown();
+      return;
+    }
+
+    if (
+      effectiveNoTextTimeout > 0 &&
+      session.hasMeaningfulText &&
+      session.lastMeaningfulTextAtOffsetSeconds !== null &&
+      session.latestProcessedOffsetSeconds - session.lastMeaningfulTextAtOffsetSeconds >= effectiveNoTextTimeout * 60
+    ) {
+      autoStopReason = "no_text_timeout";
+      session.autoStopReason = "no_text_timeout";
+      writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2)).catch(() => {});
+      console.log(chalk.yellow(`No meaningful transcript for ${effectiveNoTextTimeout} processed minutes. Finalizing...`));
+      shutdown();
+      return;
+    }
+  };
+
+  const formatDuration = (sec: number): string => {
+    const m = String(Math.floor(sec / 60)).padStart(2, "0");
+    const s = String(sec % 60).padStart(2, "0");
+    return `${m}:${s}`;
+  };
+
+  const startStatus = () => {
+    if (statusInterval) return;
+    statusInterval = setInterval(() => {
+      const stats = pipeline.getStats();
+      const elapsed = Math.floor((Date.now() - startedAt.getTime()) / 1000);
+      const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
+      const secs = String(elapsed % 60).padStart(2, "0");
+      const now = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+      const lagSec = (micChunks + sysChunks - stats.totalDone) * config.chunkDurationSeconds;
+      const lagStr = lagSec > 0 ? `lag ~${lagSec}s` : "up to date";
+
+      let capStr = "";
+      if (effectiveMaxDuration > 0) {
+        const remaining = Math.max(0, effectiveMaxDuration * 60 - elapsed);
+        capStr = ` | cap: ${formatDuration(remaining)}`;
+      }
+
+      let noTextStr = "";
+      if (effectiveNoTextTimeout > 0) {
+        if (!session.hasMeaningfulText) {
+          noTextStr = " | no text: waiting";
+        } else {
+          const gapSec = session.latestProcessedOffsetSeconds - (session.lastMeaningfulTextAtOffsetSeconds ?? 0);
+          const remaining = Math.max(0, effectiveNoTextTimeout * 60 - gapSec);
+          noTextStr = ` | no text: ${formatDuration(remaining)}`;
+        }
+      }
+
+      process.stdout.write(
+        `\r${chalk.cyan(`Recording ${mins}:${secs}`)} | chunks: mic ${micChunks}, sys ${sysChunks} | transcribed: ${stats.totalDone} | ${lagStr}${capStr}${noTextStr} | ${now}  `
+      );
+
+      checkAutoStop();
+    }, 5000);
+  };
+
+  startStatus();
 
   const stopAndIndex = async () => {
     if (opencodeRunning || shuttingDown) return;

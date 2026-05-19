@@ -26,13 +26,15 @@ export function loadConfig(overrides?: Partial<Config>): Config {
     prompt: overrides?.prompt ?? fileConfig.prompt ?? "Транскрипция деловой встречи на русском языке.",
     opencodeBin: overrides?.opencodeBin ?? fileConfig.opencodeBin ?? "opencode",
     micVoiceProcessing: overrides?.micVoiceProcessing ?? fileConfig.micVoiceProcessing ?? false,
-    silenceGate: overrides?.silenceGate ?? fileConfig.silenceGate ?? true,
+    silenceGate: overrides?.silenceGate ?? fileConfig.silenceGate ?? false,
     micRmsThresholdDb: overrides?.micRmsThresholdDb ?? fileConfig.micRmsThresholdDb ?? -65,
     sysRmsThresholdDb: overrides?.sysRmsThresholdDb ?? fileConfig.sysRmsThresholdDb ?? -65,
     normalizeForWhisper: overrides?.normalizeForWhisper ?? fileConfig.normalizeForWhisper ?? true,
     whisperEntropyThreshold: overrides?.whisperEntropyThreshold ?? fileConfig.whisperEntropyThreshold ?? 2.0,
     whisperLogprobThreshold: overrides?.whisperLogprobThreshold ?? fileConfig.whisperLogprobThreshold ?? -0.35,
     whisperNoSpeechThreshold: overrides?.whisperNoSpeechThreshold ?? fileConfig.whisperNoSpeechThreshold ?? 0.75,
+    maxDurationMinutes: overrides?.maxDurationMinutes ?? fileConfig.maxDurationMinutes ?? 60,
+    noTextTimeoutMinutes: overrides?.noTextTimeoutMinutes ?? fileConfig.noTextTimeoutMinutes ?? 10,
   };
 }
 
