@@ -23,6 +23,7 @@ export interface Session {
   latestProcessedOffsetSeconds: number;
   lastMeaningfulTextAtOffsetSeconds: number | null;
   hasMeaningfulText: boolean;
+  tags?: string[];
 }
 
 export interface Config {
