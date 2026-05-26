@@ -29,9 +29,10 @@ export function createProgram(): Command {
     .option("--silence <seconds>", "Silence timeout for audio capture (0 = disabled)", parseInt, 0)
     .option("--max-duration <minutes>", "Auto-stop after N minutes (0 = disabled)", parseInt)
     .option("--no-text-timeout <minutes>", "Auto-stop after N processed minutes without transcript (0 = disabled)", parseInt)
-    .option("--voice-processing", "Enable VoiceProcessing IO for mic echo cancellation (default: off)")
+    .option("--voice-processing", "Enable VoiceProcessing IO echo cancellation (default: off)")
     .action(async (title: string, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean }) => {
-      await startSession(title, opts.mic ? "mic" : "full", opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing ?? false);
+      const mode = opts.mic ? "mic" as const : "full" as const;
+      await startSession(title, mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing);
     });
 
   program
@@ -51,9 +52,9 @@ export function createProgram(): Command {
   return program;
 }
 
-async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing: boolean = false) {
+async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean) {
   const config = loadConfig();
-  const effectiveVP = voiceProcessing || config.micVoiceProcessing;
+  const effectiveVP = voiceProcessing ?? config.micVoiceProcessing;
   const effectiveMaxDuration = maxDurationMinutes ?? config.maxDurationMinutes;
   const effectiveNoTextTimeout = noTextTimeoutMinutes ?? config.noTextTimeoutMinutes;
 
@@ -144,7 +145,6 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     "--silence-timeout", String(silenceTimeout),
   ];
   if (effectiveVP) captureArgs.push("--voice-processing");
-
   let captureProcess: ChildProcess | null = null;
 
   try {
@@ -194,6 +194,21 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     if (statusInterval) { clearInterval(statusInterval); statusInterval = null; }
   };
 
+  const stopCapture = async (forceAfterMs = 5000) => {
+    if (!captureProcess || captureProcess.killed) return;
+    captureProcess.kill("SIGINT");
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        captureProcess?.kill("SIGKILL");
+        resolve();
+      }, forceAfterMs);
+      captureProcess?.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  };
+
   const finalizeSession = async (): Promise<{ finalSession: Session; entries: TranscriptEntry[] }> => {
     stopStatus();
     process.stdout.write("\n");
@@ -202,17 +217,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     session.status = "finalizing";
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
-    if (captureProcess && !captureProcess.killed) {
-      captureProcess.kill("SIGINT");
-      await new Promise<void>((resolve) => {
-        captureProcess?.on("exit", () => resolve());
-        setTimeout(() => {
-          captureProcess?.kill("SIGKILL");
-          resolve();
-        }, 5000);
-      });
-    }
-
+    await stopCapture();
     await pipeline.stop();
 
     const finalSession = await readFile(join(sessionDir, "session.json"), "utf-8").then(
@@ -253,15 +258,24 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     if (shuttingDown) return;
     shuttingDown = true;
 
-    const { finalSession, entries } = await finalizeSession();
-    const reasonStr = autoStopReason
-      ? ` (${autoStopReason === "max_duration" ? "max duration" : "no text timeout"})`
-      : "";
-    console.log(chalk.green(`Done: ${outputFile}${reasonStr}`));
-    console.log(chalk.gray(`Transcribed ${entries.length} segments`));
+    try {
+      const { finalSession, entries } = await finalizeSession();
+      const reasonStr = autoStopReason
+        ? ` (${autoStopReason === "max_duration" ? "max duration" : "no text timeout"})`
+        : "";
+      console.log(chalk.green(`Done: ${outputFile}${reasonStr}`));
+      console.log(chalk.gray(`Transcribed ${entries.length} segments`));
 
-    await promptTags(finalSession);
-    process.exit(0);
+      await promptTags(finalSession);
+      process.exit(0);
+    } catch (err) {
+      stopStatus();
+      await stopCapture(2000).catch(() => {});
+      console.log(chalk.red(`Finalization failed: ${formatError(err)}`));
+      console.log(chalk.yellow(`Recoverable session: ${sessionDir}`));
+      console.log(chalk.yellow(`Partial transcript: ${outputFile}`));
+      process.exit(1);
+    }
   };
 
   const checkAutoStop = () => {
@@ -272,9 +286,8 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     if (effectiveMaxDuration > 0 && elapsedSec >= effectiveMaxDuration * 60) {
       autoStopReason = "max_duration";
       session.autoStopReason = "max_duration";
-      writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2)).catch(() => {});
       console.log(chalk.yellow(`Max duration reached: ${effectiveMaxDuration} minutes. Finalizing...`));
-      shutdown();
+      void shutdown();
       return;
     }
 
@@ -286,9 +299,8 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     ) {
       autoStopReason = "no_text_timeout";
       session.autoStopReason = "no_text_timeout";
-      writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2)).catch(() => {});
       console.log(chalk.yellow(`No meaningful transcript for ${effectiveNoTextTimeout} processed minutes. Finalizing...`));
-      shutdown();
+      void shutdown();
       return;
     }
   };

@@ -39,9 +39,14 @@ export function loadConfig(overrides?: Partial<Config>): Config {
 }
 
 export async function writeAtomic(filePath: string, data: string): Promise<void> {
-  const tmp = filePath + ".tmp";
-  await writeFile(tmp, data, "utf-8");
-  await rename(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    await writeFile(tmp, data, "utf-8");
+    await rename(tmp, filePath);
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
 
 export async function readSession(sessionDir: string): Promise<Session | null> {
