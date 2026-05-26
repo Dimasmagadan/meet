@@ -59,10 +59,8 @@ class MicCapture {
         var monoSamples = [Int16]()
 
         if let floatData = buffer.floatChannelData {
-            let bestChannel = findLoudestChannel(floatData, channels: Int(hwChannels), frames: frameLength)
-
             for i in 0..<frameLength {
-                let sample = floatData[bestChannel][i]
+                let sample = floatData[0][i]
                 let clamped = max(-1.0, min(1.0, sample))
                 monoSamples.append(Int16(clamped * 32767.0))
             }
@@ -92,23 +90,6 @@ class MicCapture {
         } catch {
             fputs("MicCapture write error: \(error)\n", stderr)
         }
-    }
-
-    private func findLoudestChannel(_ floatData: UnsafePointer<UnsafeMutablePointer<Float>>, channels: Int, frames: Int) -> Int {
-        var bestChannel = 0
-        var bestEnergy: Float = -1
-        for ch in 0..<channels {
-            var energy: Float = 0
-            for i in 0..<frames {
-                let s = floatData[ch][i]
-                energy += s * s
-            }
-            if energy > bestEnergy {
-                bestEnergy = energy
-                bestChannel = ch
-            }
-        }
-        return bestChannel
     }
 
     private func linearInterpolate(_ samples: [Int16], ratio: Double) -> [Int16] {

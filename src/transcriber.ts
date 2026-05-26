@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import type { Config } from "./types.js";
+import { detectSpeech } from "./vad.js";
+import { getPhrasebook } from "./phrasebook.js";
 
 export interface TranscribeResult {
   chunkIndex: number;
@@ -27,7 +29,7 @@ const NOISE_TOKENS: RegExp[] = [
   /[♪♫]/g,
 ];
 
-function cleanText(raw: string): string {
+export function cleanText(raw: string): string {
   let text = raw;
 
   for (const re of NOISE_TOKENS) {
@@ -113,17 +115,30 @@ export async function transcribeChunk(
 ): Promise<TranscribeResult> {
   const wavBuffer = await readFile(wavPath);
 
-  let transcribeBuffer: Buffer = wavBuffer;
-  if (config.normalizeForWhisper) {
-    transcribeBuffer = normalizeWav(wavBuffer) as Buffer;
-  }
+  const rawSamples = readPcmSamples(wavBuffer);
+  const rawRmsDb = computeRmsDb(rawSamples);
 
   if (config.silenceGate) {
-    const samples = readPcmSamples(transcribeBuffer);
-    const rmsDb = computeRmsDb(samples);
     const threshold = source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
-    if (rmsDb < threshold) {
+    if (rawRmsDb < threshold) {
       return { chunkIndex, source, text: "" };
+    }
+  }
+
+  if (config.vadEnabled) {
+    const vad = await detectSpeech(wavPath, config);
+    if (!vad.speech) {
+      return { chunkIndex, source, text: "" };
+    }
+  }
+
+  let transcribeBuffer: Buffer = wavBuffer;
+  let didNormalize = false;
+  if (config.normalizeForWhisper) {
+    const isQuietMic = source === "mic" && rawRmsDb < (config.micRmsThresholdDb + 10);
+    if (!isQuietMic) {
+      transcribeBuffer = normalizeWav(wavBuffer) as Buffer;
+      didNormalize = true;
     }
   }
 
@@ -134,7 +149,7 @@ export async function transcribeChunk(
   let transcribePath = wavPath;
   let normalizedTmp = false;
 
-  if (config.normalizeForWhisper) {
+  if (didNormalize) {
     const tmpPath = wavPath.replace(/\.wav$/, ".norm.wav");
     await writeFile(tmpPath, transcribeBuffer);
     transcribePath = tmpPath;
@@ -173,7 +188,11 @@ export async function transcribeChunk(
       try {
         const raw = (await readFile(outFile, "utf-8")).trim();
         await unlink(outFile).catch(() => {});
-        const text = cleanText(raw);
+        let text = cleanText(raw);
+        if (text) {
+          const pb = getPhrasebook(config);
+          text = pb.apply(text);
+        }
         resolve({ chunkIndex, source, text });
       } catch {
         resolve({ chunkIndex, source, text: "" });

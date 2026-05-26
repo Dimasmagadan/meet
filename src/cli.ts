@@ -5,6 +5,7 @@ import { Pipeline } from "./pipeline.js";
 import { assembleMarkdown, entriesFromSession, appendEntry, makeHeader, rewriteMarkdown, chunkToTimestamp } from "./assembler.js";
 import { runOpencodeIndex, runOpencodeQuestion } from "./opencode.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
+import { parseCaptureLine } from "./capture-events.js";
 import { spawn, ChildProcess, execSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -156,20 +157,33 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
     captureProcess.stderr?.on("data", (data: Buffer) => {
-      const line = data.toString().trim();
-      if (line.startsWith("finalized:")) {
-        const filename = line.replace("finalized:", "").trim();
-        const source = filename.startsWith("mic") ? "mic" : "sys";
-        if (source === "mic") micChunks++;
-        else sysChunks++;
-      } else if (
-        line.includes("failed") ||
-        line.includes("timeout") ||
-        line.includes("stopped") ||
-        line.includes("error")
-      ) {
-        process.stdout.write("\n");
-        console.log(chalk.gray(`[capture] ${line}`));
+      const text = data.toString();
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const parsed = parseCaptureLine(line);
+        if (parsed) {
+          if (parsed.type === "json") {
+            const ev = parsed.event;
+            if (ev.event === "chunk_finalized") {
+              if ((ev as any).source === "mic") micChunks++;
+              else sysChunks++;
+            } else if (ev.level === "warning" || ev.level === "error") {
+              process.stdout.write("\n");
+              console.log(chalk.gray(`[capture] ${(ev as any).message || ev.event}`));
+            }
+          } else {
+            if (parsed.finalized.source === "mic") micChunks++;
+            else sysChunks++;
+          }
+        } else if (
+          line.includes("failed") ||
+          line.includes("timeout") ||
+          line.includes("stopped") ||
+          line.includes("error")
+        ) {
+          process.stdout.write("\n");
+          console.log(chalk.gray(`[capture] ${line}`));
+        }
       }
     });
 

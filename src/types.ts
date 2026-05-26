@@ -45,6 +45,14 @@ export interface Config {
   whisperNoSpeechThreshold: number;
   maxDurationMinutes: number;
   noTextTimeoutMinutes: number;
+  phrasebookPath: string;
+  phrasebookReload: boolean;
+  vadEnabled: boolean;
+  vadBin: string;
+  vadMinSpeechMs: number;
+  vadThreshold: number;
+  vadFailOpen: boolean;
+  vadTimeoutMs: number;
 }
 
 export interface TranscriptEntry {
@@ -64,7 +72,7 @@ export const DEFAULT_CONFIG: Config = {
   prompt: "Транскрипция деловой встречи на русском языке.",
   opencodeBin: "opencode",
   micVoiceProcessing: false,
-  silenceGate: false,
+  silenceGate: true,
   micRmsThresholdDb: -65,
   sysRmsThresholdDb: -65,
   normalizeForWhisper: true,
@@ -73,4 +81,12 @@ export const DEFAULT_CONFIG: Config = {
   whisperNoSpeechThreshold: 0.75,
   maxDurationMinutes: 60,
   noTextTimeoutMinutes: 10,
+  phrasebookPath: "~/.meet/phrasebook.json",
+  phrasebookReload: true,
+  vadEnabled: false,
+  vadBin: "",
+  vadMinSpeechMs: 250,
+  vadThreshold: 0.5,
+  vadFailOpen: true,
+  vadTimeoutMs: 30_000,
 };

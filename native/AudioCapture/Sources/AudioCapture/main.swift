@@ -53,17 +53,22 @@ class CaptureRunner {
         signal(SIGTERM) { _ in CaptureRunnerSignalRelay.shared.trigger() }
 
         fputs("AudioCapture started: mode=\(mode) dir=\(outputDir) silence=\(silenceTimeout)s\n", stderr)
+        logJSON("info", "capture_started", ["mode": mode, "dir": outputDir, "silence": silenceTimeout])
 
         if mode == "full" || mode == "mic" {
             let mic = MicCapture(outputDir: dir, chunkDurationSeconds: chunkDuration, voiceProcessing: voiceProcessing) { name in
                 fputs("finalized: \(name)\n", stderr)
+                let idx = Int(name.replacingOccurrences(of: "mic-", with: "").replacingOccurrences(of: ".wav", with: "")) ?? 0
+                logJSON("info", "chunk_finalized", ["source": "mic", "filename": name, "index": idx])
             }
             do {
                 try mic.start()
                 micCapture = mic
                 fputs("Mic capture started\n", stderr)
+                logJSON("info", "stream_started", ["source": "mic"])
             } catch {
                 fputs("Mic capture failed: \(error)\n", stderr)
+                logJSON("error", "stream_error", ["source": "mic", "message": String(describing: error)])
                 if mode == "mic" { throw error }
             }
         }
@@ -71,13 +76,17 @@ class CaptureRunner {
         if mode == "full" {
             let sys = SystemAudioCapture(outputDir: dir, chunkDurationSeconds: chunkDuration) { name in
                 fputs("finalized: \(name)\n", stderr)
+                let idx = Int(name.replacingOccurrences(of: "sys-", with: "").replacingOccurrences(of: ".wav", with: "")) ?? 0
+                logJSON("info", "chunk_finalized", ["source": "sys", "filename": name, "index": idx])
             }
             do {
                 try await sys.start()
                 systemCapture = sys
                 fputs("System audio capture started\n", stderr)
+                logJSON("info", "stream_started", ["source": "sys"])
             } catch {
                 fputs("System audio capture failed: \(error)\n", stderr)
+                logJSON("error", "stream_error", ["source": "sys", "message": String(describing: error)])
             }
         }
 
@@ -86,6 +95,7 @@ class CaptureRunner {
                 let silentFor = Date().timeIntervalSince(mic.lastVoiceTime)
                 if silentFor > Double(silenceTimeout) {
                     fputs("Silence timeout: no voice for \(Int(silentFor))s (limit \(silenceTimeout)s)\n", stderr)
+                    logJSON("warning", "silence_timeout", ["silent_seconds": Int(silentFor), "limit": silenceTimeout])
                     break
                 }
             }
@@ -94,6 +104,7 @@ class CaptureRunner {
 
         stopAll()
         fputs("AudioCapture stopped\n", stderr)
+        logJSON("info", "capture_stopped")
     }
 
     func stopAll() {

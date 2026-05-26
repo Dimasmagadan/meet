@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Chunk, Session, Config, TranscriptEntry } from "./types.js";
+import { DEFAULT_CONFIG } from "./types.js";
 
 export function expandPath(p: string): string {
   return p.startsWith("~") ? p.replace("~", homedir()) : p;
@@ -17,24 +18,32 @@ export function loadConfig(overrides?: Partial<Config>): Config {
     fileConfig = JSON.parse(raw);
   }
   return {
-    modelPath: overrides?.modelPath ?? fileConfig.modelPath ?? "~/.meet/models/ggml-small.bin",
-    outputDir: overrides?.outputDir ?? fileConfig.outputDir ?? "~/Meetings",
-    chunkDurationSeconds: overrides?.chunkDurationSeconds ?? fileConfig.chunkDurationSeconds ?? 30,
-    language: overrides?.language ?? fileConfig.language ?? "ru",
-    whisperBin: overrides?.whisperBin ?? fileConfig.whisperBin ?? "whisper-cli",
-    captureBin: overrides?.captureBin ?? fileConfig.captureBin ?? "",
-    prompt: overrides?.prompt ?? fileConfig.prompt ?? "Транскрипция деловой встречи на русском языке.",
-    opencodeBin: overrides?.opencodeBin ?? fileConfig.opencodeBin ?? "opencode",
-    micVoiceProcessing: overrides?.micVoiceProcessing ?? fileConfig.micVoiceProcessing ?? false,
-    silenceGate: overrides?.silenceGate ?? fileConfig.silenceGate ?? false,
-    micRmsThresholdDb: overrides?.micRmsThresholdDb ?? fileConfig.micRmsThresholdDb ?? -65,
-    sysRmsThresholdDb: overrides?.sysRmsThresholdDb ?? fileConfig.sysRmsThresholdDb ?? -65,
-    normalizeForWhisper: overrides?.normalizeForWhisper ?? fileConfig.normalizeForWhisper ?? true,
-    whisperEntropyThreshold: overrides?.whisperEntropyThreshold ?? fileConfig.whisperEntropyThreshold ?? 2.0,
-    whisperLogprobThreshold: overrides?.whisperLogprobThreshold ?? fileConfig.whisperLogprobThreshold ?? -0.35,
-    whisperNoSpeechThreshold: overrides?.whisperNoSpeechThreshold ?? fileConfig.whisperNoSpeechThreshold ?? 0.75,
-    maxDurationMinutes: overrides?.maxDurationMinutes ?? fileConfig.maxDurationMinutes ?? 60,
-    noTextTimeoutMinutes: overrides?.noTextTimeoutMinutes ?? fileConfig.noTextTimeoutMinutes ?? 10,
+    modelPath: overrides?.modelPath ?? fileConfig.modelPath ?? DEFAULT_CONFIG.modelPath,
+    outputDir: overrides?.outputDir ?? fileConfig.outputDir ?? DEFAULT_CONFIG.outputDir,
+    chunkDurationSeconds: overrides?.chunkDurationSeconds ?? fileConfig.chunkDurationSeconds ?? DEFAULT_CONFIG.chunkDurationSeconds,
+    language: overrides?.language ?? fileConfig.language ?? DEFAULT_CONFIG.language,
+    whisperBin: overrides?.whisperBin ?? fileConfig.whisperBin ?? DEFAULT_CONFIG.whisperBin,
+    captureBin: overrides?.captureBin ?? fileConfig.captureBin ?? DEFAULT_CONFIG.captureBin,
+    prompt: overrides?.prompt ?? fileConfig.prompt ?? DEFAULT_CONFIG.prompt,
+    opencodeBin: overrides?.opencodeBin ?? fileConfig.opencodeBin ?? DEFAULT_CONFIG.opencodeBin,
+    micVoiceProcessing: overrides?.micVoiceProcessing ?? fileConfig.micVoiceProcessing ?? DEFAULT_CONFIG.micVoiceProcessing,
+    silenceGate: overrides?.silenceGate ?? fileConfig.silenceGate ?? DEFAULT_CONFIG.silenceGate,
+    micRmsThresholdDb: overrides?.micRmsThresholdDb ?? fileConfig.micRmsThresholdDb ?? DEFAULT_CONFIG.micRmsThresholdDb,
+    sysRmsThresholdDb: overrides?.sysRmsThresholdDb ?? fileConfig.sysRmsThresholdDb ?? DEFAULT_CONFIG.sysRmsThresholdDb,
+    normalizeForWhisper: overrides?.normalizeForWhisper ?? fileConfig.normalizeForWhisper ?? DEFAULT_CONFIG.normalizeForWhisper,
+    whisperEntropyThreshold: overrides?.whisperEntropyThreshold ?? fileConfig.whisperEntropyThreshold ?? DEFAULT_CONFIG.whisperEntropyThreshold,
+    whisperLogprobThreshold: overrides?.whisperLogprobThreshold ?? fileConfig.whisperLogprobThreshold ?? DEFAULT_CONFIG.whisperLogprobThreshold,
+    whisperNoSpeechThreshold: overrides?.whisperNoSpeechThreshold ?? fileConfig.whisperNoSpeechThreshold ?? DEFAULT_CONFIG.whisperNoSpeechThreshold,
+    maxDurationMinutes: overrides?.maxDurationMinutes ?? fileConfig.maxDurationMinutes ?? DEFAULT_CONFIG.maxDurationMinutes,
+    noTextTimeoutMinutes: overrides?.noTextTimeoutMinutes ?? fileConfig.noTextTimeoutMinutes ?? DEFAULT_CONFIG.noTextTimeoutMinutes,
+    phrasebookPath: overrides?.phrasebookPath ?? fileConfig.phrasebookPath ?? DEFAULT_CONFIG.phrasebookPath,
+    phrasebookReload: overrides?.phrasebookReload ?? fileConfig.phrasebookReload ?? DEFAULT_CONFIG.phrasebookReload,
+    vadEnabled: overrides?.vadEnabled ?? fileConfig.vadEnabled ?? DEFAULT_CONFIG.vadEnabled,
+    vadBin: overrides?.vadBin ?? fileConfig.vadBin ?? DEFAULT_CONFIG.vadBin,
+    vadMinSpeechMs: overrides?.vadMinSpeechMs ?? fileConfig.vadMinSpeechMs ?? DEFAULT_CONFIG.vadMinSpeechMs,
+    vadThreshold: overrides?.vadThreshold ?? fileConfig.vadThreshold ?? DEFAULT_CONFIG.vadThreshold,
+    vadFailOpen: overrides?.vadFailOpen ?? fileConfig.vadFailOpen ?? DEFAULT_CONFIG.vadFailOpen,
+    vadTimeoutMs: overrides?.vadTimeoutMs ?? fileConfig.vadTimeoutMs ?? DEFAULT_CONFIG.vadTimeoutMs,
   };
 }
 
