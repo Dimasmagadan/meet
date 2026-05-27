@@ -28,6 +28,10 @@ export interface Session {
 
 export interface Config {
   modelPath: string;
+  liveModelPath: string;
+  finalModelPath: string;
+  finalRetranscribe: boolean;
+  keepLiveTranscript: boolean;
   outputDir: string;
   chunkDurationSeconds: number;
   language: string;
@@ -55,6 +59,16 @@ export interface Config {
   vadTimeoutMs: number;
 }
 
+export interface TranscribeOptions {
+  modelPath?: string;
+  pass?: "live" | "final";
+}
+
+export interface AudioMetrics {
+  rmsDb: number;
+  peakDb: number;
+}
+
 export interface TranscriptEntry {
   source: "mic" | "sys";
   chunkIndex: number;
@@ -64,16 +78,20 @@ export interface TranscriptEntry {
 
 export const DEFAULT_CONFIG: Config = {
   modelPath: "~/.meet/models/ggml-small.bin",
+  liveModelPath: "~/.meet/models/ggml-small.bin",
+  finalModelPath: "~/.meet/models/ggml-medium.bin",
+  finalRetranscribe: true,
+  keepLiveTranscript: true,
   outputDir: "~/Meetings",
-  chunkDurationSeconds: 30,
+  chunkDurationSeconds: 15,
   language: "ru",
   whisperBin: "whisper-cli",
   captureBin: "",
   prompt: "Транскрипция деловой встречи на русском языке.",
   opencodeBin: "opencode",
-  micVoiceProcessing: false,
+  micVoiceProcessing: true,
   silenceGate: true,
-  micRmsThresholdDb: -65,
+  micRmsThresholdDb: -60,
   sysRmsThresholdDb: -65,
   normalizeForWhisper: true,
   whisperEntropyThreshold: 2.0,

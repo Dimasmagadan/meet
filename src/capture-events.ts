@@ -6,6 +6,19 @@ export type CaptureEvent =
   | { level: "info"; event: "capture_stopped"; t: number }
   | { level: "info" | "warning" | "error"; event: string; t: number; [key: string]: unknown };
 
+export type ChunkFinalizedEvent = {
+  level: "info";
+  event: "chunk_finalized";
+  source: "mic" | "sys";
+  filename: string;
+  index: number;
+  t: number;
+};
+
+function isValidChunkSource(s: unknown): s is "mic" | "sys" {
+  return s === "mic" || s === "sys";
+}
+
 export function parseCaptureEvent(line: string): CaptureEvent | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
@@ -15,6 +28,7 @@ export function parseCaptureEvent(line: string): CaptureEvent | null {
     if (typeof obj !== "object" || obj === null) return null;
     if (typeof obj.event !== "string") return null;
     if (typeof obj.level !== "string") return null;
+    if (obj.event === "chunk_finalized" && !isValidChunkSource(obj.source)) return null;
     return obj as CaptureEvent;
   } catch {
     return null;

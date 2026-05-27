@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFile, unlink, writeFile } from "node:fs/promises";
-import type { Config } from "./types.js";
+import type { Config, TranscribeOptions, AudioMetrics } from "./types.js";
 import { detectSpeech } from "./vad.js";
 import { getPhrasebook } from "./phrasebook.js";
 
@@ -8,6 +8,7 @@ export interface TranscribeResult {
   chunkIndex: number;
   source: "mic" | "sys";
   text: string;
+  metrics?: AudioMetrics;
 }
 
 const HALLUCINATION_PATTERNS: RegExp[] = [
@@ -49,7 +50,7 @@ export function cleanText(raw: string): string {
   return text;
 }
 
-function readPcmSamples(wavBuffer: Buffer): Int16Array {
+export function readPcmSamples(wavBuffer: Buffer): Int16Array {
   if (wavBuffer.length < 44) return new Int16Array(0);
   const headerDataLen = wavBuffer.readUInt32LE(40);
   const actualDataLen = wavBuffer.length - 44;
@@ -62,7 +63,7 @@ function readPcmSamples(wavBuffer: Buffer): Int16Array {
   return samples;
 }
 
-function computeRmsDb(samples: Int16Array): number {
+export function computeRmsDb(samples: Int16Array): number {
   if (samples.length === 0) return -Infinity;
   let sum = 0;
   for (let i = 0; i < samples.length; i++) {
@@ -74,7 +75,7 @@ function computeRmsDb(samples: Int16Array): number {
   return 20 * Math.log10(rms);
 }
 
-function computePeakDb(samples: Int16Array): number {
+export function computePeakDb(samples: Int16Array): number {
   if (samples.length === 0) return -Infinity;
   let peak = 0;
   for (let i = 0; i < samples.length; i++) {
@@ -111,24 +112,27 @@ export async function transcribeChunk(
   wavPath: string,
   config: Config,
   chunkIndex: number,
-  source: "mic" | "sys"
+  source: "mic" | "sys",
+  options?: TranscribeOptions
 ): Promise<TranscribeResult> {
   const wavBuffer = await readFile(wavPath);
 
   const rawSamples = readPcmSamples(wavBuffer);
   const rawRmsDb = computeRmsDb(rawSamples);
+  const rawPeakDb = computePeakDb(rawSamples);
+  const metrics: AudioMetrics = { rmsDb: rawRmsDb, peakDb: rawPeakDb };
 
-  if (config.silenceGate) {
+  if (config.silenceGate && options?.pass !== "live") {
     const threshold = source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     if (rawRmsDb < threshold) {
-      return { chunkIndex, source, text: "" };
+      return { chunkIndex, source, text: "", metrics };
     }
   }
 
   if (config.vadEnabled) {
     const vad = await detectSpeech(wavPath, config);
     if (!vad.speech) {
-      return { chunkIndex, source, text: "" };
+      return { chunkIndex, source, text: "", metrics };
     }
   }
 
@@ -142,9 +146,12 @@ export async function transcribeChunk(
     }
   }
 
-  const modelPath = config.modelPath.startsWith("~")
-    ? config.modelPath.replace("~", process.env.HOME || "")
-    : config.modelPath;
+  const effectiveModelPath = options?.modelPath
+    ?? (options?.pass === "final" ? (config.finalModelPath || config.modelPath) : (config.liveModelPath || config.modelPath));
+
+  const modelPath = effectiveModelPath.startsWith("~")
+    ? effectiveModelPath.replace("~", process.env.HOME || "")
+    : effectiveModelPath;
 
   let transcribePath = wavPath;
   let normalizedTmp = false;
@@ -193,9 +200,9 @@ export async function transcribeChunk(
           const pb = getPhrasebook(config);
           text = pb.apply(text);
         }
-        resolve({ chunkIndex, source, text });
+        resolve({ chunkIndex, source, text, metrics });
       } catch {
-        resolve({ chunkIndex, source, text: "" });
+        resolve({ chunkIndex, source, text: "", metrics });
       }
     });
   });

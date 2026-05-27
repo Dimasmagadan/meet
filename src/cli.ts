@@ -6,6 +6,7 @@ import { assembleMarkdown, entriesFromSession, appendEntry, makeHeader, rewriteM
 import { runOpencodeIndex, runOpencodeQuestion } from "./opencode.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
+import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
 import { spawn, ChildProcess, execSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -238,8 +239,36 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
       (d) => JSON.parse(d) as Session
     ).catch(() => session);
 
-    const results = pipeline.getResults();
-    const entries = entriesFromSession(finalSession, results);
+    const liveResults = pipeline.getResults();
+
+    if (config.keepLiveTranscript) {
+      try {
+        await copyLiveTranscript(outputFile);
+      } catch {}
+    }
+
+    let entries: TranscriptEntry[];
+
+    if (config.finalRetranscribe) {
+      const finalModelPath = expandPath(config.finalModelPath || config.modelPath);
+      if (!existsSync(finalModelPath)) {
+        console.log(chalk.yellow(`Final model not found: ${finalModelPath}, using live transcript`));
+        entries = entriesFromSession(finalSession, liveResults);
+      } else {
+        try {
+          console.log(chalk.cyan(`Final high-quality pass (${config.finalModelPath.replace(/^.*\//, "")})...`));
+          entries = await runFinalPass(finalSession, config, (done, total) => {
+            process.stdout.write(`\r${chalk.gray(`Final pass: ${done}/${total} chunks`)}  `);
+          }, entriesFromSession(finalSession, liveResults));
+          process.stdout.write("\n");
+        } catch (err) {
+          console.log(chalk.yellow(`Final pass failed: ${formatError(err)}, using live transcript`));
+          entries = entriesFromSession(finalSession, liveResults);
+        }
+      }
+    } else {
+      entries = entriesFromSession(finalSession, liveResults);
+    }
 
     if (entries.length > 0) {
       await rewriteMarkdown(outputFile, title, finalSession.startedAt, entries);
@@ -487,9 +516,17 @@ function checkSetup(config: Config, mode: string): string[] {
     errors.push("whisper-cli not found. Install: brew install whisper-cpp");
   }
 
-  const modelPath = expandPath(config.modelPath);
-  if (!existsSync(modelPath)) {
-    errors.push(`Model not found: ${modelPath}. Run: meet setup or scripts/setup.sh`);
+  const liveModelPath = expandPath(config.liveModelPath || config.modelPath);
+  if (!existsSync(liveModelPath)) {
+    errors.push(`Live model not found: ${liveModelPath}. Run: meet setup or scripts/setup.sh`);
+  }
+
+  if (config.finalRetranscribe) {
+    const finalModelPath = expandPath(config.finalModelPath || config.modelPath);
+    if (!existsSync(finalModelPath)) {
+      console.log(chalk.yellow(`  Final model not found: ${finalModelPath} (final pass will use live transcript)`));
+      console.log(chalk.gray(`    Download: curl -L -o ${finalModelPath} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin`));
+    }
   }
 
   const captureBin = getCaptureBinPath();
@@ -517,13 +554,23 @@ async function runSetup() {
     ok = false;
   }
 
-  const modelPath = expandPath(config.modelPath);
-  if (existsSync(modelPath)) {
-    console.log(chalk.green("  model: ") + modelPath);
+  const liveModelPath = expandPath(config.liveModelPath || config.modelPath);
+  if (existsSync(liveModelPath)) {
+    console.log(chalk.green("  live model: ") + liveModelPath);
   } else {
-    console.log(chalk.red("  model: NOT FOUND"));
+    console.log(chalk.red("  live model: NOT FOUND"));
     console.log(chalk.gray("    Download: curl -L -o ~/.meet/models/ggml-small.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"));
     ok = false;
+  }
+
+  if (config.finalRetranscribe) {
+    const finalModelPath = expandPath(config.finalModelPath || config.modelPath);
+    if (existsSync(finalModelPath)) {
+      console.log(chalk.green("  final model: ") + finalModelPath);
+    } else {
+      console.log(chalk.yellow("  final model: NOT FOUND (final retranscription disabled)"));
+      console.log(chalk.gray("    Download: curl -L -o ~/.meet/models/ggml-medium.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin"));
+    }
   }
 
   const captureBin = getCaptureBinPath();

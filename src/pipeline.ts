@@ -111,7 +111,11 @@ export class Pipeline {
 
     try {
       const config = loadConfig();
-      const result = await transcribeChunk(wavPath, config, item.index, item.source);
+      const liveModel = config.liveModelPath || config.modelPath;
+      const result = await transcribeChunk(wavPath, config, item.index, item.source, {
+        modelPath: liveModel.startsWith("~") ? liveModel.replace("~", process.env.HOME || "") : liveModel,
+        pass: "live",
+      });
       const key = `${result.source}-${String(result.chunkIndex).padStart(3, "0")}`;
       this.results.set(key, result.text);
 

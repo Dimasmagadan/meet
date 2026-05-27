@@ -42,6 +42,28 @@ describe("parseCaptureEvent", () => {
     assert.strictEqual(parseCaptureEvent("42"), null);
     assert.strictEqual(parseCaptureEvent("null"), null);
   });
+
+  it("returns null for chunk_finalized with invalid source", () => {
+    const event = parseCaptureEvent('{"level":"info","event":"chunk_finalized","source":"other","filename":"mic-001.wav","index":1,"t":1}');
+    assert.strictEqual(event, null);
+  });
+
+  it("returns null for chunk_finalized with missing source", () => {
+    const event = parseCaptureEvent('{"level":"info","event":"chunk_finalized","filename":"mic-001.wav","index":1,"t":1}');
+    assert.strictEqual(event, null);
+  });
+
+  it("accepts chunk_finalized with mic source", () => {
+    const event = parseCaptureEvent('{"level":"info","event":"chunk_finalized","source":"mic","filename":"mic-001.wav","index":1,"t":1}');
+    assert.ok(event);
+    assert.strictEqual(event!.event, "chunk_finalized");
+  });
+
+  it("accepts chunk_finalized with sys source", () => {
+    const event = parseCaptureEvent('{"level":"info","event":"chunk_finalized","source":"sys","filename":"sys-001.wav","index":1,"t":1}');
+    assert.ok(event);
+    assert.strictEqual(event!.event, "chunk_finalized");
+  });
 });
 
 describe("parseLegacyChunkFinalized", () => {

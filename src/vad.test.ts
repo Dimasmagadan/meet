@@ -59,13 +59,15 @@ describe("detectSpeech", () => {
     assert.strictEqual(result.speech, true);
   });
 
-  it("returns speech:false on helper failure with failOpen=false", async () => {
+  it("rejects on helper failure with failOpen=false", async () => {
     const exec = makeExecFile(new Map([
       ["/path/to/chunk.wav", { err: new Error("crashed"), stdout: "" }],
     ]));
     const config = { ...baseConfig, vadFailOpen: false };
-    const result = await detectSpeech("/path/to/chunk.wav", config, exec);
-    assert.strictEqual(result.speech, false);
+    await assert.rejects(
+      () => detectSpeech("/path/to/chunk.wav", config, exec),
+      { message: /VAD helper failed/ }
+    );
   });
 
   it("returns speech:true on invalid JSON with failOpen=true", async () => {
@@ -77,12 +79,14 @@ describe("detectSpeech", () => {
     assert.strictEqual(result.speech, true);
   });
 
-  it("returns speech:false on invalid JSON with failOpen=false", async () => {
+  it("rejects on invalid JSON with failOpen=false", async () => {
     const exec = makeExecFile(new Map([
       ["/path/to/chunk.wav", { err: null, stdout: "not json" }],
     ]));
     const config = { ...baseConfig, vadFailOpen: false };
-    const result = await detectSpeech("/path/to/chunk.wav", config, exec);
-    assert.strictEqual(result.speech, false);
+    await assert.rejects(
+      () => detectSpeech("/path/to/chunk.wav", config, exec),
+      { message: /invalid JSON/ }
+    );
   });
 });

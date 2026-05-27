@@ -96,7 +96,7 @@ function escapeRegex(s: string): string {
 }
 
 function expandPath(p: string): string {
-  return p.startsWith("~") ? p.replace("~", homedir()) : p;
+  return p.startsWith("~/") || p === "~" ? p.replace(/^~/, homedir()) : p;
 }
 
 let _cached: Phrasebook | null = null;

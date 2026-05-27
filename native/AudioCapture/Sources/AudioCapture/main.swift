@@ -57,7 +57,6 @@ class CaptureRunner {
 
         if mode == "full" || mode == "mic" {
             let mic = MicCapture(outputDir: dir, chunkDurationSeconds: chunkDuration, voiceProcessing: voiceProcessing) { name in
-                fputs("finalized: \(name)\n", stderr)
                 let idx = Int(name.replacingOccurrences(of: "mic-", with: "").replacingOccurrences(of: ".wav", with: "")) ?? 0
                 logJSON("info", "chunk_finalized", ["source": "mic", "filename": name, "index": idx])
             }
@@ -75,7 +74,6 @@ class CaptureRunner {
 
         if mode == "full" {
             let sys = SystemAudioCapture(outputDir: dir, chunkDurationSeconds: chunkDuration) { name in
-                fputs("finalized: \(name)\n", stderr)
                 let idx = Int(name.replacingOccurrences(of: "sys-", with: "").replacingOccurrences(of: ".wav", with: "")) ?? 0
                 logJSON("info", "chunk_finalized", ["source": "sys", "filename": name, "index": idx])
             }

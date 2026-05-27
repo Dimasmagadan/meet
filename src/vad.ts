@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
 import type { Config } from "./types.js";
 
 export interface VadResult {
@@ -15,8 +16,8 @@ export async function detectSpeech(
     return { speech: true };
   }
 
-  const bin = config.vadBin.startsWith("~")
-    ? config.vadBin.replace("~", process.env.HOME || "")
+  const bin = config.vadBin.startsWith("~/") || config.vadBin === "~"
+    ? config.vadBin.replace(/^~/, homedir())
     : config.vadBin;
 
   const args = [
@@ -25,13 +26,13 @@ export async function detectSpeech(
     wavPath,
   ];
 
-  return new Promise<VadResult>((resolve) => {
+  return new Promise<VadResult>((resolve, reject) => {
     execFn(bin, args, { timeout: config.vadTimeoutMs ?? 30_000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) {
         if (config.vadFailOpen !== false) {
           resolve({ speech: true });
         } else {
-          resolve({ speech: false });
+          reject(new Error(`VAD helper failed (failOpen=false): ${err.message}`));
         }
         return;
       }
@@ -43,7 +44,7 @@ export async function detectSpeech(
         if (config.vadFailOpen !== false) {
           resolve({ speech: true });
         } else {
-          resolve({ speech: false });
+          reject(new Error("VAD helper returned invalid JSON (failOpen=false)"));
         }
       }
     });

@@ -60,6 +60,15 @@ describe("expandPath", () => {
   it("leaves relative path unchanged", () => {
     assert.strictEqual(expandPath("relative/path"), "relative/path");
   });
+
+  it("does not expand ~otheruser/path", () => {
+    assert.strictEqual(expandPath("~otheruser/path"), "~otheruser/path");
+  });
+
+  it("expands bare ~", () => {
+    const result = expandPath("~");
+    assert.ok(!result.startsWith("~"));
+  });
 });
 
 describe("getOutputDir", () => {

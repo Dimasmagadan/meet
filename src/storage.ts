@@ -7,7 +7,7 @@ import type { Chunk, Session, Config, TranscriptEntry } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
 
 export function expandPath(p: string): string {
-  return p.startsWith("~") ? p.replace("~", homedir()) : p;
+  return p.startsWith("~/") || p === "~" ? p.replace(/^~/, homedir()) : p;
 }
 
 export function loadConfig(overrides?: Partial<Config>): Config {
@@ -19,6 +19,10 @@ export function loadConfig(overrides?: Partial<Config>): Config {
   }
   return {
     modelPath: overrides?.modelPath ?? fileConfig.modelPath ?? DEFAULT_CONFIG.modelPath,
+    liveModelPath: overrides?.liveModelPath ?? fileConfig.liveModelPath ?? DEFAULT_CONFIG.liveModelPath,
+    finalModelPath: overrides?.finalModelPath ?? fileConfig.finalModelPath ?? DEFAULT_CONFIG.finalModelPath,
+    finalRetranscribe: overrides?.finalRetranscribe ?? fileConfig.finalRetranscribe ?? DEFAULT_CONFIG.finalRetranscribe,
+    keepLiveTranscript: overrides?.keepLiveTranscript ?? fileConfig.keepLiveTranscript ?? DEFAULT_CONFIG.keepLiveTranscript,
     outputDir: overrides?.outputDir ?? fileConfig.outputDir ?? DEFAULT_CONFIG.outputDir,
     chunkDurationSeconds: overrides?.chunkDurationSeconds ?? fileConfig.chunkDurationSeconds ?? DEFAULT_CONFIG.chunkDurationSeconds,
     language: overrides?.language ?? fileConfig.language ?? DEFAULT_CONFIG.language,
