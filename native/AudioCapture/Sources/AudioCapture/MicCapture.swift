@@ -34,10 +34,11 @@ class MicCapture {
         let vpFormat = inputNode.outputFormat(forBus: 0)
         let hwSampleRate = vpFormat.sampleRate
         let hwChannels = vpFormat.channelCount
+        let hwIsInterleaved = vpFormat.isInterleaved
         let ratio = Double(hwSampleRate) / Double(targetSampleRate)
 
         if !formatLogged {
-            fputs("MicCapture VP format: rate=\(hwSampleRate) channels=\(hwChannels) interleaved=\(vpFormat.isInterleaved)\n", stderr)
+            fputs("MicCapture VP format: rate=\(hwSampleRate) channels=\(hwChannels) interleaved=\(hwIsInterleaved)\n", stderr)
             formatLogged = true
         }
 
@@ -46,13 +47,13 @@ class MicCapture {
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: vpFormat) { [weak self] buffer, _ in
             guard let self, self.isRunning else { return }
-            self.processBuffer(buffer, hwSampleRate: hwSampleRate, hwChannels: hwChannels, ratio: ratio)
+            self.processBuffer(buffer, hwSampleRate: hwSampleRate, hwChannels: hwChannels, isInterleaved: hwIsInterleaved, ratio: ratio)
         }
 
         try engine.start()
     }
 
-    private func processBuffer(_ buffer: AVAudioPCMBuffer, hwSampleRate: Float64, hwChannels: AVAudioChannelCount, ratio: Double) {
+    private func processBuffer(_ buffer: AVAudioPCMBuffer, hwSampleRate: Float64, hwChannels: AVAudioChannelCount, isInterleaved: Bool, ratio: Double) {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
 
@@ -60,7 +61,7 @@ class MicCapture {
 
         if let floatData = buffer.floatChannelData {
             let ch: Int
-            if voiceProcessing {
+            if isInterleaved || hwChannels <= 1 {
                 ch = 0
             } else {
                 ch = findLoudestChannel(floatData, channelCount: Int(hwChannels), frameLength: frameLength)

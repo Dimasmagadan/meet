@@ -89,7 +89,7 @@ export const DEFAULT_CONFIG: Config = {
   captureBin: "",
   prompt: "Транскрипция деловой встречи на русском языке.",
   opencodeBin: "opencode",
-  micVoiceProcessing: true,
+  micVoiceProcessing: false,
   silenceGate: true,
   micRmsThresholdDb: -60,
   sysRmsThresholdDb: -65,

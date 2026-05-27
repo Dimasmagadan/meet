@@ -224,15 +224,37 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     });
   };
 
-  const finalizeSession = async (): Promise<{ finalSession: Session; entries: TranscriptEntry[] }> => {
+  const stopRecording = async () => {
     stopStatus();
     process.stdout.write("\n");
-    console.log(chalk.yellow("Finalizing..."));
+    console.log(chalk.yellow("Stopping recording..."));
 
     session.status = "finalizing";
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
     await stopCapture();
+  };
+
+  const promptTags = async (sess: Session) => {
+    if (!process.stdin.isTTY) return;
+    try {
+      const tags = await runTagPicker(sess);
+      if (tags.length > 0) {
+        sess.tags = tags;
+        await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(sess, null, 2));
+        await writeMetaFile(sess, tags);
+        console.log(chalk.green(`Tags: ${tags.join(", ")}`));
+      } else {
+        console.log(chalk.gray("(no tags added)"));
+      }
+    } catch {
+      process.stdout.write(chalk.gray("(tag picker skipped)\n"));
+    }
+  };
+
+  const doFinalTranscription = async (): Promise<{ finalSession: Session; entries: TranscriptEntry[] }> => {
+    console.log(chalk.yellow("Finalizing..."));
+
     await pipeline.stop();
 
     const finalSession = await readFile(join(sessionDir, "session.json"), "utf-8").then(
@@ -280,36 +302,19 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     return { finalSession, entries };
   };
 
-  const promptTags = async (finalSession: Session) => {
-    if (!process.stdin.isTTY) return;
-    try {
-      const tags = await runTagPicker(finalSession);
-      if (tags.length > 0) {
-        finalSession.tags = tags;
-        await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(finalSession, null, 2));
-        await writeMetaFile(finalSession, tags);
-        console.log(chalk.green(`Tags: ${tags.join(", ")}`));
-      } else {
-        console.log(chalk.gray("(no tags added)"));
-      }
-    } catch {
-      process.stdout.write(chalk.gray("(tag picker skipped)\n"));
-    }
-  };
-
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
 
     try {
-      const { finalSession, entries } = await finalizeSession();
+      await stopRecording();
+      await promptTags(session);
+      const { finalSession, entries } = await doFinalTranscription();
       const reasonStr = autoStopReason
         ? ` (${autoStopReason === "max_duration" ? "max duration" : "no text timeout"})`
         : "";
       console.log(chalk.green(`Done: ${outputFile}${reasonStr}`));
       console.log(chalk.gray(`Transcribed ${entries.length} segments`));
-
-      await promptTags(finalSession);
       process.exit(0);
     } catch (err) {
       stopStatus();
@@ -396,39 +401,36 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     if (opencodeRunning || shuttingDown) return;
     shuttingDown = true;
 
-    let entries: TranscriptEntry[] = [];
-    let finalSession: Session = session;
     try {
-      const result = await finalizeSession();
-      entries = result.entries;
-      finalSession = result.finalSession;
+      await stopRecording();
+      await promptTags(session);
+      const result = await doFinalTranscription();
+      const entries = result.entries;
+
+      console.log(chalk.green(`Transcript: ${outputFile}`));
+      console.log(chalk.gray(`Transcribed ${entries.length} segments`));
+
+      if (entries.length === 0) {
+        console.log(chalk.yellow("No transcript entries — skipping index generation"));
+      } else {
+        console.log(chalk.cyan("Creating index.md (up to 180s)..."));
+
+        try {
+          const indexMarkdown = await runOpencodeIndex(config, outputFile, title);
+          const meetingDir = getOutputDir(config, title, startedAt);
+          const indexPath = join(meetingDir, "index.md");
+          await writeFile(indexPath, indexMarkdown, "utf-8");
+          console.log(chalk.green(`Index: ${indexPath}`));
+        } catch (err) {
+          console.log(chalk.red(`Index generation failed: ${formatError(err)}`));
+        }
+      }
+
+      process.exit(0);
     } catch (err) {
       console.log(chalk.red(`Finalization failed: ${formatError(err)}`));
       process.exit(1);
     }
-
-    console.log(chalk.green(`Transcript: ${outputFile}`));
-    console.log(chalk.gray(`Transcribed ${entries.length} segments`));
-
-    if (entries.length === 0) {
-      console.log(chalk.yellow("No transcript entries — skipping index generation"));
-    } else {
-      console.log(chalk.cyan("Creating index.md (up to 180s)..."));
-
-      try {
-        const indexMarkdown = await runOpencodeIndex(config, outputFile, title);
-        const meetingDir = getOutputDir(config, title, startedAt);
-        const indexPath = join(meetingDir, "index.md");
-        await writeFile(indexPath, indexMarkdown, "utf-8");
-        console.log(chalk.green(`Index: ${indexPath}`));
-      } catch (err) {
-        console.log(chalk.red(`Index generation failed: ${formatError(err)}`));
-      }
-    }
-
-    await promptTags(finalSession);
-
-    process.exit(0);
   };
 
   let opencodeRunning = false;
