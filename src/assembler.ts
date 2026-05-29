@@ -65,7 +65,11 @@ export function timestampToChunkIndex(timestamp: string, chunkDurationSeconds: n
   const start = new Date(startedAt);
   const startSec = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds();
   const [h, m, s] = timestamp.split(":").map(Number);
-  const entrySec = h * 3600 + m * 60 + s;
+  let entrySec = h * 3600 + m * 60 + s;
+  const diff = entrySec - startSec;
+  if (diff < 0 && diff > -24 * 3600) {
+    entrySec += 24 * 3600;
+  }
   const offsetSec = entrySec - startSec;
   if (offsetSec < 0) return 1;
   return Math.round(offsetSec / chunkDurationSeconds) + 1;

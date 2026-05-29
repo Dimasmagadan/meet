@@ -197,13 +197,21 @@ describe("timestampToChunkIndex", () => {
     assert.strictEqual(timestampToChunkIndex("14:31:00", 15, startedAt), 5);
   });
 
-  it("returns 1 for timestamp before session start", () => {
-    assert.strictEqual(timestampToChunkIndex("14:29:59", 15, startedAt), 1);
+  it("returns 1 for timestamp equal to session start", () => {
+    assert.strictEqual(timestampToChunkIndex("14:30:00", 15, startedAt), 1);
   });
 
   it("works with 30s chunks", () => {
     assert.strictEqual(timestampToChunkIndex("14:30:30", 30, startedAt), 2);
     assert.strictEqual(timestampToChunkIndex("14:31:00", 30, startedAt), 3);
+  });
+
+  it("maps post-midnight timestamp to correct chunk", () => {
+    const midnight = new Date(2026, 4, 13, 23, 59, 45).toISOString();
+    assert.strictEqual(timestampToChunkIndex("23:59:45", 15, midnight), 1);
+    assert.strictEqual(timestampToChunkIndex("00:00:00", 15, midnight), 2);
+    assert.strictEqual(timestampToChunkIndex("00:00:15", 15, midnight), 3);
+    assert.strictEqual(timestampToChunkIndex("00:01:00", 15, midnight), 6);
   });
 });
 
@@ -279,5 +287,50 @@ describe("fallback chain: parse -> map -> entriesFromSession", () => {
     assert.strictEqual(entries.length, 3);
     assert.strictEqual(entries.find((e) => e.chunkIndex === 1 && e.source === "mic")?.text, "Привет");
     assert.strictEqual(entries.find((e) => e.chunkIndex === 2 && e.source === "mic")?.text, "Новый текст");
+  });
+});
+
+describe("fallback chain crossing midnight", () => {
+  const startedAt = new Date(2026, 4, 13, 23, 59, 45).toISOString();
+  const session: Session = {
+    id: "test",
+    title: "Test",
+    mode: "full",
+    startedAt,
+    chunkDurationSeconds: 15,
+    sessionDir: "/tmp/meet-test",
+    outputFile: "/tmp/out.md",
+    capturePid: null,
+    status: "done",
+    processedChunks: [
+      { source: "mic", index: 1, wav: "mic-001.wav", status: "done" },
+      { source: "mic", index: 2, wav: "mic-002.wav", status: "done" },
+      { source: "sys", index: 3, wav: "sys-003.wav", status: "done" },
+    ],
+    lastError: null,
+    autoStopReason: null,
+    latestProcessedOffsetSeconds: 0,
+    lastMeaningfulTextAtOffsetSeconds: null,
+    hasMeaningfulText: false,
+    tags: [],
+  };
+
+  it("restores post-midnight entries from parsed markdown", () => {
+    const md = "**[23:59:45] Me:** До полуночи\n**[00:00:00] Me:** После полуночи\n**[00:00:15] Others:** Ответ после полуночи\n";
+    const parsed = parseTranscriptEntries(md, { chunkDurationSeconds: session.chunkDurationSeconds, startedAt });
+    const map = transcriptEntriesToMap(parsed);
+
+    assert.strictEqual(map.get("mic-001"), "До полуночи");
+    assert.strictEqual(map.get("mic-002"), "После полуночи");
+    assert.strictEqual(map.get("sys-003"), "Ответ после полуночи");
+
+    const entries = entriesFromSession(session, map);
+    assert.strictEqual(entries.length, 3);
+    assert.strictEqual(entries[0].chunkIndex, 1);
+    assert.strictEqual(entries[0].text, "До полуночи");
+    assert.strictEqual(entries[1].chunkIndex, 2);
+    assert.strictEqual(entries[1].text, "После полуночи");
+    assert.strictEqual(entries[2].chunkIndex, 3);
+    assert.strictEqual(entries[2].text, "Ответ после полуночи");
   });
 });
