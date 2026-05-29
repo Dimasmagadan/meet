@@ -125,7 +125,7 @@ export async function finalizeSession(
     let fallbackEntries: TranscriptEntry[] = [];
     try {
       const existing = await readFile(session.outputFile, "utf-8").catch(() => "");
-      if (existing) fallbackEntries = parseTranscriptEntries(existing);
+      if (existing) fallbackEntries = parseTranscriptEntries(existing, { chunkDurationSeconds: session.chunkDurationSeconds, startedAt: session.startedAt });
     } catch {}
 
     let entries: TranscriptEntry[];

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chunkToTimestamp, entriesFromSession, makeHeader, assembleMarkdown, parseTranscriptEntries, transcriptEntriesToMap } from "./assembler.js";
+import { chunkToTimestamp, entriesFromSession, makeHeader, assembleMarkdown, parseTranscriptEntries, transcriptEntriesToMap, timestampToChunkIndex } from "./assembler.js";
 import type { Session, TranscriptEntry } from "./types.js";
 
 describe("chunkToTimestamp", () => {
@@ -179,5 +179,105 @@ describe("transcriptEntriesToMap", () => {
     ];
     const map = transcriptEntriesToMap(entries);
     assert.strictEqual(map.size, 0);
+  });
+});
+
+describe("timestampToChunkIndex", () => {
+  const startedAt = new Date(2026, 4, 13, 14, 30, 0).toISOString();
+
+  it("returns 1 for timestamp at session start", () => {
+    assert.strictEqual(timestampToChunkIndex("14:30:00", 15, startedAt), 1);
+  });
+
+  it("returns 2 for one chunk duration after start", () => {
+    assert.strictEqual(timestampToChunkIndex("14:30:15", 15, startedAt), 2);
+  });
+
+  it("returns 5 for four chunk durations after start", () => {
+    assert.strictEqual(timestampToChunkIndex("14:31:00", 15, startedAt), 5);
+  });
+
+  it("returns 1 for timestamp before session start", () => {
+    assert.strictEqual(timestampToChunkIndex("14:29:59", 15, startedAt), 1);
+  });
+
+  it("works with 30s chunks", () => {
+    assert.strictEqual(timestampToChunkIndex("14:30:30", 30, startedAt), 2);
+    assert.strictEqual(timestampToChunkIndex("14:31:00", 30, startedAt), 3);
+  });
+});
+
+describe("parseTranscriptEntries with session context", () => {
+  const session = { chunkDurationSeconds: 15, startedAt: new Date(2026, 4, 13, 14, 30, 0).toISOString() };
+
+  it("derives chunkIndex from timestamp with session", () => {
+    const md = "**[14:30:00] Me:** Первый\n**[14:30:15] Others:** Второй\n**[14:30:30] Me:** Третий\n";
+    const entries = parseTranscriptEntries(md, session);
+    assert.strictEqual(entries.length, 3);
+    assert.strictEqual(entries[0].chunkIndex, 1);
+    assert.strictEqual(entries[1].chunkIndex, 2);
+    assert.strictEqual(entries[2].chunkIndex, 3);
+  });
+
+  it("uses chunkIndex 0 without session", () => {
+    const entries = parseTranscriptEntries("**[14:30:00] Me:** Текст\n");
+    assert.strictEqual(entries[0].chunkIndex, 0);
+  });
+});
+
+describe("fallback chain: parse -> map -> entriesFromSession", () => {
+  const startedAt = new Date(2026, 4, 13, 14, 30, 0).toISOString();
+  const session: Session = {
+    id: "test",
+    title: "Test",
+    mode: "full",
+    startedAt,
+    chunkDurationSeconds: 15,
+    sessionDir: "/tmp/meet-test",
+    outputFile: "/tmp/out.md",
+    capturePid: null,
+    status: "done",
+    processedChunks: [
+      { source: "mic", index: 1, wav: "mic-001.wav", status: "done" },
+      { source: "mic", index: 2, wav: "mic-002.wav", status: "done" },
+      { source: "sys", index: 2, wav: "sys-002.wav", status: "done" },
+    ],
+    lastError: null,
+    autoStopReason: null,
+    latestProcessedOffsetSeconds: 0,
+    lastMeaningfulTextAtOffsetSeconds: null,
+    hasMeaningfulText: false,
+    tags: [],
+  };
+
+  it("restores transcript entries from parsed markdown", () => {
+    const md = "**[14:30:00] Me:** Привет\n**[14:30:15] Me:** Как дела\n**[14:30:15] Others:** Хорошо\n";
+    const parsed = parseTranscriptEntries(md, { chunkDurationSeconds: session.chunkDurationSeconds, startedAt });
+    const map = transcriptEntriesToMap(parsed);
+
+    assert.strictEqual(map.get("mic-001"), "Привет");
+    assert.strictEqual(map.get("mic-002"), "Как дела");
+    assert.strictEqual(map.get("sys-002"), "Хорошо");
+
+    const entries = entriesFromSession(session, map);
+    assert.strictEqual(entries.length, 3);
+    assert.strictEqual(entries[0].chunkIndex, 1);
+    assert.strictEqual(entries[0].source, "mic");
+    assert.strictEqual(entries[0].text, "Привет");
+  });
+
+  it("merges fallback with new live results", () => {
+    const md = "**[14:30:00] Me:** Привет\n";
+    const parsed = parseTranscriptEntries(md, { chunkDurationSeconds: session.chunkDurationSeconds, startedAt });
+    const fallbackMap = transcriptEntriesToMap(parsed);
+    const liveResults = new Map<string, string>([
+      ["mic-002", "Новый текст"],
+      ["sys-002", "Новый ответ"],
+    ]);
+    const merged = new Map([...fallbackMap, ...liveResults]);
+    const entries = entriesFromSession(session, merged);
+    assert.strictEqual(entries.length, 3);
+    assert.strictEqual(entries.find((e) => e.chunkIndex === 1 && e.source === "mic")?.text, "Привет");
+    assert.strictEqual(entries.find((e) => e.chunkIndex === 2 && e.source === "mic")?.text, "Новый текст");
   });
 });

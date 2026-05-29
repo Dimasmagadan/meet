@@ -61,24 +61,28 @@ export function assembleMarkdown(title: string, startedAt: string, entries: Tran
   return lines.join("");
 }
 
-export function parseTranscriptEntries(content: string): TranscriptEntry[] {
+export function timestampToChunkIndex(timestamp: string, chunkDurationSeconds: number, startedAt: string): number {
+  const start = new Date(startedAt);
+  const startSec = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds();
+  const [h, m, s] = timestamp.split(":").map(Number);
+  const entrySec = h * 3600 + m * 60 + s;
+  const offsetSec = entrySec - startSec;
+  if (offsetSec < 0) return 1;
+  return Math.round(offsetSec / chunkDurationSeconds) + 1;
+}
+
+export function parseTranscriptEntries(content: string, session?: { chunkDurationSeconds: number; startedAt: string }): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
   const lineRegex = /^\*\*\[(\d{2}:\d{2}:\d{2})\] (Me|Others):\*\*\s*(.+)$/;
   for (const line of content.split("\n")) {
     const m = lineRegex.exec(line.trim());
     if (!m) continue;
     const [, timestamp, label, text] = m;
-    entries.push({ source: label === "Me" ? "mic" : "sys", chunkIndex: 0, timestamp, text: text.trim() });
+    const source = label === "Me" ? "mic" as const : "sys" as const;
+    const chunkIndex = session ? timestampToChunkIndex(timestamp, session.chunkDurationSeconds, session.startedAt) : 0;
+    entries.push({ source, chunkIndex, timestamp, text: text.trim() });
   }
   return entries;
-}
-
-export function mergeEntriesWithFallback(
-  newEntries: TranscriptEntry[],
-  fallbackEntries: TranscriptEntry[],
-): TranscriptEntry[] {
-  if (newEntries.length > 0) return newEntries;
-  return fallbackEntries;
 }
 
 export function transcriptEntriesToMap(entries: TranscriptEntry[]): Map<string, string> {
