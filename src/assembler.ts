@@ -65,14 +65,15 @@ export function timestampToChunkIndex(timestamp: string, chunkDurationSeconds: n
   const start = new Date(startedAt);
   const startSec = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds();
   const [h, m, s] = timestamp.split(":").map(Number);
-  let entrySec = h * 3600 + m * 60 + s;
+  const entrySec = h * 3600 + m * 60 + s;
   const diff = entrySec - startSec;
-  if (diff < 0 && diff > -24 * 3600) {
-    entrySec += 24 * 3600;
+  if (diff < 0) {
+    const crossesMidnight = startSec >= 20 * 3600 && entrySec <= 6 * 3600;
+    if (!crossesMidnight) return 1;
+    const offsetSec = entrySec + 24 * 3600 - startSec;
+    return Math.round(offsetSec / chunkDurationSeconds) + 1;
   }
-  const offsetSec = entrySec - startSec;
-  if (offsetSec < 0) return 1;
-  return Math.round(offsetSec / chunkDurationSeconds) + 1;
+  return Math.round(diff / chunkDurationSeconds) + 1;
 }
 
 export function parseTranscriptEntries(content: string, session?: { chunkDurationSeconds: number; startedAt: string }): TranscriptEntry[] {

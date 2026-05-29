@@ -61,10 +61,21 @@ function createDebouncedProgressWriter(session: Session) {
   return { update, forceFlush };
 }
 
-async function waitForInactiveRecording(onProgress?: (msg: string) => void): Promise<void> {
+async function waitForInactiveRecording(
+  session: Session,
+  phase: FinalizeProgress["phase"],
+  progressWriter: ReturnType<typeof createDebouncedProgressWriter>,
+  onProgress?: (msg: string) => void,
+): Promise<void> {
   while (isActiveRecording()) {
+    session.status = "paused";
+    await progressWriter.update(makeProgress("paused", session.finalize?.done ?? 0, session.finalize?.total ?? 0, "active recording, waiting"));
     onProgress?.("Paused: active recording, waiting...");
     await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  if (session.status === "paused") {
+    session.status = "finalizing";
+    await progressWriter.update(makeProgress(phase, session.finalize?.done ?? 0, session.finalize?.total ?? 0));
   }
 }
 
@@ -105,10 +116,14 @@ export async function finalizeSession(
       liveResults.set(key, text);
     });
 
+    const liveBeforeChunk = options.pauseForActiveRecording
+      ? async () => { await waitForInactiveRecording(session, "live", progressWriter, log); }
+      : undefined;
+
     await pipeline.stop(async (progress) => {
       await progressWriter.update(makeProgress("live", progress.done, progress.total));
       log(`Live pass: ${progress.done}/${progress.total}`);
-    });
+    }, liveBeforeChunk);
 
     const refreshedSession: Session = JSON.parse(await readFile(sessionPath, "utf-8"));
     session.processedChunks = refreshedSession.processedChunks;
@@ -142,7 +157,7 @@ export async function finalizeSession(
           log(`Final high-quality pass (${config.finalModelPath.replace(/^.*\//, "")})...`);
 
           const beforeChunk = options.pauseForActiveRecording
-            ? async () => { await waitForInactiveRecording(log); }
+            ? async () => { await waitForInactiveRecording(session, "final", progressWriter, log); }
             : undefined;
 
           const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);

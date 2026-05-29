@@ -61,6 +61,16 @@ function finalizerLockPath(sessionDir: string): string {
   return join(sessionDir, "finalizer.lock");
 }
 
+function cleanStaleLock(lockPath: string): boolean {
+  try {
+    const raw = readFileSync(lockPath, "utf-8");
+    const existing = JSON.parse(raw) as FinalizerLock;
+    if (existing.pid && isPidAlive(existing.pid)) return false;
+  } catch {}
+  try { unlinkSync(lockPath); } catch {}
+  return true;
+}
+
 export function acquireFinalizerLock(sessionDir: string): boolean {
   const lockPath = finalizerLockPath(sessionDir);
   const lockData = JSON.stringify({
@@ -75,11 +85,7 @@ export function acquireFinalizerLock(sessionDir: string): boolean {
     closeSync(fd);
     return true;
   } catch {
-    try {
-      const existing = JSON.parse(readFileSync(lockPath, "utf-8")) as FinalizerLock;
-      if (existing.pid && isPidAlive(existing.pid)) return false;
-      try { unlinkSync(lockPath); } catch {}
-    } catch {}
+    if (!cleanStaleLock(lockPath)) return false;
   }
 
   try {
@@ -102,9 +108,7 @@ export function readFinalizerLock(sessionDir: string): FinalizerLock | null {
   try {
     const data = JSON.parse(readFileSync(lockPath, "utf-8")) as FinalizerLock;
     if (data.pid && isPidAlive(data.pid)) return data;
-    try { unlinkSync(lockPath); } catch {}
-    return null;
-  } catch {
-    return null;
-  }
+  } catch {}
+  try { unlinkSync(lockPath); } catch {}
+  return null;
 }

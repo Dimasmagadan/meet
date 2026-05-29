@@ -201,6 +201,15 @@ describe("timestampToChunkIndex", () => {
     assert.strictEqual(timestampToChunkIndex("14:30:00", 15, startedAt), 1);
   });
 
+  it("clamps small pre-start skew to chunk 1", () => {
+    assert.strictEqual(timestampToChunkIndex("14:29:59", 15, startedAt), 1);
+    assert.strictEqual(timestampToChunkIndex("14:29:45", 15, startedAt), 1);
+  });
+
+  it("does not treat afternoon pre-start as midnight rollover", () => {
+    assert.strictEqual(timestampToChunkIndex("13:59:45", 15, startedAt), 1);
+  });
+
   it("works with 30s chunks", () => {
     assert.strictEqual(timestampToChunkIndex("14:30:30", 30, startedAt), 2);
     assert.strictEqual(timestampToChunkIndex("14:31:00", 30, startedAt), 3);

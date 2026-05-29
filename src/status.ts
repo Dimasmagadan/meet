@@ -19,13 +19,20 @@ export function showStatus(): void {
   }
 
   const sessions = findSessions();
-  const active = sessions.filter((s) => s.status !== "done" && s.status !== "recording" && s.status !== "error");
-  const errors = sessions.filter((s) => s.status === "error");
 
-  if (active.length > 0) {
+  const activeFinalizers = sessions.filter(
+    (s) => (s.status === "finalizing" || s.status === "paused") && readFinalizerLock(s.sessionDir) !== null
+  );
+  const queued = sessions.filter(
+    (s) => s.status === "queued" || ((s.status === "finalizing" || s.status === "paused") && readFinalizerLock(s.sessionDir) === null)
+  );
+  const errors = sessions.filter((s) => s.status === "error");
+  const stopped = sessions.filter((s) => s.status === "stopped");
+
+  if (activeFinalizers.length > 0) {
     found = true;
     console.log(chalk.cyan("Finalizing:"));
-    for (const s of active) {
+    for (const s of activeFinalizers) {
       const lock = readFinalizerLock(s.sessionDir);
       const lockStr = lock ? chalk.green(` (pid ${lock.pid})`) : "";
       const progress = s.finalize;
@@ -38,6 +45,27 @@ export function showStatus(): void {
         if (progress.message) progressStr += `  ${progress.message}`;
       }
       console.log(`  ${s.sessionDir}  ${s.title}${lockStr}${progressStr}`);
+    }
+    console.log();
+  }
+
+  if (queued.length > 0) {
+    found = true;
+    console.log(chalk.yellow("Queued / stalled:"));
+    for (const s of queued) {
+      const statusStr = s.status === "queued" ? "queued" : `${s.status} (no finalizer)`;
+      console.log(`  ${s.sessionDir}  ${s.title}  ${chalk.gray(statusStr)}`);
+      console.log(chalk.gray(`    Recover: meet finalize ${s.sessionDir}`));
+    }
+    console.log();
+  }
+
+  if (stopped.length > 0) {
+    found = true;
+    console.log(chalk.yellow("Stopped:"));
+    for (const s of stopped) {
+      console.log(`  ${s.sessionDir}  ${s.title}`);
+      console.log(chalk.gray(`    Recover: meet finalize ${s.sessionDir}`));
     }
     console.log();
   }

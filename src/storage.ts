@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 import { mkdir, writeFile, readFile, rename, unlink } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Chunk, Session, Config, TranscriptEntry } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
+import { readFinalizerLock } from "./locks.js";
 
 export function expandPath(p: string): string {
   return p.startsWith("~/") || p === "~" ? p.replace(/^~/, homedir()) : p;
@@ -14,7 +15,7 @@ export function loadConfig(overrides?: Partial<Config>): Config {
   const configPath = expandPath("~/.meet/config.json");
   let fileConfig: Partial<Config> = {};
   if (existsSync(configPath)) {
-    const raw = require("node:fs").readFileSync(configPath, "utf-8");
+    const raw = readFileSync(configPath, "utf-8");
     fileConfig = JSON.parse(raw);
   }
   return {
@@ -114,15 +115,20 @@ export async function ensureDir(path: string): Promise<void> {
 export function findStaleSessions(): string[] {
   const tmpDir = "/tmp";
   try {
-    const entries = require("node:fs").readdirSync(tmpDir);
+    const entries = readdirSync(tmpDir);
     return entries
       .filter((e: string) => e.startsWith("meet-"))
       .map((e: string) => join(tmpDir, e))
       .filter((e: string) => existsSync(join(e, "session.json")))
       .filter((e: string) => {
         try {
-          const s = JSON.parse(require("node:fs").readFileSync(join(e, "session.json"), "utf-8")) as Session;
-          return s.status === "error" || s.status === "stopped";
+          const s = JSON.parse(readFileSync(join(e, "session.json"), "utf-8")) as Session;
+          if (s.status === "done" || s.status === "recording") return false;
+          if (s.status === "error" || s.status === "stopped" || s.status === "queued") return true;
+          if (s.status === "finalizing" || s.status === "paused") {
+            return readFinalizerLock(e) === null;
+          }
+          return true;
         } catch {
           return true;
         }

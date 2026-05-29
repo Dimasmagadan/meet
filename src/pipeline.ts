@@ -10,6 +10,7 @@ type TranscribeCallback = (source: "mic" | "sys", index: number, text: string) =
 type FailureCallback = (source: "mic" | "sys", index: number, error: string) => void;
 export type DrainProgress = { done: number; total: number };
 export type DrainProgressCallback = (progress: DrainProgress) => void;
+export type BeforeChunkCallback = () => Promise<void>;
 
 export class Pipeline {
   private session: Session;
@@ -20,7 +21,9 @@ export class Pipeline {
   private onTranscribed: TranscribeCallback | null = null;
   private onFailure: FailureCallback | null = null;
   private stopped = false;
+  private drainMode = false;
   private drainProgressCb: DrainProgressCallback | null = null;
+  private drainBeforeChunk: BeforeChunkCallback | null = null;
   private completedDuringDrain = 0;
   private drainTotal = 0;
 
@@ -61,14 +64,17 @@ export class Pipeline {
     });
   }
 
-  async stop(onProgress?: DrainProgressCallback) {
+  async stop(onProgress?: DrainProgressCallback, beforeChunk?: BeforeChunkCallback) {
     this.stopped = true;
+    this.drainMode = true;
+    this.drainProgressCb = onProgress ?? null;
+    this.drainBeforeChunk = beforeChunk ?? null;
     if (this.watcher) {
       await this.watcher.close();
       this.watcher = null;
     }
     await this.rescan();
-    await this.drainQueue(onProgress);
+    await this.drainQueue();
   }
 
   private async rescan() {
@@ -98,12 +104,17 @@ export class Pipeline {
       if (a.index !== b.index) return a.index - b.index;
       return a.source === "mic" ? -1 : 1;
     });
-    this.processNext();
+    if (!this.drainMode) {
+      this.processNext();
+    }
   }
 
-  private async processNext(trackProgress?: DrainProgressCallback | null) {
+  private async processNext() {
     if (this.processing || this.queue.length === 0) return;
     this.processing = true;
+
+    const trackProgress = this.drainMode ? this.drainProgressCb : null;
+    const beforeChunk = this.drainMode ? this.drainBeforeChunk : null;
 
     const item = this.queue.shift()!;
     const wavPath = join(this.session.sessionDir, item.wav);
@@ -114,11 +125,13 @@ export class Pipeline {
         this.drainTotal--;
         trackProgress({ done: this.completedDuringDrain, total: this.drainTotal });
       }
-      this.processNext(trackProgress);
+      this.processNext();
       return;
     }
 
     try {
+      await beforeChunk?.();
+
       const config = loadConfig();
       const liveModel = config.liveModelPath || config.modelPath;
       const result = await transcribeChunk(wavPath, config, item.index, item.source, {
@@ -162,18 +175,17 @@ export class Pipeline {
 
     this.processing = false;
     if (this.queue.length > 0) {
-      this.processNext(trackProgress);
+      this.processNext();
     }
   }
 
-  async drainQueue(onProgress?: DrainProgressCallback): Promise<void> {
-    const cb = onProgress ?? this.drainProgressCb;
+  async drainQueue(): Promise<void> {
     this.completedDuringDrain = this.session.processedChunks.filter((c) => c.status === "done").length;
     this.drainTotal = this.completedDuringDrain + this.queue.length;
-    cb?.({ done: this.completedDuringDrain, total: this.drainTotal });
+    this.drainProgressCb?.({ done: this.completedDuringDrain, total: this.drainTotal });
     while (this.processing || this.queue.length > 0) {
       if (!this.processing && this.queue.length > 0) {
-        this.processNext(cb);
+        this.processNext();
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }

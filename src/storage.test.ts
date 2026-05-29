@@ -1,7 +1,9 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { generateSlug, formatStartTime, getOutputDir, getOutputPath, expandPath } from "./storage.js";
+import { generateSlug, formatStartTime, getOutputDir, getOutputPath, expandPath, findStaleSessions } from "./storage.js";
 import { join } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import type { Session } from "./types.js";
 
 describe("generateSlug", () => {
   it("lowercases English title", () => {
@@ -89,5 +91,81 @@ describe("getOutputPath", () => {
     const result = getOutputPath(config, "Meeting", d);
     assert.ok(result.endsWith("/transcript.md"));
     assert.ok(result.includes("2026-05-13_14-30-meeting"));
+  });
+});
+
+describe("findStaleSessions", () => {
+  const createdDirs: string[] = [];
+
+  const makeSession = (status: Session["status"], suffix: string): string => {
+    const sessionDir = join("/tmp", `meet-test-stale-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(sessionDir, { recursive: true });
+    const session: Session = {
+      id: suffix,
+      title: "Test",
+      mode: "full",
+      startedAt: new Date(2026, 4, 13, 14, 30, 0).toISOString(),
+      chunkDurationSeconds: 15,
+      sessionDir,
+      outputFile: join(sessionDir, "transcript.md"),
+      capturePid: null,
+      status,
+      processedChunks: [],
+      lastError: null,
+      autoStopReason: null,
+      latestProcessedOffsetSeconds: 0,
+      lastMeaningfulTextAtOffsetSeconds: null,
+      hasMeaningfulText: false,
+      tags: [],
+    };
+    writeFileSync(join(sessionDir, "session.json"), JSON.stringify(session, null, 2), "utf-8");
+    createdDirs.push(sessionDir);
+    return sessionDir;
+  };
+
+  beforeEach(() => {
+    createdDirs.length = 0;
+  });
+
+  afterEach(() => {
+    for (const dir of createdDirs) {
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
+    createdDirs.length = 0;
+  });
+
+  it("includes queued sessions", () => {
+    const sessionDir = makeSession("queued", "queued");
+    assert.ok(findStaleSessions().includes(sessionDir));
+  });
+
+  it("includes finalizing sessions without a live lock", () => {
+    const sessionDir = makeSession("finalizing", "finalizing");
+    assert.ok(findStaleSessions().includes(sessionDir));
+  });
+
+  it("includes paused sessions without a live lock", () => {
+    const sessionDir = makeSession("paused", "paused");
+    assert.ok(findStaleSessions().includes(sessionDir));
+  });
+
+  it("excludes recording sessions", () => {
+    const sessionDir = makeSession("recording", "recording");
+    assert.ok(!findStaleSessions().includes(sessionDir));
+  });
+
+  it("excludes done sessions", () => {
+    const sessionDir = makeSession("done", "done");
+    assert.ok(!findStaleSessions().includes(sessionDir));
+  });
+
+  it("excludes finalizing sessions with a live lock", () => {
+    const sessionDir = makeSession("finalizing", "locked");
+    writeFileSync(
+      join(sessionDir, "finalizer.lock"),
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }),
+      "utf-8"
+    );
+    assert.ok(!findStaleSessions().includes(sessionDir));
   });
 });
