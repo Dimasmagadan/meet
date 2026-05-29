@@ -118,7 +118,15 @@ export function findStaleSessions(): string[] {
     return entries
       .filter((e: string) => e.startsWith("meet-"))
       .map((e: string) => join(tmpDir, e))
-      .filter((e: string) => existsSync(join(e, "session.json")));
+      .filter((e: string) => existsSync(join(e, "session.json")))
+      .filter((e: string) => {
+        try {
+          const s = JSON.parse(require("node:fs").readFileSync(join(e, "session.json"), "utf-8")) as Session;
+          return s.status === "error" || s.status === "stopped";
+        } catch {
+          return true;
+        }
+      });
   } catch {
     return [];
   }

@@ -2,11 +2,13 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { loadConfig, getOutputPath, getOutputDir, ensureDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
-import { assembleMarkdown, entriesFromSession, appendEntry, makeHeader, rewriteMarkdown, chunkToTimestamp } from "./assembler.js";
+import { appendEntry, makeHeader, chunkToTimestamp } from "./assembler.js";
 import { runOpencodeIndex, runOpencodeQuestion } from "./opencode.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
-import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
+import { finalizeSession } from "./finalize.js";
+import { showStatus } from "./status.js";
+import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
 import { spawn, ChildProcess, execSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -49,6 +51,26 @@ export function createProgram(): Command {
     .description("List past meetings")
     .action(async () => {
       await listMeetings();
+    });
+
+  program
+    .command("finalize")
+    .description("Finalize a stopped recording session")
+    .argument("<sessionDir>", "Session directory path")
+    .option("--background", "Run finalization in background")
+    .action(async (sessionDir: string, opts: { background?: boolean }) => {
+      if (opts.background) {
+        await spawnBackgroundFinalizer(sessionDir);
+      } else {
+        await runForegroundFinalize(sessionDir);
+      }
+    });
+
+  program
+    .command("status")
+    .description("Show active recording and finalization jobs")
+    .action(() => {
+      showStatus();
     });
 
   return program;
@@ -156,6 +178,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
     session.capturePid = captureProcess.pid ?? null;
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
+    writeActiveRecordingLock(session);
 
     captureProcess.stderr?.on("data", (data: Buffer) => {
       const text = data.toString();
@@ -229,10 +252,11 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     process.stdout.write("\n");
     console.log(chalk.yellow("Stopping recording..."));
 
-    session.status = "finalizing";
+    session.status = "stopped";
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
     await stopCapture();
+    clearActiveRecordingLock();
   };
 
   const promptTags = async (sess: Session) => {
@@ -240,9 +264,13 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     try {
       const tags = await runTagPicker(sess);
       if (tags.length > 0) {
+        const latestSession = await readFile(join(sessionDir, "session.json"), "utf-8").then(
+          (d) => JSON.parse(d) as Session
+        ).catch(() => sess);
+        latestSession.tags = tags;
         sess.tags = tags;
-        await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(sess, null, 2));
-        await writeMetaFile(sess, tags);
+        await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(latestSession, null, 2));
+        await writeMetaFile(latestSession, tags);
         console.log(chalk.green(`Tags: ${tags.join(", ")}`));
       } else {
         console.log(chalk.gray("(no tags added)"));
@@ -252,56 +280,6 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     }
   };
 
-  const doFinalTranscription = async (): Promise<{ finalSession: Session; entries: TranscriptEntry[] }> => {
-    console.log(chalk.yellow("Finalizing..."));
-
-    await pipeline.stop();
-
-    const finalSession = await readFile(join(sessionDir, "session.json"), "utf-8").then(
-      (d) => JSON.parse(d) as Session
-    ).catch(() => session);
-
-    const liveResults = pipeline.getResults();
-
-    if (config.keepLiveTranscript) {
-      try {
-        await copyLiveTranscript(outputFile);
-      } catch {}
-    }
-
-    let entries: TranscriptEntry[];
-
-    if (config.finalRetranscribe) {
-      const finalModelPath = expandPath(config.finalModelPath || config.modelPath);
-      if (!existsSync(finalModelPath)) {
-        console.log(chalk.yellow(`Final model not found: ${finalModelPath}, using live transcript`));
-        entries = entriesFromSession(finalSession, liveResults);
-      } else {
-        try {
-          console.log(chalk.cyan(`Final high-quality pass (${config.finalModelPath.replace(/^.*\//, "")})...`));
-          entries = await runFinalPass(finalSession, config, (done, total) => {
-            process.stdout.write(`\r${chalk.gray(`Final pass: ${done}/${total} chunks`)}  `);
-          }, entriesFromSession(finalSession, liveResults));
-          process.stdout.write("\n");
-        } catch (err) {
-          console.log(chalk.yellow(`Final pass failed: ${formatError(err)}, using live transcript`));
-          entries = entriesFromSession(finalSession, liveResults);
-        }
-      }
-    } else {
-      entries = entriesFromSession(finalSession, liveResults);
-    }
-
-    if (entries.length > 0) {
-      await rewriteMarkdown(outputFile, title, finalSession.startedAt, entries);
-    }
-
-    finalSession.status = "done";
-    await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(finalSession, null, 2));
-
-    return { finalSession, entries };
-  };
-
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -309,17 +287,29 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     try {
       await stopRecording();
       await promptTags(session);
-      const { finalSession, entries } = await doFinalTranscription();
+
+      session.status = "queued";
+      await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
+
       const reasonStr = autoStopReason
         ? ` (${autoStopReason === "max_duration" ? "max duration" : "no text timeout"})`
         : "";
-      console.log(chalk.green(`Done: ${outputFile}${reasonStr}`));
-      console.log(chalk.gray(`Transcribed ${entries.length} segments`));
+      console.log(chalk.green(`Finalization queued in background: ${sessionDir}${reasonStr}`));
+      console.log(chalk.gray(`Progress: meet status`));
+      console.log(chalk.gray(`Transcript: ${outputFile}`));
+
+      const binPath = process.argv[1];
+      const child = spawn(process.execPath, [binPath, "finalize", sessionDir], {
+        detached: true,
+        stdio: "ignore",
+      });
+      child.unref();
+
       process.exit(0);
     } catch (err) {
       stopStatus();
       await stopCapture(2000).catch(() => {});
-      console.log(chalk.red(`Finalization failed: ${formatError(err)}`));
+      console.log(chalk.red(`Shutdown failed: ${formatError(err)}`));
       console.log(chalk.yellow(`Recoverable session: ${sessionDir}`));
       console.log(chalk.yellow(`Partial transcript: ${outputFile}`));
       process.exit(1);
@@ -404,7 +394,19 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     try {
       await stopRecording();
       await promptTags(session);
-      const result = await doFinalTranscription();
+
+      console.log(chalk.yellow("Finalizing..."));
+      const result = await finalizeSession(sessionDir, {
+        foreground: true,
+        pauseForActiveRecording: false,
+        onProgress: (msg) => {
+          process.stdout.write(`\r${chalk.gray(msg)}  `);
+          if (msg.startsWith("Done:") || msg.startsWith("Transcribed")) {
+            process.stdout.write("\n");
+          }
+        },
+      });
+      for (const w of result.warnings) console.log(chalk.yellow(w));
       const entries = result.entries;
 
       console.log(chalk.green(`Transcript: ${outputFile}`));
@@ -602,6 +604,38 @@ async function runSetup() {
   } else {
     console.log(chalk.yellow("Some checks failed. Fix above issues before recording."));
   }
+}
+
+async function runForegroundFinalize(sessionDir: string) {
+  console.log(chalk.cyan(`Finalizing: ${sessionDir}`));
+  try {
+    const result = await finalizeSession(sessionDir, {
+      foreground: true,
+      pauseForActiveRecording: true,
+      onProgress: (msg) => {
+        process.stdout.write(`\r${chalk.gray(msg)}  `);
+        if (msg.startsWith("Done:") || msg.startsWith("Transcribed")) {
+          process.stdout.write("\n");
+        }
+      },
+    });
+    for (const w of result.warnings) console.log(chalk.yellow(w));
+  } catch (err) {
+    console.log(chalk.red(`Finalization failed: ${err instanceof Error ? err.message : String(err)}`));
+    console.log(chalk.yellow(`Recoverable session: ${sessionDir}`));
+    process.exit(1);
+  }
+}
+
+async function spawnBackgroundFinalizer(sessionDir: string) {
+  const binPath = process.argv[1];
+  const child = spawn(process.execPath, [binPath, "finalize", sessionDir], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  console.log(chalk.green(`Background finalizer started (pid ${child.pid})`));
+  console.log(chalk.gray(`Progress: meet status`));
 }
 
 async function listMeetings() {

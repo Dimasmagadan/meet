@@ -7,6 +7,17 @@ export interface Chunk {
   status: "done" | "failed" | "pending";
 }
 
+export type SessionStatus = "recording" | "stopped" | "queued" | "finalizing" | "paused" | "done" | "error";
+
+export interface FinalizeProgress {
+  phase: "stopping" | "live" | "final" | "write" | "done" | "paused" | "error";
+  done: number;
+  total: number;
+  message: string | null;
+  pid: number | null;
+  updatedAt: string;
+}
+
 export interface Session {
   id: string;
   title: string;
@@ -16,7 +27,7 @@ export interface Session {
   sessionDir: string;
   outputFile: string;
   capturePid: number | null;
-  status: "recording" | "finalizing" | "done" | "error";
+  status: SessionStatus;
   processedChunks: Chunk[];
   lastError: string | null;
   autoStopReason: "max_duration" | "no_text_timeout" | null;
@@ -24,6 +35,7 @@ export interface Session {
   lastMeaningfulTextAtOffsetSeconds: number | null;
   hasMeaningfulText: boolean;
   tags?: string[];
+  finalize?: FinalizeProgress;
 }
 
 export interface Config {

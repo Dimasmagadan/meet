@@ -19,7 +19,8 @@ export async function runFinalPass(
   session: Session,
   config: Config,
   onProgress?: (done: number, total: number) => void,
-  liveEntries?: TranscriptEntry[]
+  liveEntries?: TranscriptEntry[],
+  beforeChunk?: () => Promise<void>,
 ): Promise<TranscriptEntry[]> {
   if (!existsSync(session.sessionDir)) {
     return [];
@@ -39,6 +40,8 @@ export async function runFinalPass(
   for (const wav of wavFiles) {
     const parsed = parseChunkFilename(wav);
     if (!parsed) continue;
+
+    await beforeChunk?.();
 
     const wavPath = join(session.sessionDir, wav);
 

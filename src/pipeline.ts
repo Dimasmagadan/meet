@@ -8,6 +8,8 @@ import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
 
 type TranscribeCallback = (source: "mic" | "sys", index: number, text: string) => void;
 type FailureCallback = (source: "mic" | "sys", index: number, error: string) => void;
+export type DrainProgress = { done: number; total: number };
+export type DrainProgressCallback = (progress: DrainProgress) => void;
 
 export class Pipeline {
   private session: Session;
@@ -18,6 +20,9 @@ export class Pipeline {
   private onTranscribed: TranscribeCallback | null = null;
   private onFailure: FailureCallback | null = null;
   private stopped = false;
+  private drainProgressCb: DrainProgressCallback | null = null;
+  private completedDuringDrain = 0;
+  private drainTotal = 0;
 
   constructor(session: Session) {
     this.session = session;
@@ -56,14 +61,14 @@ export class Pipeline {
     });
   }
 
-  async stop() {
+  async stop(onProgress?: DrainProgressCallback) {
     this.stopped = true;
     if (this.watcher) {
       await this.watcher.close();
       this.watcher = null;
     }
     await this.rescan();
-    await this.drainQueue();
+    await this.drainQueue(onProgress);
   }
 
   private async rescan() {
@@ -96,7 +101,7 @@ export class Pipeline {
     this.processNext();
   }
 
-  private async processNext() {
+  private async processNext(trackProgress?: DrainProgressCallback | null) {
     if (this.processing || this.queue.length === 0) return;
     this.processing = true;
 
@@ -105,7 +110,11 @@ export class Pipeline {
 
     if (!existsSync(wavPath)) {
       this.processing = false;
-      this.processNext();
+      if (trackProgress) {
+        this.drainTotal--;
+        trackProgress({ done: this.completedDuringDrain, total: this.drainTotal });
+      }
+      this.processNext(trackProgress);
       return;
     }
 
@@ -146,16 +155,25 @@ export class Pipeline {
       }
     }
 
+    if (trackProgress) {
+      this.completedDuringDrain++;
+      trackProgress({ done: this.completedDuringDrain, total: this.drainTotal });
+    }
+
     this.processing = false;
     if (this.queue.length > 0) {
-      this.processNext();
+      this.processNext(trackProgress);
     }
   }
 
-  async drainQueue(): Promise<void> {
+  async drainQueue(onProgress?: DrainProgressCallback): Promise<void> {
+    const cb = onProgress ?? this.drainProgressCb;
+    this.completedDuringDrain = this.session.processedChunks.filter((c) => c.status === "done").length;
+    this.drainTotal = this.completedDuringDrain + this.queue.length;
+    cb?.({ done: this.completedDuringDrain, total: this.drainTotal });
     while (this.processing || this.queue.length > 0) {
       if (!this.processing && this.queue.length > 0) {
-        this.processNext();
+        this.processNext(cb);
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -166,5 +184,9 @@ export class Pipeline {
     const sysDone = this.session.processedChunks.filter((c) => c.source === "sys" && c.status === "done").length;
     const totalDone = micDone + sysDone;
     return { micDone, sysDone, totalDone, queueLength: this.queue.length };
+  }
+
+  getSession(): Session {
+    return this.session;
   }
 }
