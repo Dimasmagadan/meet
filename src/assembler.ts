@@ -61,6 +61,35 @@ export function assembleMarkdown(title: string, startedAt: string, entries: Tran
   return lines.join("");
 }
 
+export function parseTranscriptEntries(content: string): TranscriptEntry[] {
+  const entries: TranscriptEntry[] = [];
+  const lineRegex = /^\*\*\[(\d{2}:\d{2}:\d{2})\] (Me|Others):\*\*\s*(.+)$/;
+  for (const line of content.split("\n")) {
+    const m = lineRegex.exec(line.trim());
+    if (!m) continue;
+    const [, timestamp, label, text] = m;
+    entries.push({ source: label === "Me" ? "mic" : "sys", chunkIndex: 0, timestamp, text: text.trim() });
+  }
+  return entries;
+}
+
+export function mergeEntriesWithFallback(
+  newEntries: TranscriptEntry[],
+  fallbackEntries: TranscriptEntry[],
+): TranscriptEntry[] {
+  if (newEntries.length > 0) return newEntries;
+  return fallbackEntries;
+}
+
+export function transcriptEntriesToMap(entries: TranscriptEntry[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const e of entries) {
+    const key = `${e.source}-${String(e.chunkIndex).padStart(3, "0")}`;
+    if (e.text) map.set(key, e.text);
+  }
+  return map;
+}
+
 export async function rewriteMarkdown(filePath: string, title: string, startedAt: string, entries: TranscriptEntry[]): Promise<void> {
   const markdown = assembleMarkdown(title, startedAt, entries);
   await writeFile(filePath, markdown, "utf-8");

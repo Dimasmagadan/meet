@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chunkToTimestamp, entriesFromSession, makeHeader, assembleMarkdown } from "./assembler.js";
-import type { Session, TranscriptEntry, Chunk } from "./types.js";
+import { chunkToTimestamp, entriesFromSession, makeHeader, assembleMarkdown, parseTranscriptEntries, transcriptEntriesToMap } from "./assembler.js";
+import type { Session, TranscriptEntry } from "./types.js";
 
 describe("chunkToTimestamp", () => {
   it("computes timestamp from chunk index", () => {
@@ -115,5 +115,69 @@ describe("assembleMarkdown", () => {
   it("handles empty entries", () => {
     const md = assembleMarkdown("Empty", "2026-05-13T14:30:00.000Z", []);
     assert.ok(md.startsWith("# Empty"));
+  });
+});
+
+describe("parseTranscriptEntries", () => {
+  it("parses Me entries", () => {
+    const entries = parseTranscriptEntries("**[14:30:00] Me:** Привет\n");
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0].source, "mic");
+    assert.strictEqual(entries[0].timestamp, "14:30:00");
+    assert.strictEqual(entries[0].text, "Привет");
+  });
+
+  it("parses Others entries", () => {
+    const entries = parseTranscriptEntries("**[14:30:15] Others:** Здравствуйте\n");
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0].source, "sys");
+    assert.strictEqual(entries[0].text, "Здравствуйте");
+  });
+
+  it("parses multiple entries", () => {
+    const md = "**[14:30:00] Me:** Привет\n**[14:30:15] Others:** Ответ\n**[14:30:30] Me:** Ещё текст\n";
+    const entries = parseTranscriptEntries(md);
+    assert.strictEqual(entries.length, 3);
+  });
+
+  it("skips header lines", () => {
+    const md = "# Test — 13.05.2026 14:30\n\n**[14:30:00] Me:** Текст\n";
+    const entries = parseTranscriptEntries(md);
+    assert.strictEqual(entries.length, 1);
+  });
+
+  it("skips blank lines", () => {
+    const md = "\n\n**[14:30:00] Me:** Текст\n\n";
+    const entries = parseTranscriptEntries(md);
+    assert.strictEqual(entries.length, 1);
+  });
+
+  it("handles empty string", () => {
+    assert.deepStrictEqual(parseTranscriptEntries(""), []);
+  });
+
+  it("handles text with colons", () => {
+    const entries = parseTranscriptEntries("**[14:30:00] Me:** время: 14:30\n");
+    assert.strictEqual(entries[0].text, "время: 14:30");
+  });
+});
+
+describe("transcriptEntriesToMap", () => {
+  it("converts entries to key->text map", () => {
+    const entries = [
+      { source: "mic" as const, chunkIndex: 1, timestamp: "14:30:00", text: "Привет" },
+      { source: "sys" as const, chunkIndex: 1, timestamp: "14:30:00", text: "Ответ" },
+    ];
+    const map = transcriptEntriesToMap(entries);
+    assert.strictEqual(map.get("mic-001"), "Привет");
+    assert.strictEqual(map.get("sys-001"), "Ответ");
+  });
+
+  it("skips entries without text", () => {
+    const entries = [
+      { source: "mic" as const, chunkIndex: 1, timestamp: "14:30:00", text: "" },
+    ];
+    const map = transcriptEntriesToMap(entries);
+    assert.strictEqual(map.size, 0);
   });
 });

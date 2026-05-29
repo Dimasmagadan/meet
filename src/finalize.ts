@@ -5,7 +5,7 @@ import type { Session, Config, TranscriptEntry, FinalizeProgress } from "./types
 import { loadConfig, expandPath, writeAtomic } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
 import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
-import { entriesFromSession, rewriteMarkdown } from "./assembler.js";
+import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcriptEntriesToMap } from "./assembler.js";
 import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording } from "./locks.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
@@ -122,13 +122,21 @@ export async function finalizeSession(
       try { await copyLiveTranscript(session.outputFile); } catch {}
     }
 
+    let fallbackEntries: TranscriptEntry[] = [];
+    try {
+      const existing = await readFile(session.outputFile, "utf-8").catch(() => "");
+      if (existing) fallbackEntries = parseTranscriptEntries(existing);
+    } catch {}
+
     let entries: TranscriptEntry[];
 
     if (config.finalRetranscribe) {
       const finalModelPath = expandPath(config.finalModelPath || config.modelPath);
       if (!existsSync(finalModelPath)) {
         warn(`Final model not found: ${finalModelPath}, using live transcript`);
-        entries = entriesFromSession(session, liveResults);
+        const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
+        entries = entriesFromSession(session, mergedResults);
+        if (entries.length === 0 && fallbackEntries.length > 0) entries = fallbackEntries;
       } else {
         try {
           log(`Final high-quality pass (${config.finalModelPath.replace(/^.*\//, "")})...`);
@@ -137,23 +145,32 @@ export async function finalizeSession(
             ? async () => { await waitForInactiveRecording(log); }
             : undefined;
 
+          const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
           entries = await runFinalPass(session, config, (done, total) => {
             progressWriter.update(makeProgress("final", done, total));
             log(`Final pass: ${done}/${total} chunks`);
-          }, entriesFromSession(session, liveResults), beforeChunk);
+          }, entriesFromSession(session, mergedResults), beforeChunk);
         } catch (err) {
           warn(`Final pass failed: ${err instanceof Error ? err.message : String(err)}, using live transcript`);
-          entries = entriesFromSession(session, liveResults);
+          const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
+          entries = entriesFromSession(session, mergedResults);
+          if (entries.length === 0 && fallbackEntries.length > 0) entries = fallbackEntries;
         }
       }
     } else {
-      entries = entriesFromSession(session, liveResults);
+      const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
+      entries = entriesFromSession(session, mergedResults);
+      if (entries.length === 0 && fallbackEntries.length > 0) entries = fallbackEntries;
     }
 
     await progressWriter.update(makeProgress("write", entries.length, entries.length));
     await progressWriter.forceFlush();
 
     if (entries.length > 0) {
+      if (fallbackEntries.length > 0 && entries.length < fallbackEntries.length) {
+        warn(`Final pass produced ${entries.length} entries vs ${fallbackEntries.length} in live transcript, keeping live`);
+        entries = fallbackEntries;
+      }
       await rewriteMarkdown(session.outputFile, session.title, session.startedAt, entries);
     }
 

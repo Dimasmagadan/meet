@@ -1,4 +1,4 @@
-import { writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync, unlinkSync, openSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import type { Session } from "./types.js";
 
@@ -63,18 +63,33 @@ function finalizerLockPath(sessionDir: string): string {
 
 export function acquireFinalizerLock(sessionDir: string): boolean {
   const lockPath = finalizerLockPath(sessionDir);
-  if (existsSync(lockPath)) {
-    try {
-      const existing = JSON.parse(readFileSync(lockPath, "utf-8")) as FinalizerLock;
-      if (existing.pid && isPidAlive(existing.pid)) return false;
-    } catch {}
-  }
-  writeFileSync(lockPath, JSON.stringify({
+  const lockData = JSON.stringify({
     pid: process.pid,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-  }), "utf-8");
-  return true;
+  });
+
+  try {
+    const fd = openSync(lockPath, "wx");
+    writeFileSync(fd, lockData, "utf-8");
+    closeSync(fd);
+    return true;
+  } catch {
+    try {
+      const existing = JSON.parse(readFileSync(lockPath, "utf-8")) as FinalizerLock;
+      if (existing.pid && isPidAlive(existing.pid)) return false;
+      try { unlinkSync(lockPath); } catch {}
+    } catch {}
+  }
+
+  try {
+    const fd = openSync(lockPath, "wx");
+    writeFileSync(fd, lockData, "utf-8");
+    closeSync(fd);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function releaseFinalizerLock(sessionDir: string): void {
