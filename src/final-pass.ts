@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { copyFile } from "node:fs/promises";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 import { loadConfig, expandPath } from "./storage.js";
-import { transcribeChunk, parseChunkFilename, readPcmSamples, computeRmsDb, computePeakDb } from "./transcriber.js";
+import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
+import { analyzeWavFile } from "./audio-metrics.js";
 import { filterEntries, type FinalChunkResult, type FilterConfig } from "./filters.js";
 import { chunkToTimestamp } from "./assembler.js";
 
@@ -45,15 +46,10 @@ export async function runFinalPass(
 
     const wavPath = join(session.sessionDir, wav);
 
-    let metrics = { rmsDb: -Infinity, peakDb: -Infinity };
-    try {
-      const { readFile: rf } = await import("node:fs/promises");
-      const buf = await rf(wavPath);
-      const samples = readPcmSamples(buf);
-      metrics = { rmsDb: computeRmsDb(samples), peakDb: computePeakDb(samples) };
-    } catch {}
+    const metrics = await analyzeWavFile(wavPath);
 
-    if (parsed.source === "mic" && metrics.rmsDb < config.micRmsThresholdDb) {
+    const threshold = parsed.source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
+    if (metrics.rmsDb < threshold) {
       results.push({
         source: parsed.source,
         index: parsed.index,

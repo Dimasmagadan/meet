@@ -64,6 +64,16 @@ describe("cleanText", () => {
     assert.ok(!result.includes("Подписывайтесь"));
   });
 
+  it("removes hallucination: встреча на русском языке (prompt leak)", () => {
+    assert.strictEqual(cleanText("Встреча на русском языке."), "");
+  });
+
+  it("removes prompt leak mixed with other text", () => {
+    const result = cleanText("Встреча на русском языке. Давайте начнём.");
+    assert.ok(!result.includes("Встреча на русском"));
+    assert.ok(result.includes("Давайте начнём"));
+  });
+
   it("keeps valid business text", () => {
     const text = "Давайте обсудим квартальные цели и метрики.";
     assert.strictEqual(cleanText(text), text);

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import type { Config, TranscribeOptions, AudioMetrics } from "./types.js";
+import { readPcmSamples, computeRmsDb, computePeakDb } from "./audio-metrics.js";
 import { detectSpeech } from "./vad.js";
 import { getPhrasebook } from "./phrasebook.js";
 
@@ -22,6 +23,7 @@ const HALLUCINATION_PATTERNS: RegExp[] = [
   /спасибо\s+за\s+просмотр/i,
   /приятного\s+просмотра/i,
   /оставайтесь\s+с\s+нами/i,
+  /встреча\s+на\s+русском\s+языке/i,
 ];
 
 const NOISE_TOKENS: RegExp[] = [
@@ -50,41 +52,7 @@ export function cleanText(raw: string): string {
   return text;
 }
 
-export function readPcmSamples(wavBuffer: Buffer): Int16Array {
-  if (wavBuffer.length < 44) return new Int16Array(0);
-  const headerDataLen = wavBuffer.readUInt32LE(40);
-  const actualDataLen = wavBuffer.length - 44;
-  const dataLen = Math.min(headerDataLen, actualDataLen);
-  const numSamples = Math.floor(dataLen / 2);
-  const samples = new Int16Array(numSamples);
-  for (let i = 0; i < numSamples; i++) {
-    samples[i] = wavBuffer.readInt16LE(44 + i * 2);
-  }
-  return samples;
-}
-
-export function computeRmsDb(samples: Int16Array): number {
-  if (samples.length === 0) return -Infinity;
-  let sum = 0;
-  for (let i = 0; i < samples.length; i++) {
-    const s = samples[i] / 32768.0;
-    sum += s * s;
-  }
-  const rms = Math.sqrt(sum / samples.length);
-  if (rms === 0) return -Infinity;
-  return 20 * Math.log10(rms);
-}
-
-export function computePeakDb(samples: Int16Array): number {
-  if (samples.length === 0) return -Infinity;
-  let peak = 0;
-  for (let i = 0; i < samples.length; i++) {
-    const abs = Math.abs(samples[i]);
-    if (abs > peak) peak = abs;
-  }
-  if (peak === 0) return -Infinity;
-  return 20 * Math.log10(peak / 32768.0);
-}
+export { readPcmSamples, computeRmsDb, computePeakDb };
 
 function normalizeWav(wavBuffer: Buffer, targetDb: number = -3.0): Buffer {
   const samples = readPcmSamples(wavBuffer);
@@ -122,7 +90,7 @@ export async function transcribeChunk(
   const rawPeakDb = computePeakDb(rawSamples);
   const metrics: AudioMetrics = { rmsDb: rawRmsDb, peakDb: rawPeakDb };
 
-  if (config.silenceGate && options?.pass !== "live") {
+  if (config.silenceGate) {
     const threshold = source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     if (rawRmsDb < threshold) {
       return { chunkIndex, source, text: "", metrics };

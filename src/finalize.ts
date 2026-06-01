@@ -7,6 +7,7 @@ import { Pipeline } from "./pipeline.js";
 import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
 import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcriptEntriesToMap } from "./assembler.js";
 import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording } from "./locks.js";
+import { analyzeWavFile } from "./audio-metrics.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
 
@@ -59,6 +60,26 @@ function createDebouncedProgressWriter(session: Session) {
   };
 
   return { update, forceFlush };
+}
+
+async function filterEntriesByAudio(
+  entries: TranscriptEntry[],
+  session: Session,
+  config: Config,
+): Promise<TranscriptEntry[]> {
+  const filtered: TranscriptEntry[] = [];
+
+  for (const entry of entries) {
+    const wav = `${entry.source}-${String(entry.chunkIndex).padStart(3, "0")}.wav`;
+    const wavPath = join(session.sessionDir, wav);
+    const metrics = await analyzeWavFile(wavPath);
+    const threshold = entry.source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
+    if (metrics.rmsDb >= threshold) {
+      filtered.push(entry);
+    }
+  }
+
+  return filtered;
 }
 
 async function waitForInactiveRecording(
@@ -150,8 +171,10 @@ export async function finalizeSession(
       if (!existsSync(finalModelPath)) {
         warn(`Final model not found: ${finalModelPath}, using live transcript`);
         const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
-        entries = entriesFromSession(session, mergedResults);
-        if (entries.length === 0 && fallbackEntries.length > 0) entries = fallbackEntries;
+        entries = await filterEntriesByAudio(entriesFromSession(session, mergedResults), session, config);
+        if (entries.length === 0 && fallbackEntries.length > 0) {
+          entries = await filterEntriesByAudio(fallbackEntries, session, config);
+        }
       } else {
         try {
           log(`Final high-quality pass (${config.finalModelPath.replace(/^.*\//, "")})...`);
@@ -168,23 +191,28 @@ export async function finalizeSession(
         } catch (err) {
           warn(`Final pass failed: ${err instanceof Error ? err.message : String(err)}, using live transcript`);
           const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
-          entries = entriesFromSession(session, mergedResults);
-          if (entries.length === 0 && fallbackEntries.length > 0) entries = fallbackEntries;
+          entries = await filterEntriesByAudio(entriesFromSession(session, mergedResults), session, config);
+          if (entries.length === 0 && fallbackEntries.length > 0) {
+            entries = await filterEntriesByAudio(fallbackEntries, session, config);
+          }
         }
       }
     } else {
       const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
-      entries = entriesFromSession(session, mergedResults);
-      if (entries.length === 0 && fallbackEntries.length > 0) entries = fallbackEntries;
+      entries = await filterEntriesByAudio(entriesFromSession(session, mergedResults), session, config);
+      if (entries.length === 0 && fallbackEntries.length > 0) {
+        entries = await filterEntriesByAudio(fallbackEntries, session, config);
+      }
     }
 
     await progressWriter.update(makeProgress("write", entries.length, entries.length));
     await progressWriter.forceFlush();
 
     if (entries.length > 0) {
-      if (fallbackEntries.length > 0 && entries.length < fallbackEntries.length) {
-        warn(`Final pass produced ${entries.length} entries vs ${fallbackEntries.length} in live transcript, keeping live`);
-        entries = fallbackEntries;
+      const filteredFallbackEntries = await filterEntriesByAudio(fallbackEntries, session, config);
+      if (filteredFallbackEntries.length > 0 && entries.length < filteredFallbackEntries.length) {
+        warn(`Final pass produced ${entries.length} entries vs ${filteredFallbackEntries.length} non-silent live entries, keeping live`);
+        entries = filteredFallbackEntries;
       }
       await rewriteMarkdown(session.outputFile, session.title, session.startedAt, entries);
     }

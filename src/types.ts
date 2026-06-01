@@ -79,6 +79,7 @@ export interface TranscribeOptions {
 export interface AudioMetrics {
   rmsDb: number;
   peakDb: number;
+  sampleCount?: number;
 }
 
 export interface TranscriptEntry {

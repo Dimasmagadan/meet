@@ -5,12 +5,15 @@ import chokidar from "chokidar";
 import type { Session, Config } from "./types.js";
 import { writeSession, loadConfig } from "./storage.js";
 import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
+import { analyzeWavFile } from "./audio-metrics.js";
+import { CaptureHealthMonitor, type HealthWarning, type CaptureHealthConfig } from "./capture-health.js";
 
 type TranscribeCallback = (source: "mic" | "sys", index: number, text: string) => void;
 type FailureCallback = (source: "mic" | "sys", index: number, error: string) => void;
 export type DrainProgress = { done: number; total: number };
 export type DrainProgressCallback = (progress: DrainProgress) => void;
 export type BeforeChunkCallback = () => Promise<void>;
+export type HealthWarningCallback = (warning: HealthWarning) => void;
 
 export class Pipeline {
   private session: Session;
@@ -20,12 +23,15 @@ export class Pipeline {
   private results = new Map<string, string>();
   private onTranscribed: TranscribeCallback | null = null;
   private onFailure: FailureCallback | null = null;
+  private onHealthWarning: HealthWarningCallback | null = null;
   private stopped = false;
   private drainMode = false;
   private drainProgressCb: DrainProgressCallback | null = null;
   private drainBeforeChunk: BeforeChunkCallback | null = null;
   private completedDuringDrain = 0;
   private drainTotal = 0;
+  private healthMonitor: CaptureHealthMonitor | null = null;
+  private healthCheckCounter = 0;
 
   constructor(session: Session) {
     this.session = session;
@@ -37,6 +43,22 @@ export class Pipeline {
 
   setFailureCallback(cb: FailureCallback) {
     this.onFailure = cb;
+  }
+
+  setHealthWarningCallback(cb: HealthWarningCallback) {
+    this.onHealthWarning = cb;
+  }
+
+  initHealthMonitor(config: Config) {
+    const healthConfig: CaptureHealthConfig = {
+      micRmsThresholdDb: config.micRmsThresholdDb,
+      sysRmsThresholdDb: config.sysRmsThresholdDb,
+      mode: this.session.mode,
+      chunkDurationSeconds: this.session.chunkDurationSeconds,
+      silentConsecutiveThreshold: 3,
+      micMissingChunkThreshold: 2,
+    };
+    this.healthMonitor = new CaptureHealthMonitor(healthConfig);
   }
 
   getResults(): Map<string, string> {
@@ -133,6 +155,23 @@ export class Pipeline {
       await beforeChunk?.();
 
       const config = loadConfig();
+
+      if (this.healthMonitor) {
+        const metrics = await analyzeWavFile(wavPath);
+        const warning = this.healthMonitor.recordChunk(item.source, item.index, metrics);
+        if (warning && this.onHealthWarning) {
+          this.onHealthWarning(warning);
+        }
+
+        this.healthCheckCounter++;
+        if (this.healthCheckCounter % 4 === 0) {
+          const micWarning = this.healthMonitor.checkMicMissing();
+          if (micWarning && this.onHealthWarning) {
+            this.onHealthWarning(micWarning);
+          }
+        }
+      }
+
       const liveModel = config.liveModelPath || config.modelPath;
       const result = await transcribeChunk(wavPath, config, item.index, item.source, {
         modelPath: liveModel.startsWith("~") ? liveModel.replace("~", process.env.HOME || "") : liveModel,

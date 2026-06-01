@@ -10,12 +10,14 @@ import { finalizeSession } from "./finalize.js";
 import { showStatus } from "./status.js";
 import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
 import { spawn, ChildProcess, execSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { nanoid } from "nanoid";
 import type { Session, Config, TranscriptEntry } from "./types.js";
+import { analyzeWavFile } from "./audio-metrics.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -44,6 +46,15 @@ export function createProgram(): Command {
     .description("Check dependencies and configuration")
     .action(async () => {
       await runSetup();
+    });
+
+  program
+    .command("doctor")
+    .description("Run a short capture health check")
+    .argument("[target]", "mic or full", "mic")
+    .action(async (target: string) => {
+      const mode = target === "full" ? "full" as const : "mic" as const;
+      await runDoctor(mode);
     });
 
   program
@@ -158,6 +169,12 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     const timestamp = chunkToTimestamp(index, session.chunkDurationSeconds, session.startedAt);
     const entry: TranscriptEntry = { source, chunkIndex: index, timestamp, text };
     appendEntry(outputFile, header, entry).catch(() => {});
+  });
+
+  pipeline.initHealthMonitor(config);
+  pipeline.setHealthWarningCallback((warning) => {
+    process.stdout.write("\n");
+    console.log(chalk.yellow(`[health] ${warning.message}`));
   });
 
   pipeline.start();
@@ -604,6 +621,96 @@ async function runSetup() {
   } else {
     console.log(chalk.yellow("Some checks failed. Fix above issues before recording."));
   }
+}
+
+async function runDoctor(mode: "mic" | "full") {
+  const config = loadConfig();
+  const setupErrors = checkSetup(config, mode);
+  if (setupErrors.length > 0) {
+    for (const e of setupErrors) {
+      console.log(chalk.red(e));
+    }
+    process.exit(1);
+  }
+
+  const sessionDir = await mkdtemp(join(tmpdir(), "meet-doctor-"));
+  const captureBin = getCaptureBinPath();
+  const chunkDurationSeconds = 5;
+  const captureArgs = [
+    "--output-dir", sessionDir,
+    "--chunk-duration", String(chunkDurationSeconds),
+    "--mode", mode,
+    "--silence-timeout", "0",
+  ];
+
+  console.log(chalk.cyan(`Running ${mode} capture doctor...`));
+  if (mode === "full") {
+    console.log(chalk.gray("Speak into the mic and play meeting/system audio for about 12 seconds."));
+  } else {
+    console.log(chalk.gray("Speak into the mic for about 12 seconds."));
+  }
+
+  const captureProcess = spawn(captureBin, captureArgs, {
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+
+  captureProcess.stderr?.on("data", () => {});
+
+  await new Promise((resolve) => setTimeout(resolve, 12_000));
+  captureProcess.kill("SIGINT");
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      captureProcess.kill("SIGKILL");
+      resolve();
+    }, 5_000);
+    captureProcess.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+
+  const files = await readdir(sessionDir);
+  const micFiles = files.filter((f) => /^mic-\d{3}\.wav$/.test(f)).sort();
+  const sysFiles = files.filter((f) => /^sys-\d{3}\.wav$/.test(f)).sort();
+
+  const micMetrics = await Promise.all(micFiles.map((f) => analyzeWavFile(join(sessionDir, f))));
+  const sysMetrics = await Promise.all(sysFiles.map((f) => analyzeWavFile(join(sessionDir, f))));
+
+  const loudMic = micMetrics.filter((m) => m.rmsDb >= config.micRmsThresholdDb);
+  const loudSys = sysMetrics.filter((m) => m.rmsDb >= config.sysRmsThresholdDb);
+
+  console.log(chalk.gray(`mic chunks: ${micFiles.length}, loud mic chunks: ${loudMic.length}`));
+  if (mode === "full") {
+    console.log(chalk.gray(`sys chunks: ${sysFiles.length}, loud sys chunks: ${loudSys.length}`));
+  }
+
+  let ok = true;
+  if (micFiles.length === 0) {
+    console.log(chalk.red("Mic capture produced no finalized chunks."));
+    ok = false;
+  } else if (loudMic.length === 0) {
+    console.log(chalk.red("Mic capture produced only silent/near-silent chunks."));
+    ok = false;
+  }
+
+  if (mode === "full") {
+    if (sysFiles.length === 0) {
+      console.log(chalk.red("System capture produced no finalized chunks."));
+      ok = false;
+    } else if (loudSys.length === 0) {
+      console.log(chalk.red("System capture produced only silent/near-silent chunks."));
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    console.log(chalk.green("Doctor check passed."));
+  } else {
+    console.log(chalk.yellow(`Artifacts kept for inspection: ${sessionDir}`));
+    process.exit(1);
+  }
+
+  await rm(sessionDir, { recursive: true, force: true }).catch(() => {});
 }
 
 async function runForegroundFinalize(sessionDir: string) {
