@@ -7,10 +7,15 @@ class MicCapture {
     private let targetSampleRate: Int = 16000
     private let voiceProcessing: Bool
     private var isRunning = false
+    private var isRestarting = false
     private let onChunkFinalized: (String) -> Void
     private var formatLogged = false
     private(set) var lastVoiceTime: Date = Date()
+    private(set) var lastBufferTime: Date = Date()
     private let voiceRmsThreshold: Float = 200.0
+    private var configObserver: NSObjectProtocol?
+    private var restartCount = 0
+    private var lastRestartTime: Date = Date.distantPast
 
     init(outputDir: URL, chunkDurationSeconds: Int, voiceProcessing: Bool = false, onChunkFinalized: @escaping (String) -> Void) {
         self.wavWriter = WAVWriter(outputDir: outputDir, prefix: "mic", chunkDurationSeconds: chunkDurationSeconds)
@@ -19,6 +24,16 @@ class MicCapture {
     }
 
     func start() throws {
+        if !wavWriter.isChunkOpen {
+            try wavWriter.startChunk()
+        }
+        installConfigurationObserverIfNeeded()
+        try startEngine(reason: restartCount == 0 ? "initial" : "restart")
+        isRunning = true
+        lastBufferTime = Date()
+    }
+
+    private func startEngine(reason: String) throws {
         let inputNode = engine.inputNode
         let _ = inputNode.outputFormat(forBus: 0)
 
@@ -42,8 +57,7 @@ class MicCapture {
             formatLogged = true
         }
 
-        try wavWriter.startChunk()
-        isRunning = true
+        inputNode.removeTap(onBus: 0)
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: vpFormat) { [weak self] buffer, _ in
             guard let self, self.isRunning else { return }
@@ -51,11 +65,73 @@ class MicCapture {
         }
 
         try engine.start()
+        logJSON("info", "mic_engine_started", [
+            "reason": reason,
+            "sample_rate": hwSampleRate,
+            "channels": Int(hwChannels),
+            "interleaved": hwIsInterleaved,
+            "restart_count": restartCount,
+        ])
+    }
+
+    private func installConfigurationObserverIfNeeded() {
+        guard configObserver == nil else { return }
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.handleEngineConfigurationChange()
+        }
+    }
+
+    private func handleEngineConfigurationChange() {
+        guard isRunning else { return }
+        fputs("MicCapture configuration changed; restarting tap\n", stderr)
+        logJSON("warning", "mic_engine_config_changed", ["restart_count": restartCount])
+        restartCapture(reason: "engine_config_changed")
+    }
+
+    private func restartCapture(reason: String) {
+        guard isRunning, !isRestarting else { return }
+        let now = Date()
+        if now.timeIntervalSince(lastRestartTime) < 5.0 { return }
+        lastRestartTime = now
+        isRestarting = true
+        defer { isRestarting = false }
+
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+
+        restartCount += 1
+        fputs("MicCapture restarting: \(reason) (#\(restartCount))\n", stderr)
+        logJSON("warning", "mic_restart", ["reason": reason, "restart_count": restartCount])
+
+        do {
+            try startEngine(reason: reason)
+            lastBufferTime = Date()
+        } catch {
+            fputs("MicCapture restart failed: \(error)\n", stderr)
+            logJSON("error", "mic_restart_failed", [
+                "reason": reason,
+                "restart_count": restartCount,
+                "message": String(describing: error),
+            ])
+        }
+    }
+
+    func recoverIfStalled(thresholdSeconds: TimeInterval = 3.0) {
+        guard isRunning else { return }
+        let stalledFor = Date().timeIntervalSince(lastBufferTime)
+        if stalledFor > thresholdSeconds {
+            restartCapture(reason: "buffer_stall_\(Int(stalledFor))s")
+        }
     }
 
     private func processBuffer(_ buffer: AVAudioPCMBuffer, hwSampleRate: Float64, hwChannels: AVAudioChannelCount, isInterleaved: Bool, ratio: Double) {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
+        lastBufferTime = Date()
 
         var monoSamples = [Int16]()
 
@@ -141,6 +217,10 @@ class MicCapture {
 
     func stop() -> String? {
         isRunning = false
+        if let observer = configObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configObserver = nil
+        }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
 

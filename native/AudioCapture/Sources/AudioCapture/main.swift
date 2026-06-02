@@ -89,12 +89,16 @@ class CaptureRunner {
         }
 
         while !CaptureRunnerSignalRelay.shared.shouldStop {
-            if silenceTimeout > 0, let mic = micCapture {
-                let silentFor = Date().timeIntervalSince(mic.lastVoiceTime)
-                if silentFor > Double(silenceTimeout) {
-                    fputs("Silence timeout: no voice for \(Int(silentFor))s (limit \(silenceTimeout)s)\n", stderr)
-                    logJSON("warning", "silence_timeout", ["silent_seconds": Int(silentFor), "limit": silenceTimeout])
-                    break
+            if let mic = micCapture {
+                mic.recoverIfStalled()
+
+                if silenceTimeout > 0 {
+                    let silentFor = Date().timeIntervalSince(mic.lastVoiceTime)
+                    if silentFor > Double(silenceTimeout) {
+                        fputs("Silence timeout: no voice for \(Int(silentFor))s (limit \(silenceTimeout)s)\n", stderr)
+                        logJSON("warning", "silence_timeout", ["silent_seconds": Int(silentFor), "limit": silenceTimeout])
+                        break
+                    }
                 }
             }
             try await Task.sleep(nanoseconds: 1_000_000_000)
