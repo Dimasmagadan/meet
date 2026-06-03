@@ -3,21 +3,32 @@ import ScreenCaptureKit
 import CoreMedia
 import AudioToolbox
 
-class SystemAudioCapture: NSObject, SCStreamOutput {
+class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var wavWriter: WAVWriter
     private var stream: SCStream?
+    private var outputDir: URL
+    private var chunkDurationSeconds: Int
     private let targetSampleRate: Int = 16000
     private var isRunning = false
     private let onChunkFinalized: (String) -> Void
     private var formatLogged = false
+    private var isRestarting = false
+    private var restartCount = 0
+    private var lastRestartTime: Date = Date.distantPast
 
     init(outputDir: URL, chunkDurationSeconds: Int, onChunkFinalized: @escaping (String) -> Void) {
+        self.outputDir = outputDir
+        self.chunkDurationSeconds = chunkDurationSeconds
         self.wavWriter = WAVWriter(outputDir: outputDir, prefix: "sys", chunkDurationSeconds: chunkDurationSeconds)
         self.onChunkFinalized = onChunkFinalized
         super.init()
     }
 
     func start() async throws {
+        try await startStream(reason: restartCount == 0 ? "initial" : "restart")
+    }
+
+    private func startStream(reason: String) async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
 
         guard let display = content.displays.first else {
@@ -35,15 +46,55 @@ class SystemAudioCapture: NSObject, SCStreamOutput {
         config.height = 2
         config.showsCursor = false
 
-        stream = SCStream(filter: filter, configuration: config, delegate: nil)
+        stream = SCStream(filter: filter, configuration: config, delegate: self)
         guard let stream else { throw CaptureError.streamCreationFailed }
 
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "meet.sysaudio"))
 
-        try wavWriter.startChunk()
+        if !wavWriter.isChunkOpen {
+            try wavWriter.startChunk()
+        }
         isRunning = true
 
         try await stream.startCapture()
+        logJSON("info", "sys_stream_started", ["reason": reason, "restart_count": restartCount])
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        guard isRunning else { return }
+        fputs("System audio stream stopped: \(error)\n", stderr)
+        logJSON("error", "sys_stream_stopped", ["message": String(describing: error), "restart_count": restartCount])
+        restartStream(reason: "stream_stopped")
+    }
+
+    private func restartStream(reason: String) {
+        guard isRunning, !isRestarting else { return }
+        let now = Date()
+        if now.timeIntervalSince(lastRestartTime) < 5.0 { return }
+        lastRestartTime = now
+        isRestarting = true
+
+        let oldStream = stream
+        stream = nil
+        restartCount += 1
+        fputs("SystemAudioCapture restarting: \(reason) (#\(restartCount))\n", stderr)
+        logJSON("warning", "sys_restart", ["reason": reason, "restart_count": restartCount])
+
+        Task { [weak self] in
+            guard let self else { return }
+            try? await oldStream?.stopCapture()
+            do {
+                try await self.startStream(reason: reason)
+            } catch {
+                fputs("SystemAudioCapture restart failed: \(error)\n", stderr)
+                logJSON("error", "sys_restart_failed", [
+                    "reason": reason,
+                    "restart_count": self.restartCount,
+                    "message": String(describing: error),
+                ])
+            }
+            self.isRestarting = false
+        }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
