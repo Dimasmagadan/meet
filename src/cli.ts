@@ -3,7 +3,7 @@ import chalk from "chalk";
 import { loadConfig, getOutputPath, getOutputDir, ensureDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
 import { appendEntry, makeHeader, chunkToTimestamp } from "./assembler.js";
-import { runOpencodeIndex, runOpencodeQuestion } from "./opencode.js";
+import { runOpencodeQuestion } from "./opencode.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
 import { finalizeSession } from "./finalize.js";
@@ -165,7 +165,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
-  console.log(chalk.gray("Press q to stop, s to stop + create index, a to ask opencode\n"));
+  console.log(chalk.gray("Press q to stop, s to stop (foreground), a to ask opencode\n"));
 
   const pipeline = new Pipeline(session);
   let micChunks = 0;
@@ -447,22 +447,6 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
       console.log(chalk.green(`Transcript: ${outputFile}`));
       console.log(chalk.gray(`Transcribed ${entries.length} segments`));
-
-      if (entries.length === 0) {
-        console.log(chalk.yellow("No transcript entries — skipping index generation"));
-      } else {
-        console.log(chalk.cyan("Creating index.md (up to 180s)..."));
-
-        try {
-          const indexMarkdown = await runOpencodeIndex(config, outputFile, title);
-          const meetingDir = getOutputDir(config, title, startedAt);
-          const indexPath = join(meetingDir, "index.md");
-          await writeFile(indexPath, indexMarkdown, "utf-8");
-          console.log(chalk.green(`Index: ${indexPath}`));
-        } catch (err) {
-          console.log(chalk.red(`Index generation failed: ${formatError(err)}`));
-        }
-      }
 
       process.exit(0);
     } catch (err) {
