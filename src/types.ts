@@ -83,7 +83,7 @@ export interface AudioMetrics {
 }
 
 export interface TranscriptEntry {
-  source: "mic" | "sys";
+  source: "mic" | "sys" | "file";
   chunkIndex: number;
   timestamp: string;
   text: string;

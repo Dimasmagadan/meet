@@ -9,6 +9,7 @@ import { parseCaptureLine } from "./capture-events.js";
 import { finalizeSession } from "./finalize.js";
 import { showStatus } from "./status.js";
 import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
+import { transcribeImport, type ImportOptions } from "./import.js";
 import { spawn, ChildProcess, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -82,6 +83,24 @@ export function createProgram(): Command {
     .description("Show active recording and finalization jobs")
     .action(() => {
       showStatus();
+    });
+
+  program
+    .command("transcribe")
+    .description("Transcribe audio or video files")
+    .argument("<files...>", "Audio/video files to transcribe")
+    .option("--title <title>", "Meeting title (single file only)")
+    .option("--model <model>", "Model: small or medium", "medium")
+    .option("--no-index", "Skip index generation")
+    .option("--date <date>", "Recording date (YYYY-MM-DD)")
+    .action(async (files: string[], opts: { title?: string; model?: string; index?: boolean; date?: string }) => {
+      const importOpts: ImportOptions = {
+        title: opts.title,
+        model: opts.model === "small" ? "small" : "medium",
+        noIndex: opts.index === false,
+        date: opts.date,
+      };
+      await transcribeImport(files, importOpts);
     });
 
   return program;

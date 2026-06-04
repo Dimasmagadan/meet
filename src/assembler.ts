@@ -32,6 +32,9 @@ export function entriesFromSession(session: Session, results: Map<string, string
 }
 
 function formatEntry(entry: TranscriptEntry): string {
+  if (entry.source === "file") {
+    return `**[${entry.timestamp}]** ${entry.text}\n`;
+  }
   const label = entry.source === "mic" ? "Me" : "Others";
   return `**[${entry.timestamp}] ${label}:** ${entry.text}\n`;
 }
