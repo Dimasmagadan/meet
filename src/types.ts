@@ -42,6 +42,7 @@ export interface Config {
   modelPath: string;
   liveModelPath: string;
   finalModelPath: string;
+  importModelPath: string;
   finalRetranscribe: boolean;
   keepLiveTranscript: boolean;
   outputDir: string;
@@ -93,6 +94,7 @@ export const DEFAULT_CONFIG: Config = {
   modelPath: "~/.meet/models/ggml-small.bin",
   liveModelPath: "~/.meet/models/ggml-small.bin",
   finalModelPath: "~/.meet/models/ggml-medium.bin",
+  importModelPath: "",
   finalRetranscribe: true,
   keepLiveTranscript: true,
   outputDir: "~/Meetings",
@@ -100,16 +102,16 @@ export const DEFAULT_CONFIG: Config = {
   language: "ru",
   whisperBin: "whisper-cli",
   captureBin: "",
-  prompt: "Транскрипция деловой встречи на русском языке.",
+  prompt: "Разговор на русском языке. Консультация, обсуждение, вопросы и ответы.",
   opencodeBin: "opencode",
   micVoiceProcessing: false,
   silenceGate: true,
   micRmsThresholdDb: -60,
   sysRmsThresholdDb: -65,
   normalizeForWhisper: true,
-  whisperEntropyThreshold: 2.0,
-  whisperLogprobThreshold: -0.35,
-  whisperNoSpeechThreshold: 0.75,
+  whisperEntropyThreshold: 2.4,
+  whisperLogprobThreshold: -1.0,
+  whisperNoSpeechThreshold: 0.6,
   maxDurationMinutes: 60,
   noTextTimeoutMinutes: 10,
   phrasebookPath: "~/.meet/phrasebook.json",

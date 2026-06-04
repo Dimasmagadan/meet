@@ -22,6 +22,7 @@ export function loadConfig(overrides?: Partial<Config>): Config {
     modelPath: overrides?.modelPath ?? fileConfig.modelPath ?? DEFAULT_CONFIG.modelPath,
     liveModelPath: overrides?.liveModelPath ?? fileConfig.liveModelPath ?? DEFAULT_CONFIG.liveModelPath,
     finalModelPath: overrides?.finalModelPath ?? fileConfig.finalModelPath ?? DEFAULT_CONFIG.finalModelPath,
+    importModelPath: overrides?.importModelPath ?? fileConfig.importModelPath ?? DEFAULT_CONFIG.importModelPath,
     finalRetranscribe: overrides?.finalRetranscribe ?? fileConfig.finalRetranscribe ?? DEFAULT_CONFIG.finalRetranscribe,
     keepLiveTranscript: overrides?.keepLiveTranscript ?? fileConfig.keepLiveTranscript ?? DEFAULT_CONFIG.keepLiveTranscript,
     outputDir: overrides?.outputDir ?? fileConfig.outputDir ?? DEFAULT_CONFIG.outputDir,

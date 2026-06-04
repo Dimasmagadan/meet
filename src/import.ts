@@ -133,9 +133,12 @@ async function processFile(
     await convertToWav(filePath, wavPath);
 
     console.log(chalk.gray(`${prefix}Transcribing (${basename(modelPath).replace("ggml-", "").replace(".bin", "")})...`));
-    const segments = await runWhisper(wavPath, config, modelPath, whisperPath, sessionDir);
+    const rawSegments = await runWhisper(wavPath, config, modelPath, whisperPath, sessionDir);
 
     const pb = getPhrasebook(config);
+    let segments = collapseRepetitions(rawSegments);
+    segments = mergeShortSegments(segments, 15000);
+
     const entries: TranscriptEntry[] = [];
     for (const seg of segments) {
       const cleaned = cleanText(seg.text);
@@ -262,6 +265,8 @@ async function runWhisper(
     "-oj",
     "-of", outputBase,
     "--suppress-nst",
+    "-sow",
+    "--max-len", "300",
     "--entropy-thold", String(config.whisperEntropyThreshold),
     "--logprob-thold", String(config.whisperLogprobThreshold),
     "--no-speech-thold", String(config.whisperNoSpeechThreshold),
@@ -365,6 +370,66 @@ export function formatMs(ms: number): string {
   return `${h}:${m}:${s}`;
 }
 
+function collapseRepetitions(segments: ImportSegment[]): ImportSegment[] {
+  if (segments.length <= 2) return segments;
+
+  const result: ImportSegment[] = [];
+  let repeatCount = 0;
+  let lastNormalized = "";
+
+  for (const seg of segments) {
+    const normalized = seg.text.trim().toLowerCase().replace(/\s+/g, " ");
+
+    if (normalized === lastNormalized && normalized.length > 0) {
+      repeatCount++;
+      if (repeatCount <= 2) {
+        result.push(seg);
+      }
+      continue;
+    }
+
+    if (repeatCount > 2 && result.length > 0) {
+      const last = result[result.length - 1];
+      last.text = last.text.replace(/\s*$/, "") + ` [×${repeatCount + 1}]`;
+    }
+
+    repeatCount = 0;
+    lastNormalized = normalized;
+    result.push(seg);
+  }
+
+  if (repeatCount > 2 && result.length > 0) {
+    const last = result[result.length - 1];
+    last.text = last.text.replace(/\s*$/, "") + ` [×${repeatCount + 1}]`;
+  }
+
+  return result;
+}
+
+function mergeShortSegments(segments: ImportSegment[], gapThresholdMs: number = 15000): ImportSegment[] {
+  if (segments.length <= 1) return segments;
+
+  const result: ImportSegment[] = [{ ...segments[0] }];
+
+  for (let i = 1; i < segments.length; i++) {
+    const prev = result[result.length - 1];
+    const curr = segments[i];
+    const gap = curr.fromMs - prev.toMs;
+
+    const prevLen = prev.text.split(/\s+/).length;
+    const currLen = curr.text.split(/\s+/).length;
+
+    if (gap < gapThresholdMs && (prevLen < 30 || currLen < 15)) {
+      prev.text = prev.text.replace(/\s*$/, "") + " " + curr.text;
+      prev.toMs = Math.max(prev.toMs, curr.toMs);
+    } else {
+      result.push({ ...curr });
+    }
+  }
+
+  return result;
+}
+
 export function titleFromFilename(filePath: string): string {
   const name = basename(filePath, extname(filePath));
   return name
@@ -377,8 +442,15 @@ export function selectModel(config: Config, preference?: "small" | "medium"): st
   if (preference === "small") {
     return expandPath(config.liveModelPath || config.modelPath);
   }
+
+  if (config.importModelPath) {
+    const p = expandPath(config.importModelPath);
+    if (existsSync(p)) return p;
+  }
+
   const mediumPath = expandPath(config.finalModelPath || config.modelPath);
   if (existsSync(mediumPath)) return mediumPath;
+
   return expandPath(config.liveModelPath || config.modelPath);
 }
 

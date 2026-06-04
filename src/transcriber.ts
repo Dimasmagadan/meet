@@ -142,6 +142,8 @@ export async function transcribeChunk(
     "-otxt",
     "-of", baseName,
     "--suppress-nst",
+    "-sow",
+    "--max-len", "300",
     "--entropy-thold", String(config.whisperEntropyThreshold),
     "--logprob-thold", String(config.whisperLogprobThreshold),
     "--no-speech-thold", String(config.whisperNoSpeechThreshold),
