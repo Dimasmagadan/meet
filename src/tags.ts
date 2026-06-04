@@ -41,7 +41,7 @@ export async function appendTagToFile(tag: string): Promise<void> {
   }
 }
 
-export async function writeMetaFile(session: Session, tags: string[]): Promise<void> {
+export async function writeMetaFile(session: Session, tags: string[], options?: { note?: string }): Promise<void> {
   const meetingDir = dirname(session.outputFile);
   const metaPath = resolve(meetingDir, "meta.md");
   const date = new Date(session.startedAt);
@@ -54,9 +54,13 @@ export async function writeMetaFile(session: Session, tags: string[]): Promise<v
     `- Date: ${dateStr} ${timeStr}`,
     `- Mode: ${session.mode}`,
     `- Tags: ${tags.join(", ")}`,
-    "",
   ];
 
+  if (options?.note) {
+    lines.push("", options.note);
+  }
+
+  lines.push("");
   await writeAtomic(metaPath, lines.join("\n"));
 }
 

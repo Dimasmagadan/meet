@@ -68,9 +68,11 @@ export async function transcribeImport(
   const total = resolved.length;
   const results: BatchResult[] = [];
 
+  const isBatch = total > 1;
+
   for (let i = 0; i < resolved.length; i++) {
     const fp = resolved[i];
-    const prefix = total > 1 ? `[${i + 1}/${total}] ` : "";
+    const prefix = isBatch ? `[${i + 1}/${total}] ` : "";
 
     const title = options.title && total === 1
       ? options.title
@@ -79,7 +81,7 @@ export async function transcribeImport(
     console.log(chalk.cyan(`${prefix}${basename(fp)}`));
 
     try {
-      const outputPath = await processFile(fp, title, config, modelPath, whisperPath, options, prefix);
+      const outputPath = await processFile(fp, title, config, modelPath, whisperPath, options, prefix, isBatch);
       results.push({ file: fp, success: true, outputPath });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -107,6 +109,7 @@ async function processFile(
   whisperPath: string,
   options: ImportOptions,
   prefix: string,
+  isBatch: boolean,
 ): Promise<string> {
   const id = nanoid(8);
   const sessionDir = join(tmpdir(), `meet-import-${id}`);
@@ -185,17 +188,24 @@ async function processFile(
     if (process.stdin.isTTY) {
       try {
         const tags = await runTagPicker(session);
+        if (isBatch && !tags.some((t) => t.toLowerCase() === "batch-transcription")) {
+          tags.unshift("batch-transcription");
+        }
         if (tags.length > 0) {
           session.tags = tags;
-          await writeMetaFile(session, tags);
+          await writeMetaFile(session, tags, isBatch ? { note: "Дата папки и заголовка транскрипта не соответствует дате звонка. Папка создана при массовой транскрипции." } : undefined);
           console.log(chalk.green(`${prefix}Tags: ${tags.join(", ")}`));
         }
       } catch {
         console.log(chalk.gray(`${prefix}(tag picker skipped)`));
       }
+    } else if (isBatch) {
+      session.tags = ["batch-transcription"];
+      await writeMetaFile(session, session.tags, { note: "Дата папки и заголовка транскрипта не соответствует дате звонка. Папка создана при массовой транскрипции." });
+      console.log(chalk.gray(`${prefix}Tags: batch-transcription`));
     }
 
-    if (!options.noIndex && entries.length > 0) {
+    if (!isBatch && !options.noIndex && entries.length > 0) {
       try {
         console.log(chalk.cyan(`${prefix}Creating index.md...`));
         const indexMarkdown = await runOpencodeIndex(config, outputFile, title);
