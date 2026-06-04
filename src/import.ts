@@ -6,10 +6,10 @@ import { tmpdir } from "node:os";
 import chalk from "chalk";
 import { nanoid } from "nanoid";
 import type { Session, Config, TranscriptEntry } from "./types.js";
-import { loadConfig, expandPath, getOutputDir, getOutputPath, writeAtomic } from "./storage.js";
+import { loadConfig, expandPath, getOutputDir, getOutputPath } from "./storage.js";
 import { cleanText } from "./transcriber.js";
 import { getPhrasebook } from "./phrasebook.js";
-import { assembleMarkdown, rewriteMarkdown } from "./assembler.js";
+import { assembleMarkdown } from "./assembler.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
 import { runOpencodeIndex } from "./opencode.js";
 
@@ -20,7 +20,7 @@ export interface ImportOptions {
   date?: string;
 }
 
-interface ImportSegment {
+export interface ImportSegment {
   fromMs: number;
   toMs: number;
   text: string;
@@ -238,7 +238,7 @@ async function convertToWav(inputPath: string, outputPath: string): Promise<void
   });
 }
 
-interface WhisperJsonOutput {
+export interface WhisperJsonOutput {
   transcription?: Array<{
     timestamps?: { from?: string; to?: string };
     offsets?: { from?: number; to?: number };
@@ -294,7 +294,7 @@ async function runWhisper(
   });
 }
 
-function parseWhisperJson(data: WhisperJsonOutput): ImportSegment[] {
+export function parseWhisperJson(data: WhisperJsonOutput): ImportSegment[] {
   const segments: ImportSegment[] = [];
   const transcription = data.transcription || [];
 
@@ -322,7 +322,7 @@ function parseWhisperJson(data: WhisperJsonOutput): ImportSegment[] {
   return segments;
 }
 
-function parseWhisperText(raw: string): ImportSegment[] {
+export function parseWhisperText(raw: string): ImportSegment[] {
   const segments: ImportSegment[] = [];
   const lineRegex = /\[(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.+)/;
 
@@ -347,7 +347,7 @@ function parseWhisperText(raw: string): ImportSegment[] {
   return segments;
 }
 
-function parseTimestampMs(ts: string): number {
+export function parseTimestampMs(ts: string): number {
   const parts = ts.split(":");
   const h = parseInt(parts[0], 10);
   const m = parseInt(parts[1], 10);
@@ -357,7 +357,7 @@ function parseTimestampMs(ts: string): number {
   return h * 3600000 + m * 60000 + s * 1000 + ms;
 }
 
-function formatMs(ms: number): string {
+export function formatMs(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
   const h = String(Math.floor(totalSec / 3600)).padStart(2, "0");
   const m = String(Math.floor((totalSec % 3600) / 60)).padStart(2, "0");
@@ -373,7 +373,7 @@ export function titleFromFilename(filePath: string): string {
     .trim();
 }
 
-function selectModel(config: Config, preference?: "small" | "medium"): string {
+export function selectModel(config: Config, preference?: "small" | "medium"): string {
   if (preference === "small") {
     return expandPath(config.liveModelPath || config.modelPath);
   }

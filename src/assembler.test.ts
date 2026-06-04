@@ -116,6 +116,18 @@ describe("assembleMarkdown", () => {
     const md = assembleMarkdown("Empty", "2026-05-13T14:30:00.000Z", []);
     assert.ok(md.startsWith("# Empty"));
   });
+
+  it("formats file source without speaker label", () => {
+    const entries: TranscriptEntry[] = [
+      { source: "file", chunkIndex: 0, timestamp: "00:00:00", text: "Вступление" },
+      { source: "file", chunkIndex: 0, timestamp: "00:00:15", text: "Основная часть" },
+    ];
+    const md = assembleMarkdown("Podcast", "2026-05-13T14:30:00.000Z", entries);
+    assert.ok(md.includes("**[00:00:00]** Вступление"));
+    assert.ok(md.includes("**[00:00:15]** Основная часть"));
+    assert.ok(!md.includes("Me:**"));
+    assert.ok(!md.includes("Others:**"));
+  });
 });
 
 describe("parseTranscriptEntries", () => {
