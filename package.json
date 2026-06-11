@@ -1,7 +1,25 @@
 {
   "name": "meet",
   "version": "0.1.0",
-  "description": "Local meeting transcription tool for macOS (Apple Silicon)",
+  "description": "Local meeting transcription tool for macOS (Apple Silicon) — records mic + system audio, transcribes with whisper.cpp, outputs timestamped markdown",
+  "author": "Dmitrii Diakonov",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Dimasmagadan/meet.git"
+  },
+  "keywords": [
+    "meeting",
+    "transcription",
+    "whisper",
+    "whisper-cpp",
+    "macos",
+    "apple-silicon",
+    "audio-capture",
+    "screencapturekit",
+    "local-ai",
+    "voice-recording"
+  ],
   "type": "module",
   "bin": {
     "meet": "./dist/main.js"
