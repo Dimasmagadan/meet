@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Session, Config, TranscriptEntry, FinalizeProgress } from "./types.js";
 import { loadConfig, expandPath, writeAtomic } from "./storage.js";
@@ -220,6 +221,8 @@ export async function finalizeSession(
     session.status = "done";
     session.finalize = makeProgress("done", entries.length, entries.length);
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
+
+    await rm(sessionDir, { recursive: true, force: true }).catch(() => {});
 
     log(`Done: ${session.outputFile}`);
     log(`Transcribed ${entries.length} segments`);

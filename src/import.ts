@@ -2,11 +2,10 @@ import { execFile } from "node:child_process";
 import { readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, basename, extname, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import chalk from "chalk";
 import { nanoid } from "nanoid";
 import type { Session, Config, TranscriptEntry } from "./types.js";
-import { loadConfig, expandPath, getOutputDir, getOutputPath } from "./storage.js";
+import { loadConfig, expandPath, getOutputDir, getOutputPath, getSessionsDir } from "./storage.js";
 import { cleanText } from "./transcriber.js";
 import { getPhrasebook } from "./phrasebook.js";
 import { assembleMarkdown } from "./assembler.js";
@@ -112,8 +111,9 @@ async function processFile(
   isBatch: boolean,
 ): Promise<string> {
   const id = nanoid(8);
-  const sessionDir = join(tmpdir(), `meet-import-${id}`);
-  await mkdir(sessionDir, { recursive: true });
+    const sessionsDir = getSessionsDir();
+    const sessionDir = join(sessionsDir, `meet-import-${id}`);
+    await mkdir(sessionDir, { recursive: true });
 
   try {
     let date: Date;

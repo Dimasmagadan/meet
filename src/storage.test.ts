@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { generateSlug, formatStartTime, getOutputDir, getOutputPath, expandPath, findStaleSessions } from "./storage.js";
+import { generateSlug, formatStartTime, getOutputDir, getOutputPath, expandPath, findStaleSessions, getSessionsDir } from "./storage.js";
 import { join } from "node:path";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import type { Session } from "./types.js";
@@ -98,7 +98,8 @@ describe("findStaleSessions", () => {
   const createdDirs: string[] = [];
 
   const makeSession = (status: Session["status"], suffix: string): string => {
-    const sessionDir = join("/tmp", `meet-test-stale-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const sessionsDir = getSessionsDir();
+    const sessionDir = join(sessionsDir, `meet-test-stale-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(sessionDir, { recursive: true });
     const session: Session = {
       id: suffix,

@@ -1,8 +1,17 @@
-import { writeFileSync, existsSync, readFileSync, unlinkSync, openSync, closeSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync, unlinkSync, openSync, closeSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { Session } from "./types.js";
 
-const ACTIVE_LOCK = "/tmp/meet-active-recording.lock";
+function sessionsDir(): string {
+  const dir = join(homedir(), ".meet", "sessions");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function activeLockPath(): string {
+  return join(sessionsDir(), "active-recording.lock");
+}
 
 export function isPidAlive(pid: number): boolean {
   try {
@@ -14,7 +23,7 @@ export function isPidAlive(pid: number): boolean {
 }
 
 export function writeActiveRecordingLock(session: Session): void {
-  writeFileSync(ACTIVE_LOCK, JSON.stringify({
+  writeFileSync(activeLockPath(), JSON.stringify({
     pid: process.pid,
     sessionDir: session.sessionDir,
     title: session.title,
@@ -24,7 +33,7 @@ export function writeActiveRecordingLock(session: Session): void {
 }
 
 export function clearActiveRecordingLock(): void {
-  try { unlinkSync(ACTIVE_LOCK); } catch {}
+  try { unlinkSync(activeLockPath()); } catch {}
 }
 
 export interface ActiveRecordingLock {
@@ -36,11 +45,12 @@ export interface ActiveRecordingLock {
 }
 
 export function readActiveRecordingLock(): ActiveRecordingLock | null {
-  if (!existsSync(ACTIVE_LOCK)) return null;
+  const lockPath = activeLockPath();
+  if (!existsSync(lockPath)) return null;
   try {
-    const data = JSON.parse(readFileSync(ACTIVE_LOCK, "utf-8")) as ActiveRecordingLock;
+    const data = JSON.parse(readFileSync(lockPath, "utf-8")) as ActiveRecordingLock;
     if (data.pid && isPidAlive(data.pid)) return data;
-    try { unlinkSync(ACTIVE_LOCK); } catch {}
+    try { unlinkSync(lockPath); } catch {}
     return null;
   } catch {
     return null;

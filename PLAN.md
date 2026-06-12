@@ -60,7 +60,7 @@ CLI tool for macOS (Apple Silicon) that records meetings, transcribes them local
 | FR-011 | Transcript entries are timestamped from session start time plus chunk offset. |
 | FR-012 | Full mode labels mic transcript entries as `Me` and system transcript entries as `Others`. |
 | FR-013 | The CLI prints periodic recording/transcription status while the session runs. |
-| FR-014 | `meet start` detects stale `/tmp/meet-*` sessions with `session.json` and prints recovery instructions. |
+| FR-014 | `meet start` detects stale sessions in `~/.meet/sessions/` with `session.json` and prints recovery instructions. |
 | FR-015 | `meet setup` checks required dependencies, model path, permissions, platform, and writable directories. |
 
 ### Non-Functional Requirements
@@ -82,16 +82,16 @@ CLI tool for macOS (Apple Silicon) that records meetings, transcribes them local
 |---|---|---|
 | AC-001 | Start a full-mode session for at least 45 seconds, then press Ctrl-C. | Final markdown exists and includes transcribed mic/system chunks in timestamp order. |
 | AC-002 | Start a mic-only session for at least 30 seconds, then press Ctrl-C. | Final markdown exists and contains mic transcript entries without `Others` entries. |
-| AC-003 | Kill the Node process after at least one finalized chunk exists. | Finalized `*.wav` chunks and `session.json` remain in `/tmp/meet-{id}/`. |
+| AC-003 | Kill the Node process after at least one finalized chunk exists. | Finalized `*.wav` chunks and `session.json` remain in `~/.meet/sessions/meet-{id}/`. |
 | AC-004 | Kill the Swift process while Node is running. | Node reports capture failure, processes finalized chunks, and preserves session data. |
 | AC-005 | Create `mic-001.wav.tmp` in a session directory. | The pipeline ignores it and does not call `whisper-cli` for that file. |
-| AC-006 | Restart `meet start` with an existing stale `/tmp/meet-*` session. | CLI prints stale session path and recovery guidance before starting or exits with clear instructions. |
+| AC-006 | Restart `meet start` with an existing stale session in `~/.meet/sessions/`. | CLI prints stale session path and recovery guidance before starting or exits with clear instructions. |
 | AC-007 | Run `meet setup` without `whisper-cli` installed. | CLI reports the missing dependency and installation guidance. |
 | AC-008 | Run `meet setup` without microphone or Screen Recording permission. | CLI reports the missing permission and where to grant it. |
 
 ### Session State Model
 
-`/tmp/meet-{id}/session.json`:
+`~/.meet/sessions/meet-{id}/session.json`:
 
 ```json
 {
@@ -100,7 +100,7 @@ CLI tool for macOS (Apple Silicon) that records meetings, transcribes them local
   "mode": "full",
   "startedAt": "2026-05-12T14:30:00.000Z",
   "chunkDurationSeconds": 15,
-  "sessionDir": "/tmp/meet-abc123",
+  "sessionDir": "~/.meet/sessions/meet-abc123",
   "outputFile": "/Users/name/Meetings/2026-05-12_14-30-weekly-standup/transcript.md",
   "capturePid": 12345,
   "status": "recording",
@@ -135,8 +135,8 @@ State must be updated atomically: write a temporary JSON file, then rename it ov
 ```
 meet start "Weekly Standup"
 │
-├─ Create session: /tmp/meet-{id}/
-├─ Write session metadata: /tmp/meet-{id}/session.json
+├─ Create session: ~/.meet/sessions/meet-{id}/
+├─ Write session metadata: ~/.meet/sessions/meet-{id}/session.json
 ├─ Create output:  ~/Meetings/2026-05-12_14-30-Weekly-Standup/transcript.md
 ├─ Start Swift AudioCapture
 │   ├─ Mic (AVAudioEngine, 16kHz mono, VoiceProcessing IO enabled)
@@ -144,7 +144,7 @@ meet start "Weekly Standup"
 │   └─ System (ScreenCaptureKit, 16kHz mono, excludesCurrentProcess)
 │       └─ Every 15s: sys-001.wav.tmp → atomic rename → sys-001.wav
 │
-├─ Node.js pipeline watches finalized *.wav files in /tmp/meet-{id}/
+├─ Node.js pipeline watches finalized *.wav files in ~/.meet/sessions/meet-{id}/
 │   ├─ New mic-NNN.wav → whisper-cli -l ru -m ggml-small.bin → "Me: ..."
 │   ├─ New sys-NNN.wav → whisper-cli -l ru -m ggml-small.bin → "Others: ..."
 │   ├─ Append each transcript entry to output markdown incrementally
@@ -318,7 +318,7 @@ config.height = 2
 
 **CLI interface:**
 ```
-AudioCapture --output-dir /tmp/meet-abc123 --chunk-duration 15 --mode full
+AudioCapture --output-dir ~/.meet/sessions/meet-abc123 --chunk-duration 15 --mode full
 # Writes finalized chunks: mic-001.wav, sys-001.wav, mic-002.wav, sys-002.wav, ...
 # Writes temporary chunks only as: *.wav.tmp
 # SIGINT/SIGTERM → flush final chunks best-effort and exit cleanly
@@ -351,7 +351,7 @@ whisper-cli -m <model> -l ru -f <wav> --no-timestamps -otxt -of <base> --suppres
 - Rescans session dir on startup and shutdown for finalized unprocessed chunks
 - Sequential processing queue (one whisper instance at a time)
 - Deduplication: skip already-processed chunks
-- Durable state: update `/tmp/meet-{id}/session.json` after each successful transcription
+- Durable state: update `~/.meet/sessions/meet-{id}/session.json` after each successful transcription
 - Emits transcript events
 
 **assembler.ts** — Merges into markdown:
@@ -389,16 +389,16 @@ whisper-cli -m <model> -l ru -f <wav> --no-timestamps -otxt -of <base> --suppres
 - Print final output path
 
 **Crash recovery:**
-- On `meet start`, detect stale `/tmp/meet-*` sessions with `session.json`
+- On `meet start`, detect stale sessions in `~/.meet/sessions/` with `session.json`
 - Print recovery instructions and session paths
-- Post-MVP command: `meet recover /tmp/meet-{id}` to process finalized WAV chunks not already present in the transcript
+- Post-MVP command: `meet recover ~/.meet/sessions/meet-{id}` to process finalized WAV chunks not already present in the transcript
 
 ### Step 9: Setup, checks, and polish ⏳
 
 - Config file: `~/.meet/config.json` — model path, output dir, chunk duration, language ✅
 - Permission checks: verify/diagnose Screen Recording + Microphone on `meet setup` and `meet start` — partial (checks binary/model only)
 - Dependency checks: `whisper-cli`, model file, Swift binary, macOS version, Apple Silicon architecture — partial
-- Crash recovery: check for stale sessions in `/tmp/meet-*` and print recovery instructions ✅
+- Crash recovery: check for stale sessions in `~/.meet/sessions/` and print recovery instructions ✅
 - Process management: PID file in session dir ✅
 - Future background mode: implement `meet stop` against persisted PID/session state
 

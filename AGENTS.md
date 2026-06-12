@@ -51,7 +51,7 @@ node dist/main.js start "Meeting Title"              # Run
 - WAV format: 16kHz mono 16-bit PCM, chunk duration: 15s
 - Foreground recording — `meet start` blocks, q/Ctrl-C to stop
 - Auto-stop: max duration (default 60min) and no-text timeout (default 10min)
-- Session state: `/tmp/meet-{id}/session.json` — written atomically
+- Session state: `~/.meet/sessions/meet-{id}/session.json` — written atomically, cleaned up after finalization
 - Output: `~/Meetings/YYYY-MM-DD_HH-MM-{slug}/transcript.md`
 - Config: `~/.meet/config.json`
 - Live model: `~/.meet/models/ggml-small.bin` (466MB)

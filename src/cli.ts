@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { loadConfig, getOutputPath, getOutputDir, ensureDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic } from "./storage.js";
+import { loadConfig, getOutputPath, getOutputDir, ensureDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic, getSessionsDir } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
 import { appendEntry, makeHeader, chunkToTimestamp } from "./assembler.js";
 import { runOpencodeQuestion } from "./opencode.js";
@@ -131,7 +131,8 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   }
 
   const id = nanoid(8);
-  const sessionDir = `/tmp/meet-${id}`;
+  const sessionsDir = getSessionsDir();
+  const sessionDir = join(sessionsDir, `meet-${id}`);
   await mkdir(sessionDir, { recursive: true });
 
   const startedAt = new Date();
