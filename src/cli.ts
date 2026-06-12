@@ -8,7 +8,7 @@ import { runTagPicker, writeMetaFile } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
 import { finalizeSession } from "./finalize.js";
 import { showStatus } from "./status.js";
-import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
+import { writeActiveRecordingLock, clearActiveRecordingLock, isActiveRecording, readActiveRecordingLock } from "./locks.js";
 import { transcribeImport, type ImportOptions } from "./import.js";
 import { spawn, ChildProcess, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -126,6 +126,17 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   if (setupErrors.length > 0) {
     for (const e of setupErrors) {
       console.log(chalk.red(e));
+    }
+    process.exit(1);
+  }
+
+  if (isActiveRecording()) {
+    const lock = readActiveRecordingLock();
+    console.log(chalk.red("Another recording is already active."));
+    if (lock) {
+      console.log(chalk.gray(`  Title: ${lock.title}`));
+      console.log(chalk.gray(`  PID: ${lock.pid}`));
+      console.log(chalk.gray(`  Session: ${lock.sessionDir}`));
     }
     process.exit(1);
   }
@@ -317,36 +328,42 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     }
   };
 
+  const doFinalize = async () => {
+    await stopRecording();
+    await promptTags(session);
+
+    if (autoStopReason) {
+      const label = autoStopReason === "max_duration" ? "max duration" : "no text timeout";
+      console.log(chalk.yellow(`Auto-stopped (${label}). Finalizing...`));
+    } else {
+      console.log(chalk.yellow("Finalizing..."));
+    }
+
+    const result = await finalizeSession(sessionDir, {
+      foreground: true,
+      pauseForActiveRecording: false,
+      onProgress: (msg) => {
+        process.stdout.write(`\r${chalk.gray(msg)}  `);
+        if (msg.startsWith("Done:") || msg.startsWith("Transcribed")) {
+          process.stdout.write("\n");
+        }
+      },
+    });
+    for (const w of result.warnings) console.log(chalk.yellow(w));
+
+    console.log(chalk.green(`Transcript: ${outputFile}`));
+    console.log(chalk.gray(`Transcribed ${result.entries.length} segments`));
+  };
+
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
 
     try {
-      await stopRecording();
-      await promptTags(session);
-
-      session.status = "queued";
-      await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
-
-      const reasonStr = autoStopReason
-        ? ` (${autoStopReason === "max_duration" ? "max duration" : "no text timeout"})`
-        : "";
-      console.log(chalk.green(`Finalization queued in background: ${sessionDir}${reasonStr}`));
-      console.log(chalk.gray(`Progress: meet status`));
-      console.log(chalk.gray(`Transcript: ${outputFile}`));
-
-      const binPath = process.argv[1];
-      const child = spawn(process.execPath, [binPath, "finalize", sessionDir], {
-        detached: true,
-        stdio: "ignore",
-      });
-      child.unref();
-
+      await doFinalize();
       process.exit(0);
     } catch (err) {
-      stopStatus();
-      await stopCapture(2000).catch(() => {});
-      console.log(chalk.red(`Shutdown failed: ${formatError(err)}`));
+      console.log(chalk.red(`Finalization failed: ${formatError(err)}`));
       console.log(chalk.yellow(`Recoverable session: ${sessionDir}`));
       console.log(chalk.yellow(`Partial transcript: ${outputFile}`));
       process.exit(1);
@@ -429,26 +446,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     shuttingDown = true;
 
     try {
-      await stopRecording();
-      await promptTags(session);
-
-      console.log(chalk.yellow("Finalizing..."));
-      const result = await finalizeSession(sessionDir, {
-        foreground: true,
-        pauseForActiveRecording: false,
-        onProgress: (msg) => {
-          process.stdout.write(`\r${chalk.gray(msg)}  `);
-          if (msg.startsWith("Done:") || msg.startsWith("Transcribed")) {
-            process.stdout.write("\n");
-          }
-        },
-      });
-      for (const w of result.warnings) console.log(chalk.yellow(w));
-      const entries = result.entries;
-
-      console.log(chalk.green(`Transcript: ${outputFile}`));
-      console.log(chalk.gray(`Transcribed ${entries.length} segments`));
-
+      await doFinalize();
       process.exit(0);
     } catch (err) {
       console.log(chalk.red(`Finalization failed: ${formatError(err)}`));
