@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { loadConfig, getOutputPath, getOutputDir, ensureDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic, getSessionsDir } from "./storage.js";
+import { loadConfig, getOutputPath, getOutputDir, ensureDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
 import { appendEntry, makeHeader, chunkToTimestamp } from "./assembler.js";
 import { runOpencodeQuestion } from "./opencode.js";
@@ -533,19 +533,18 @@ function formatError(err: unknown): string {
 function checkSetup(config: Config, mode: string): string[] {
   const errors: string[] = [];
 
-  const commonPaths = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"];
-  const whisperPath = commonPaths.find((p) => existsSync(p));
-  if (!whisperPath) {
+  const whisperPath = resolveWhisperBin(config);
+  if (!existsSync(whisperPath)) {
     errors.push("whisper-cli not found. Install: brew install whisper-cpp");
   }
 
-  const liveModelPath = expandPath(config.liveModelPath || config.modelPath);
+  const liveModelPath = resolveModelPath(config, "live");
   if (!existsSync(liveModelPath)) {
     errors.push(`Live model not found: ${liveModelPath}. Run: meet setup or scripts/setup.sh`);
   }
 
   if (config.finalRetranscribe) {
-    const finalModelPath = expandPath(config.finalModelPath || config.modelPath);
+    const finalModelPath = resolveModelPath(config, "final");
     if (!existsSync(finalModelPath)) {
       console.log(chalk.yellow(`  Final model not found: ${finalModelPath} (final pass will use live transcript)`));
       console.log(chalk.gray(`    Download: curl -L -o ${finalModelPath} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin`));
@@ -567,9 +566,8 @@ async function runSetup() {
 
   let ok = true;
 
-  const commonPaths = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"];
-  const whisperPath = commonPaths.find((p) => existsSync(p));
-  if (whisperPath) {
+  const whisperPath = resolveWhisperBin(config);
+  if (existsSync(whisperPath)) {
     console.log(chalk.green("  whisper-cli: ") + whisperPath);
   } else {
     console.log(chalk.red("  whisper-cli: NOT FOUND"));
@@ -577,7 +575,7 @@ async function runSetup() {
     ok = false;
   }
 
-  const liveModelPath = expandPath(config.liveModelPath || config.modelPath);
+  const liveModelPath = resolveModelPath(config, "live");
   if (existsSync(liveModelPath)) {
     console.log(chalk.green("  live model: ") + liveModelPath);
   } else {
@@ -587,7 +585,7 @@ async function runSetup() {
   }
 
   if (config.finalRetranscribe) {
-    const finalModelPath = expandPath(config.finalModelPath || config.modelPath);
+    const finalModelPath = resolveModelPath(config, "final");
     if (existsSync(finalModelPath)) {
       console.log(chalk.green("  final model: ") + finalModelPath);
     } else {

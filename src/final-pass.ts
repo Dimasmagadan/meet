@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { copyFile } from "node:fs/promises";
 import type { Session, Config, TranscriptEntry } from "./types.js";
-import { loadConfig, expandPath } from "./storage.js";
+import { loadConfig, resolveModelPath } from "./storage.js";
 import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
 import { analyzeWavFile } from "./audio-metrics.js";
 import { filterEntries, type FinalChunkResult, type FilterConfig } from "./filters.js";
@@ -32,7 +32,7 @@ export async function runFinalPass(
     .filter((f) => /^((mic|sys)-\d{3}\.wav)$/.test(f))
     .sort();
 
-  const finalModelPath = expandPath(config.finalModelPath || config.modelPath);
+  const finalModelPath = resolveModelPath(config, "final");
 
   const results: FinalChunkResult[] = [];
   let done = 0;

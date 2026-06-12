@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Session, Config, TranscriptEntry, FinalizeProgress } from "./types.js";
-import { loadConfig, expandPath, writeAtomic } from "./storage.js";
+import { loadConfig, resolveModelPath, writeAtomic } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
 import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
 import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcriptEntriesToMap } from "./assembler.js";
@@ -168,7 +168,7 @@ export async function finalizeSession(
     let entries: TranscriptEntry[];
 
     if (config.finalRetranscribe) {
-      const finalModelPath = expandPath(config.finalModelPath || config.modelPath);
+      const finalModelPath = resolveModelPath(config, "final");
       if (!existsSync(finalModelPath)) {
         warn(`Final model not found: ${finalModelPath}, using live transcript`);
         const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);

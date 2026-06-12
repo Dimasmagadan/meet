@@ -7,6 +7,22 @@ import type { Chunk, Session, Config, TranscriptEntry } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import { readFinalizerLock } from "./locks.js";
 
+const WHISPER_CANDIDATES = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"];
+
+export function resolveWhisperBin(config: Config): string {
+  if (config.whisperBin && config.whisperBin !== "whisper-cli") {
+    return expandPath(config.whisperBin);
+  }
+  return WHISPER_CANDIDATES.find((p) => existsSync(p)) ?? "whisper-cli";
+}
+
+export function resolveModelPath(config: Config, pass: "live" | "final"): string {
+  const raw = pass === "final"
+    ? (config.finalModelPath || config.modelPath)
+    : (config.liveModelPath || config.modelPath);
+  return expandPath(raw);
+}
+
 export function expandPath(p: string): string {
   return p.startsWith("~/") || p === "~" ? p.replace(/^~/, homedir()) : p;
 }

@@ -4,6 +4,7 @@ import type { Config, TranscribeOptions, AudioMetrics } from "./types.js";
 import { readPcmSamples, computeRmsDb, computePeakDb } from "./audio-metrics.js";
 import { detectSpeech } from "./vad.js";
 import { getPhrasebook } from "./phrasebook.js";
+import { resolveWhisperBin, resolveModelPath } from "./storage.js";
 
 export interface TranscribeResult {
   chunkIndex: number;
@@ -114,12 +115,8 @@ export async function transcribeChunk(
     }
   }
 
-  const effectiveModelPath = options?.modelPath
-    ?? (options?.pass === "final" ? (config.finalModelPath || config.modelPath) : (config.liveModelPath || config.modelPath));
-
-  const modelPath = effectiveModelPath.startsWith("~")
-    ? effectiveModelPath.replace("~", process.env.HOME || "")
-    : effectiveModelPath;
+  const modelPath = options?.modelPath
+    ?? resolveModelPath(config, options?.pass ?? "live");
 
   let transcribePath = wavPath;
   let normalizedTmp = false;
@@ -152,7 +149,7 @@ export async function transcribeChunk(
   ];
 
   return new Promise((resolve, reject) => {
-    execFile(config.whisperBin, args, { timeout: 120_000, maxBuffer: 1024 * 1024 }, async (err) => {
+    execFile(resolveWhisperBin(config), args, { timeout: 120_000, maxBuffer: 1024 * 1024 }, async (err) => {
       if (normalizedTmp) {
         await unlink(transcribePath).catch(() => {});
       }

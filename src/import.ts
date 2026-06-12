@@ -5,7 +5,7 @@ import { join, basename, extname, resolve } from "node:path";
 import chalk from "chalk";
 import { nanoid } from "nanoid";
 import type { Session, Config, TranscriptEntry } from "./types.js";
-import { loadConfig, expandPath, getOutputDir, getOutputPath, getSessionsDir } from "./storage.js";
+import { loadConfig, expandPath, getOutputDir, getOutputPath, getSessionsDir, resolveWhisperBin } from "./storage.js";
 import { cleanText } from "./transcriber.js";
 import { getPhrasebook } from "./phrasebook.js";
 import { assembleMarkdown } from "./assembler.js";
@@ -58,8 +58,8 @@ export async function transcribeImport(
     process.exit(1);
   }
 
-  const whisperPath = findWhisper();
-  if (!whisperPath) {
+  const whisperPath = resolveWhisperBin(config);
+  if (!existsSync(whisperPath)) {
     console.log(chalk.red("whisper-cli not found. Install: brew install whisper-cpp"));
     process.exit(1);
   }
@@ -462,11 +462,6 @@ export function selectModel(config: Config, preference?: "small" | "medium"): st
   if (existsSync(mediumPath)) return mediumPath;
 
   return expandPath(config.liveModelPath || config.modelPath);
-}
-
-function findWhisper(): string | null {
-  const paths = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"];
-  return paths.find((p) => existsSync(p)) ?? null;
 }
 
 function checkFfmpeg(): boolean {
