@@ -35,7 +35,7 @@ export function createProgram(): Command {
     .option("--voice-processing", "Enable VoiceProcessing IO echo cancellation (default: off)")
     .action(async (title: string, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean }) => {
       const mode = opts.mic ? "mic" as const : "full" as const;
-      await startSession(title, mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing);
+      await startSessionLoop(title, mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing);
     });
 
   program
@@ -102,7 +102,20 @@ export function createProgram(): Command {
   return program;
 }
 
-async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean) {
+async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean) {
+  let title = initialTitle;
+
+  while (true) {
+    const result = await startSession(title, mode, silenceTimeout, maxDurationMinutes, noTextTimeoutMinutes, voiceProcessing);
+    if (!result.startNextMeeting) {
+      break;
+    }
+    title = "meeting";
+    console.log(chalk.cyan("\nStarting next meeting...\n"));
+  }
+}
+
+async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean): Promise<{ startNextMeeting: boolean }> {
   const config = loadConfig();
 
   const stale = findStaleSessions();
@@ -169,7 +182,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
-  console.log(chalk.gray("Press q/s to stop, p to pause, e to +15m, a to ask opencode\n"));
+  console.log(chalk.gray("Press q to quit (bg all), s to stop (drain live inline), n to next meeting, p to pause, e to +15m, a to ask opencode\n"));
 
   const recorder = new Recorder(session, config, {
     silenceTimeout,
@@ -178,7 +191,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     voiceProcessing: voiceProcessing ?? config.micVoiceProcessing,
   });
 
-  await recorder.run();
+  return await recorder.run();
 }
 
 function checkSetup(config: Config, mode: string): string[] {

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import chalk from "chalk";
 import type { Session } from "./types.js";
 import { readActiveRecordingLock, readFinalizerLock } from "./locks.js";
+import { getSessionsDir } from "./storage.js";
 
 export function showStatus(): void {
   let found = false;
@@ -87,16 +88,17 @@ export function showStatus(): void {
 }
 
 function findSessions(): Session[] {
-  const tmpDir = "/tmp";
+  const sessionsDir = getSessionsDir();
   const sessions: Session[] = [];
   try {
-    const entries = readdirSync(tmpDir);
+    const entries = readdirSync(sessionsDir);
     for (const e of entries) {
       if (!e.startsWith("meet-")) continue;
-      const sessionPath = join(tmpDir, e, "session.json");
+      const sessionPath = join(sessionsDir, e, "session.json");
       if (!existsSync(sessionPath)) continue;
       try {
-        sessions.push(JSON.parse(readFileSync(sessionPath, "utf-8")));
+        const s = JSON.parse(readFileSync(sessionPath, "utf-8")) as Session;
+        if (s.sessionDir) sessions.push(s);
       } catch {}
     }
   } catch {}

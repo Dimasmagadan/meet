@@ -1,6 +1,5 @@
 import chalk from "chalk";
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 import { Pipeline } from "./pipeline.js";
@@ -8,7 +7,6 @@ import { appendEntry, makeHeader, chunkToTimestamp } from "./assembler.js";
 import { runOpencodeQuestion } from "./opencode.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
-import { finalizeSession, type FinalizeResult } from "./finalize.js";
 import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
 import { getCaptureBinPath, writeAtomic } from "./storage.js";
 import { join } from "node:path";
@@ -38,6 +36,11 @@ export class Recorder {
   private readonly startedAt: Date;
   private readonly outputFile: string;
   private readonly header: string;
+  private startNextMeeting = false;
+  private resolveRun: (() => void) | null = null;
+  private sigintHandler: (() => void) | null = null;
+  private sigtermHandler: (() => void) | null = null;
+  private stdinDataHandler: ((data: Buffer) => void) | null = null;
 
   constructor(session: Session, config: Config, opts: RecorderOptions) {
     this.session = session;
@@ -49,20 +52,22 @@ export class Recorder {
     this.pipeline = new Pipeline(session);
   }
 
-  async run(): Promise<void> {
+  async run(): Promise<{ startNextMeeting: boolean }> {
     this.initPipeline();
     this.startCapture();
-    this.setupSignalHandlers();
 
     await new Promise<void>((resolve) => {
+      this.resolveRun = resolve;
       this.captureProcess?.on("exit", () => {
+        // Only auto-trigger if capture exited on its own (not via our stopCapture).
         if (!this.shuttingDown) {
           this.shutdown().then(resolve);
-        } else {
-          resolve();
         }
+        // If shuttingDown, doStop*/nextMeeting will call resolveRun themselves.
       });
     });
+
+    return { startNextMeeting: this.startNextMeeting };
   }
 
   private initPipeline(): void {
@@ -99,6 +104,7 @@ export class Recorder {
     });
 
     this.pipeline.start();
+    this.setupSignalHandlers();
   }
 
   private startCapture(): void {
@@ -195,6 +201,23 @@ export class Recorder {
     clearActiveRecordingLock();
   }
 
+  private cleanup(): void {
+    if (this.sigintHandler) {
+      process.removeListener("SIGINT", this.sigintHandler);
+      this.sigintHandler = null;
+    }
+    if (this.sigtermHandler) {
+      process.removeListener("SIGTERM", this.sigtermHandler);
+      this.sigtermHandler = null;
+    }
+    if (this.stdinDataHandler && process.stdin.isTTY) {
+      process.stdin.removeListener("data", this.stdinDataHandler);
+      this.stdinDataHandler = null;
+      process.stdin.setRawMode(false);
+    }
+    this.pipeline.close().catch(() => {});
+  }
+
   private async promptTags(): Promise<void> {
     if (!process.stdin.isTTY) return;
     try {
@@ -211,87 +234,88 @@ export class Recorder {
     }
   }
 
-  private async doFinalize(): Promise<void> {
-    await this.stopRecording();
-
-    if (this.autoStopReason) {
-      const label =
-        this.autoStopReason === "max_duration" ? "max duration" : "no text timeout";
-      console.log(chalk.yellow(`Auto-stopped (${label}). Finalizing...`));
-    }
-
-    console.log(chalk.yellow("Final transcript started — pick tags while it runs\n"));
-
-    let latestMsg = "";
-    let finalizeCompleted = false;
-    let finalizeResult: FinalizeResult | null = null;
-    let finalizeError: unknown = null;
-
-    const finalizePromise = finalizeSession(this.session.sessionDir, {
-      foreground: true,
-      pauseForActiveRecording: false,
-      onProgress: (msg) => {
-        latestMsg = msg;
-      },
-    })
-      .then((result) => {
-        finalizeResult = result;
-        finalizeCompleted = true;
-      })
-      .catch((err) => {
-        finalizeError = err;
-        finalizeCompleted = true;
-      });
-
-    await this.promptTags();
-
-    if (!finalizeCompleted) {
-      const progressInterval = setInterval(() => {
-        process.stdout.write(`\r${chalk.gray(latestMsg)}  `);
-      }, 200);
-
-      try {
-        await finalizePromise;
-      } finally {
-        clearInterval(progressInterval);
-      }
-    }
-
-    if (finalizeError) throw finalizeError;
-    const result = finalizeResult!;
-
-    process.stdout.write("\n");
-    for (const w of result.warnings) console.log(chalk.yellow(w));
-
-    console.log(chalk.green(`Transcript: ${this.outputFile}`));
-    console.log(chalk.gray(`Transcribed ${result.entries.length} segments`));
+  private spawnBackgroundFinalizer(): void {
+    const binPath = process.argv[1];
+    const child = spawn(process.execPath, [binPath, "finalize", this.session.sessionDir], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
   }
 
+  // q / SIGINT / auto-stop: background everything, return to shell.
   private async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
 
     try {
-      await this.doFinalize();
+      await this.stopRecording();
+      if (this.autoStopReason) {
+        const label = this.autoStopReason === "max_duration" ? "max duration" : "no text timeout";
+        console.log(chalk.yellow(`Auto-stopped (${label}).`));
+      }
+      await this.promptTags();
+      this.spawnBackgroundFinalizer();
+      console.log(chalk.green(`Finalizer started in background (meet status to check)`));
+      console.log(chalk.gray(`Transcript: ${this.outputFile}`));
       process.exit(0);
     } catch (err) {
-      console.log(chalk.red(`Finalization failed: ${formatError(err)}`));
+      console.log(chalk.red(`Failed: ${formatError(err)}`));
       console.log(chalk.yellow(`Recoverable session: ${this.session.sessionDir}`));
-      console.log(chalk.yellow(`Partial transcript: ${this.outputFile}`));
       process.exit(1);
     }
   }
 
-  private async stopAndIndex(): Promise<void> {
+  // s: drain small model inline, then background big-model pass.
+  private async stopAndFinalizeForeground(): Promise<void> {
     if (this.opencodeRunning || this.shuttingDown) return;
     this.shuttingDown = true;
 
     try {
-      await this.doFinalize();
+      await this.stopRecording();
+
+      console.log(chalk.yellow("Finishing live transcription..."));
+      let latestMsg = "";
+      const progressInterval = setInterval(() => {
+        process.stdout.write(`\r${chalk.gray(latestMsg)}  `);
+      }, 200);
+      try {
+        await this.pipeline.stop((progress) => {
+          latestMsg = `Live pass: ${progress.done}/${progress.total}`;
+        });
+      } finally {
+        clearInterval(progressInterval);
+        process.stdout.write("\n");
+      }
+
+      await this.promptTags();
+      this.spawnBackgroundFinalizer();
+      console.log(chalk.green(`Final pass running in background (meet status to check)`));
+      console.log(chalk.gray(`Transcript: ${this.outputFile}`));
       process.exit(0);
     } catch (err) {
-      console.log(chalk.red(`Finalization failed: ${formatError(err)}`));
+      console.log(chalk.red(`Failed: ${formatError(err)}`));
+      console.log(chalk.yellow(`Recoverable session: ${this.session.sessionDir}`));
       process.exit(1);
+    }
+  }
+
+  // n: background everything, clean up listeners, return to start next meeting.
+  private async nextMeeting(): Promise<void> {
+    if (this.opencodeRunning || this.shuttingDown) return;
+    this.shuttingDown = true;
+    this.startNextMeeting = true;
+
+    try {
+      await this.stopRecording();
+      this.spawnBackgroundFinalizer();
+      console.log(chalk.green(`Finalizer running in background (meet status to check)`));
+    } catch (err) {
+      console.log(chalk.red(`Failed: ${formatError(err)}`));
+      this.startNextMeeting = false;
+    } finally {
+      this.cleanup();
+      this.resolveRun?.();
     }
   }
 
@@ -476,18 +500,22 @@ export class Recorder {
   }
 
   private setupSignalHandlers(): void {
-    process.on("SIGINT", () => this.shutdown());
-    process.on("SIGTERM", () => this.shutdown());
+    this.sigintHandler = () => this.shutdown();
+    this.sigtermHandler = () => this.shutdown();
+    process.on("SIGINT", this.sigintHandler);
+    process.on("SIGTERM", this.sigtermHandler);
 
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(true);
       process.stdin.resume();
-      process.stdin.on("data", (data: Buffer) => {
+      this.stdinDataHandler = (data: Buffer) => {
         const key = data.toString();
         if (key === "q" || key === "Q") {
-          this.shutdown();
+          void this.shutdown();
         } else if (key === "s" || key === "S") {
-          this.stopAndIndex();
+          void this.stopAndFinalizeForeground();
+        } else if (key === "n" || key === "N") {
+          void this.nextMeeting();
         } else if (key === "a" || key === "A") {
           this.askQuestion();
         } else if (key === "p" || key === "P") {
@@ -495,7 +523,8 @@ export class Recorder {
         } else if (key === "e" || key === "E") {
           this.extendCap();
         }
-      });
+      };
+      process.stdin.on("data", this.stdinDataHandler);
     }
 
     this.startStatus();

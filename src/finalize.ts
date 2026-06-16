@@ -7,7 +7,7 @@ import { loadConfig, resolveModelPath, writeAtomic } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
 import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
 import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcriptEntriesToMap } from "./assembler.js";
-import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording } from "./locks.js";
+import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock, readGlobalFinalPassLock } from "./locks.js";
 import { analyzeWavFile } from "./audio-metrics.js";
 import { readEntryRecords } from "./entries-store.js";
 
@@ -121,6 +121,26 @@ async function waitForInactiveRecording(
   }
 }
 
+async function waitForGlobalFinalPassSlot(
+  sessionDir: string,
+  session: Session,
+  progressWriter: ReturnType<typeof createDebouncedProgressWriter>,
+  onProgress?: (msg: string) => void,
+): Promise<void> {
+  while (!acquireGlobalFinalPassLock(sessionDir)) {
+    const existing = readGlobalFinalPassLock();
+    const msg = existing ? `waiting for final pass in ${existing.sessionDir}` : "waiting for final pass lock";
+    session.status = "paused";
+    await progressWriter.update(makeProgress("paused", session.finalize?.done ?? 0, session.finalize?.total ?? 0, msg));
+    onProgress?.(`Paused: ${msg}...`);
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  if (session.status === "paused") {
+    session.status = "finalizing";
+    await progressWriter.update(makeProgress("final", session.finalize?.done ?? 0, session.finalize?.total ?? 0));
+  }
+}
+
 export async function finalizeSession(
   sessionDir: string,
   options: FinalizeOptions,
@@ -197,42 +217,53 @@ export async function finalizeSession(
     // Build base results from live + stored entries
     const baseResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
 
-    if (config.finalRetranscribe) {
-      const finalModelPath = resolveModelPath(config, "final");
-      if (!existsSync(finalModelPath)) {
-        warn(`Final model not found: ${finalModelPath}, using live transcript`);
-        const sessionEntries = entriesFromSession(session, baseResults);
-        entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
-        if (entries.length === 0 && fallbackEntries.length > 0) {
-          entries = await filterEntriesByAudio(fallbackEntries, session, config);
-        }
-      } else {
-        try {
-          log(`Final high-quality pass (${config.finalModelPath.replace(/^.*\//, "")})...`);
-
-          const beforeChunk = options.pauseForActiveRecording
-            ? async () => { await waitForInactiveRecording(session, "final", progressWriter, log); }
-            : undefined;
-
-          const sessionEntries = entriesFromSession(session, baseResults);
-          entries = await runFinalPass(session, config, (done, total) => {
-            progressWriter.update(makeProgress("final", done, total));
-            log(`Final pass: ${done}/${total} chunks`);
-          }, sessionEntries, beforeChunk);
-        } catch (err) {
-          warn(`Final pass failed: ${err instanceof Error ? err.message : String(err)}, using live transcript`);
+    let finalPassLocked = false;
+    try {
+      if (config.finalRetranscribe) {
+        const finalModelPath = resolveModelPath(config, "final");
+        if (!existsSync(finalModelPath)) {
+          warn(`Final model not found: ${finalModelPath}, using live transcript`);
           const sessionEntries = entriesFromSession(session, baseResults);
           entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
           if (entries.length === 0 && fallbackEntries.length > 0) {
             entries = await filterEntriesByAudio(fallbackEntries, session, config);
           }
+        } else {
+          // Wait for global final-pass slot (only one big-model pass at a time)
+          await waitForGlobalFinalPassSlot(sessionDir, session, progressWriter, log);
+          finalPassLocked = true;
+
+          try {
+            log(`Final high-quality pass (${config.finalModelPath.replace(/^.*\//, "")})...`);
+
+            const beforeChunk = options.pauseForActiveRecording
+              ? async () => { await waitForInactiveRecording(session, "final", progressWriter, log); }
+              : undefined;
+
+            const sessionEntries = entriesFromSession(session, baseResults);
+            entries = await runFinalPass(session, config, (done, total) => {
+              progressWriter.update(makeProgress("final", done, total));
+              log(`Final pass: ${done}/${total} chunks`);
+            }, sessionEntries, beforeChunk);
+          } catch (err) {
+            warn(`Final pass failed: ${err instanceof Error ? err.message : String(err)}, using live transcript`);
+            const sessionEntries = entriesFromSession(session, baseResults);
+            entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
+            if (entries.length === 0 && fallbackEntries.length > 0) {
+              entries = await filterEntriesByAudio(fallbackEntries, session, config);
+            }
+          }
+        }
+      } else {
+        const sessionEntries = entriesFromSession(session, baseResults);
+        entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
+        if (entries.length === 0 && fallbackEntries.length > 0) {
+          entries = await filterEntriesByAudio(fallbackEntries, session, config);
         }
       }
-    } else {
-      const sessionEntries = entriesFromSession(session, baseResults);
-      entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
-      if (entries.length === 0 && fallbackEntries.length > 0) {
-        entries = await filterEntriesByAudio(fallbackEntries, session, config);
+    } finally {
+      if (finalPassLocked) {
+        releaseGlobalFinalPassLock();
       }
     }
 

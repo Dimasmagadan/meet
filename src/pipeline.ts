@@ -100,6 +100,15 @@ export class Pipeline {
     await this.drainQueue();
   }
 
+  // Close without draining — for the 'n' path where a detached finalizer takes over.
+  async close(): Promise<void> {
+    this.stopped = true;
+    if (this.watcher) {
+      await this.watcher.close();
+      this.watcher = null;
+    }
+  }
+
   private async rescan() {
     if (!existsSync(this.session.sessionDir)) return;
     const files = await readdir(this.session.sessionDir);
