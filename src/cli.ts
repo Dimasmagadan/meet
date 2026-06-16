@@ -169,7 +169,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
-  console.log(chalk.gray("Press q to stop, s to stop (foreground), a to ask opencode\n"));
+  console.log(chalk.gray("Press q/s to stop, p to pause, e to +15m, a to ask opencode\n"));
 
   const recorder = new Recorder(session, config, {
     silenceTimeout,

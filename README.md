@@ -55,7 +55,7 @@ bash scripts/setup.sh
 node dist/main.js start "Weekly Standup"
 ```
 
-Speak into your mic. Press `q` to stop and finalize, or `s` to stop with foreground finalization.
+Speak into your mic. Press `q` or `s` to stop, `p` to pause/resume, `e` to extend the cap by 15 minutes, or `a` to ask opencode.
 
 ## CLI Commands
 

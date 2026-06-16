@@ -15,6 +15,7 @@ class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var isRestarting = false
     private var restartCount = 0
     private var lastRestartTime: Date = Date.distantPast
+    var paused = false
 
     init(outputDir: URL, chunkDurationSeconds: Int, onChunkFinalized: @escaping (String) -> Void) {
         self.outputDir = outputDir
@@ -99,6 +100,7 @@ class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard isRunning, type == .audio else { return }
+        guard !paused else { return }
 
         guard let formatDesc = sampleBuffer.formatDescription,
               let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) else { return }

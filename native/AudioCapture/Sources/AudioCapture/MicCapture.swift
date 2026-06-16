@@ -16,6 +16,7 @@ class MicCapture {
     private var configObserver: NSObjectProtocol?
     private var restartCount = 0
     private var lastRestartTime: Date = Date.distantPast
+    var paused = false
 
     init(outputDir: URL, chunkDurationSeconds: Int, voiceProcessing: Bool = false, onChunkFinalized: @escaping (String) -> Void) {
         self.wavWriter = WAVWriter(outputDir: outputDir, prefix: "mic", chunkDurationSeconds: chunkDurationSeconds)
@@ -132,6 +133,8 @@ class MicCapture {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
         lastBufferTime = Date()
+
+        if paused { return }
 
         var monoSamples = [Int16]()
 

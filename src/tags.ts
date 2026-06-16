@@ -69,7 +69,7 @@ function hasTagCaseInsensitive(arr: string[], tag: string): boolean {
   return arr.some(t => t.toLowerCase() === lower);
 }
 
-export async function runTagPicker(session: Session): Promise<string[]> {
+export async function runTagPicker(session: Session, opts?: { note?: string }): Promise<string[]> {
   const selectedTags: string[] = [];
   const pendingAppends: Promise<void>[] = [];
   let existingTags = readTags();
@@ -80,30 +80,36 @@ export async function runTagPicker(session: Session): Promise<string[]> {
   const options = (): string[] => [...existingTags, DONE_OPTION, NEW_TAG_OPTION];
 
   const render = () => {
-    const opts = options();
+    const tagOpts = options();
     process.stdout.write("\x1B[?25l");
     process.stdout.write("\x1B[2J\x1B[H");
     const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
     process.stdout.write(
       chalk.cyan("Add tags to this call") +
-      chalk.gray(` (up/down move, Enter select, Ctrl-C skip, ${remaining}s timeout)\n\n`)
+      chalk.gray(` (up/down move, Enter select, Ctrl-C skip, ${remaining}s timeout)\n`)
     );
+
+    if (opts?.note) {
+      process.stdout.write(chalk.gray(`${opts.note}\n`));
+    }
+
+    process.stdout.write("\n");
 
     if (selectedTags.length > 0) {
       process.stdout.write(chalk.green(`Selected: ${selectedTags.join(", ")}\n\n`));
     }
 
-    for (let i = 0; i < opts.length; i++) {
+    for (let i = 0; i < tagOpts.length; i++) {
       const prefix = i === cursor ? chalk.cyan("> ") : "  ";
       let label: string;
-      if (opts[i] === DONE_OPTION) {
-        label = selectedTags.length > 0 ? chalk.green(opts[i]) : chalk.gray(opts[i]);
-      } else if (opts[i] === NEW_TAG_OPTION) {
-        label = chalk.yellow(opts[i]);
-      } else if (selectedTags.includes(opts[i])) {
-        label = chalk.green(`+ ${opts[i]}`);
+      if (tagOpts[i] === DONE_OPTION) {
+        label = selectedTags.length > 0 ? chalk.green(tagOpts[i]) : chalk.gray(tagOpts[i]);
+      } else if (tagOpts[i] === NEW_TAG_OPTION) {
+        label = chalk.yellow(tagOpts[i]);
+      } else if (selectedTags.includes(tagOpts[i])) {
+        label = chalk.green(`+ ${tagOpts[i]}`);
       } else {
-        label = opts[i];
+        label = tagOpts[i];
       }
       process.stdout.write(`${prefix}${label}\n`);
     }
@@ -179,8 +185,8 @@ export async function runTagPicker(session: Session): Promise<string[]> {
       } else if (buf === "\x1B[B" || buf === "j") {
         cursor = (cursor + 1) % options().length;
       } else if (buf === "\r" || buf === "\n") {
-        const opts = options();
-        const chosen = opts[cursor];
+        const tagOpts = options();
+        const chosen = tagOpts[cursor];
         if (chosen === DONE_OPTION) {
           finish(selectedTags);
           return;

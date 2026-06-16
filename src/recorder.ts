@@ -8,7 +8,7 @@ import { appendEntry, makeHeader, chunkToTimestamp } from "./assembler.js";
 import { runOpencodeQuestion } from "./opencode.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
-import { finalizeSession } from "./finalize.js";
+import { finalizeSession, type FinalizeResult } from "./finalize.js";
 import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
 import { getCaptureBinPath, writeAtomic } from "./storage.js";
 import { join } from "node:path";
@@ -32,6 +32,9 @@ export class Recorder {
   private shuttingDown = false;
   private statusInterval: ReturnType<typeof setInterval> | null = null;
   private opencodeRunning = false;
+  private paused = false;
+  private pausedAccumMs = 0;
+  private pauseStartedAt: number | null = null;
   private readonly startedAt: Date;
   private readonly outputFile: string;
   private readonly header: string;
@@ -195,21 +198,10 @@ export class Recorder {
   private async promptTags(): Promise<void> {
     if (!process.stdin.isTTY) return;
     try {
-      const tags = await runTagPicker(this.session);
+      const tags = await runTagPicker(this.session, { note: "Final transcription running in background…" });
       if (tags.length > 0) {
-        const latestSession = await readFile(
-          join(this.session.sessionDir, "session.json"),
-          "utf-8",
-        )
-          .then((d) => JSON.parse(d) as Session)
-          .catch(() => this.session);
-        latestSession.tags = tags;
         this.session.tags = tags;
-        await writeAtomic(
-          join(this.session.sessionDir, "session.json"),
-          JSON.stringify(latestSession, null, 2),
-        );
-        await writeMetaFile(latestSession, tags);
+        await writeMetaFile(this.session, tags);
         console.log(chalk.green(`Tags: ${tags.join(", ")}`));
       } else {
         console.log(chalk.gray("(no tags added)"));
@@ -221,26 +213,54 @@ export class Recorder {
 
   private async doFinalize(): Promise<void> {
     await this.stopRecording();
-    await this.promptTags();
 
     if (this.autoStopReason) {
       const label =
         this.autoStopReason === "max_duration" ? "max duration" : "no text timeout";
       console.log(chalk.yellow(`Auto-stopped (${label}). Finalizing...`));
-    } else {
-      console.log(chalk.yellow("Finalizing..."));
     }
 
-    const result = await finalizeSession(this.session.sessionDir, {
+    console.log(chalk.yellow("Final transcript started — pick tags while it runs\n"));
+
+    let latestMsg = "";
+    let finalizeCompleted = false;
+    let finalizeResult: FinalizeResult | null = null;
+    let finalizeError: unknown = null;
+
+    const finalizePromise = finalizeSession(this.session.sessionDir, {
       foreground: true,
       pauseForActiveRecording: false,
       onProgress: (msg) => {
-        process.stdout.write(`\r${chalk.gray(msg)}  `);
-        if (msg.startsWith("Done:") || msg.startsWith("Transcribed")) {
-          process.stdout.write("\n");
-        }
+        latestMsg = msg;
       },
-    });
+    })
+      .then((result) => {
+        finalizeResult = result;
+        finalizeCompleted = true;
+      })
+      .catch((err) => {
+        finalizeError = err;
+        finalizeCompleted = true;
+      });
+
+    await this.promptTags();
+
+    if (!finalizeCompleted) {
+      const progressInterval = setInterval(() => {
+        process.stdout.write(`\r${chalk.gray(latestMsg)}  `);
+      }, 200);
+
+      try {
+        await finalizePromise;
+      } finally {
+        clearInterval(progressInterval);
+      }
+    }
+
+    if (finalizeError) throw finalizeError;
+    const result = finalizeResult!;
+
+    process.stdout.write("\n");
     for (const w of result.warnings) console.log(chalk.yellow(w));
 
     console.log(chalk.green(`Transcript: ${this.outputFile}`));
@@ -275,10 +295,14 @@ export class Recorder {
     }
   }
 
+  private effectiveElapsedMs(): number {
+    return Date.now() - this.startedAt.getTime() - this.pausedAccumMs - (this.paused ? Date.now() - (this.pauseStartedAt ?? Date.now()) : 0);
+  }
+
   private checkAutoStop(): void {
     if (this.shuttingDown || this.autoStopReason) return;
 
-    const elapsedSec = (Date.now() - this.startedAt.getTime()) / 1000;
+    const elapsedSec = this.effectiveElapsedMs() / 1000;
 
     if (
       this.opts.maxDurationMinutes > 0 &&
@@ -325,9 +349,7 @@ export class Recorder {
     if (this.statusInterval) return;
     this.statusInterval = setInterval(() => {
       const stats = this.pipeline.getStats();
-      const elapsed = Math.floor(
-        (Date.now() - this.startedAt.getTime()) / 1000,
-      );
+      const elapsed = Math.floor(this.effectiveElapsedMs() / 1000);
       const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
       const secs = String(elapsed % 60).padStart(2, "0");
       const now = new Date().toLocaleTimeString("ru-RU", {
@@ -364,12 +386,46 @@ export class Recorder {
         }
       }
 
+      const status = this.paused ? chalk.yellow("PAUSED") : chalk.cyan(`Recording ${mins}:${secs}`);
       process.stdout.write(
-        `\r${chalk.cyan(`Recording ${mins}:${secs}`)} | chunks: mic ${this.micChunks}, sys ${this.sysChunks} | transcribed: ${stats.totalDone} | ${lagStr}${capStr}${noTextStr} | ${now}  `,
+        `\r${status} | chunks: mic ${this.micChunks}, sys ${this.sysChunks} | transcribed: ${stats.totalDone} | ${lagStr}${capStr}${noTextStr} | ${now}  `,
       );
 
       this.checkAutoStop();
     }, 5000);
+  }
+
+  private togglePause(): void {
+    if (this.shuttingDown || this.opencodeRunning) return;
+
+    if (this.paused) {
+      this.captureProcess?.kill("SIGUSR2");
+      this.pausedAccumMs += Date.now() - (this.pauseStartedAt ?? Date.now());
+      this.pauseStartedAt = null;
+      this.paused = false;
+      this.session.status = "recording";
+      process.stdout.write("\n");
+      console.log(chalk.green("▶ Resumed"));
+    } else {
+      this.captureProcess?.kill("SIGUSR1");
+      this.paused = true;
+      this.pauseStartedAt = Date.now();
+      this.session.status = "paused";
+      process.stdout.write("\n");
+      console.log(chalk.yellow("⏸ Paused"));
+    }
+  }
+
+  private extendCap(): void {
+    if (this.shuttingDown) return;
+    const EXTEND_MINUTES = 15;
+    if (this.opts.maxDurationMinutes > 0) {
+      this.opts.maxDurationMinutes += EXTEND_MINUTES;
+    } else {
+      const currentMinutes = Math.ceil(this.effectiveElapsedMs() / 60000);
+      this.opts.maxDurationMinutes = currentMinutes + EXTEND_MINUTES;
+    }
+    console.log(chalk.green(`Cap extended +${EXTEND_MINUTES}m → now ${this.opts.maxDurationMinutes}m`));
   }
 
   private askQuestion(): void {
@@ -434,6 +490,10 @@ export class Recorder {
           this.stopAndIndex();
         } else if (key === "a" || key === "A") {
           this.askQuestion();
+        } else if (key === "p" || key === "P") {
+          this.togglePause();
+        } else if (key === "e" || key === "E") {
+          this.extendCap();
         }
       });
     }

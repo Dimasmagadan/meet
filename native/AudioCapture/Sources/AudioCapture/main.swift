@@ -51,6 +51,8 @@ class CaptureRunner {
 
         signal(SIGINT) { _ in CaptureRunnerSignalRelay.shared.trigger() }
         signal(SIGTERM) { _ in CaptureRunnerSignalRelay.shared.trigger() }
+        signal(SIGUSR1) { _ in CaptureRunnerSignalRelay.shared.setPaused(true) }
+        signal(SIGUSR2) { _ in CaptureRunnerSignalRelay.shared.setPaused(false) }
 
         fputs("AudioCapture started: mode=\(mode) dir=\(outputDir) silence=\(silenceTimeout)s\n", stderr)
         logJSON("info", "capture_started", ["mode": mode, "dir": outputDir, "silence": silenceTimeout])
@@ -89,7 +91,11 @@ class CaptureRunner {
         }
 
         while !CaptureRunnerSignalRelay.shared.shouldStop {
-            if let mic = micCapture {
+            let relay = CaptureRunnerSignalRelay.shared
+            micCapture?.paused = relay.paused
+            systemCapture?.paused = relay.paused
+
+            if let mic = micCapture, !relay.paused {
                 mic.recoverIfStalled()
 
                 if silenceTimeout > 0 {
@@ -118,5 +124,8 @@ class CaptureRunner {
 class CaptureRunnerSignalRelay {
     static let shared = CaptureRunnerSignalRelay()
     var shouldStop = false
+    var paused = false
+
     func trigger() { shouldStop = true }
+    func setPaused(_ value: Bool) { paused = value }
 }
