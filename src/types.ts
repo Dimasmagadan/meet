@@ -90,6 +90,14 @@ export interface TranscriptEntry {
   text: string;
 }
 
+export interface EntryRecord {
+  source: "mic" | "sys";
+  index: number;
+  timestamp: string;
+  text: string;
+  rmsDb: number;
+}
+
 export const DEFAULT_CONFIG: Config = {
   modelPath: "~/.meet/models/ggml-small.bin",
   liveModelPath: "~/.meet/models/ggml-small.bin",

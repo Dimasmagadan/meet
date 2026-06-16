@@ -7,6 +7,7 @@ import { writeSession, loadConfig } from "./storage.js";
 import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
 import { analyzeWavFile } from "./audio-metrics.js";
 import { CaptureHealthMonitor, type HealthWarning, type CaptureHealthConfig } from "./capture-health.js";
+import { appendEntryRecord } from "./entries-store.js";
 
 type TranscribeCallback = (source: "mic" | "sys", index: number, text: string) => void;
 type FailureCallback = (source: "mic" | "sys", index: number, error: string) => void;
@@ -187,6 +188,18 @@ export class Pipeline {
 
       if (this.onTranscribed) {
         this.onTranscribed(item.source, item.index, result.text);
+      }
+
+      // Append to entries.jsonl for reliable recovery
+      const timestamp = new Date().toISOString().split("T")[1].slice(0, 8);
+      if (result.metrics) {
+        await appendEntryRecord(this.session.sessionDir, {
+          source: result.source,
+          index: result.chunkIndex,
+          timestamp,
+          text: result.text,
+          rmsDb: result.metrics.rmsDb,
+        }).catch(() => {});
       }
 
       await writeSession(this.session).catch(() => {});

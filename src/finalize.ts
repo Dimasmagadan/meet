@@ -9,6 +9,7 @@ import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
 import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcriptEntriesToMap } from "./assembler.js";
 import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording } from "./locks.js";
 import { analyzeWavFile } from "./audio-metrics.js";
+import { readEntryRecords } from "./entries-store.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
 
@@ -76,6 +77,25 @@ async function filterEntriesByAudio(
     const metrics = await analyzeWavFile(wavPath);
     const threshold = entry.source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     if (metrics.rmsDb >= threshold) {
+      filtered.push(entry);
+    }
+  }
+
+  return filtered;
+}
+
+function filterStoredEntriesByAudio(
+  entries: TranscriptEntry[],
+  stored: Map<string, number>,
+  config: Config,
+): TranscriptEntry[] {
+  const filtered: TranscriptEntry[] = [];
+
+  for (const entry of entries) {
+    const key = `${entry.source}-${String(entry.chunkIndex).padStart(3, "0")}`;
+    const rmsDb = stored.get(key) ?? -Infinity;
+    const threshold = entry.source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
+    if (rmsDb >= threshold) {
       filtered.push(entry);
     }
   }
@@ -159,20 +179,30 @@ export async function finalizeSession(
       try { await copyLiveTranscript(session.outputFile); } catch {}
     }
 
+    // Load stored entries from entries.jsonl (more reliable than parsing markdown)
+    const storedRecords = await readEntryRecords(sessionDir);
+    const storedRmsMap = new Map(storedRecords.map((r) => [`${r.source}-${String(r.index).padStart(3, "0")}`, r.rmsDb]));
+
     let fallbackEntries: TranscriptEntry[] = [];
     try {
+      // Fallback: try to parse transcript.md if entries.jsonl is missing/incomplete
       const existing = await readFile(session.outputFile, "utf-8").catch(() => "");
-      if (existing) fallbackEntries = parseTranscriptEntries(existing, { chunkDurationSeconds: session.chunkDurationSeconds, startedAt: session.startedAt });
+      if (existing && storedRecords.length === 0) {
+        fallbackEntries = parseTranscriptEntries(existing, { chunkDurationSeconds: session.chunkDurationSeconds, startedAt: session.startedAt });
+      }
     } catch {}
 
     let entries: TranscriptEntry[];
+
+    // Build base results from live + stored entries
+    const baseResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
 
     if (config.finalRetranscribe) {
       const finalModelPath = resolveModelPath(config, "final");
       if (!existsSync(finalModelPath)) {
         warn(`Final model not found: ${finalModelPath}, using live transcript`);
-        const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
-        entries = await filterEntriesByAudio(entriesFromSession(session, mergedResults), session, config);
+        const sessionEntries = entriesFromSession(session, baseResults);
+        entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
         if (entries.length === 0 && fallbackEntries.length > 0) {
           entries = await filterEntriesByAudio(fallbackEntries, session, config);
         }
@@ -184,23 +214,23 @@ export async function finalizeSession(
             ? async () => { await waitForInactiveRecording(session, "final", progressWriter, log); }
             : undefined;
 
-          const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
+          const sessionEntries = entriesFromSession(session, baseResults);
           entries = await runFinalPass(session, config, (done, total) => {
             progressWriter.update(makeProgress("final", done, total));
             log(`Final pass: ${done}/${total} chunks`);
-          }, entriesFromSession(session, mergedResults), beforeChunk);
+          }, sessionEntries, beforeChunk);
         } catch (err) {
           warn(`Final pass failed: ${err instanceof Error ? err.message : String(err)}, using live transcript`);
-          const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
-          entries = await filterEntriesByAudio(entriesFromSession(session, mergedResults), session, config);
+          const sessionEntries = entriesFromSession(session, baseResults);
+          entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
           if (entries.length === 0 && fallbackEntries.length > 0) {
             entries = await filterEntriesByAudio(fallbackEntries, session, config);
           }
         }
       }
     } else {
-      const mergedResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
-      entries = await filterEntriesByAudio(entriesFromSession(session, mergedResults), session, config);
+      const sessionEntries = entriesFromSession(session, baseResults);
+      entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
       if (entries.length === 0 && fallbackEntries.length > 0) {
         entries = await filterEntriesByAudio(fallbackEntries, session, config);
       }
