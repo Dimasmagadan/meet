@@ -25,6 +25,11 @@ const HALLUCINATION_PATTERNS: RegExp[] = [
   /приятного\s+просмотра/i,
   /оставайтесь\s+с\s+нами/i,
   /встреча\s+на\s+русском\s+языке/i,
+  /консультация.*вопросы.*ответы/i,
+  /обсуждение.*вопросы.*ответы/i,
+  /лайк/i,
+  /комментарий/i,
+  /подписка/i,
 ];
 
 const NOISE_TOKENS: RegExp[] = [
@@ -42,6 +47,11 @@ export function cleanText(raw: string): string {
 
   text = text.replace(/\s+/g, " ").trim();
 
+  text = text.replace(/(\S+)(\s+\1){2,}/g, "$1");
+
+  text = text.replace(/\.{4,}/g, "...");
+  text = text.replace(/—\s*(—\s*){2,}/g, "—");
+
   for (const pattern of HALLUCINATION_PATTERNS) {
     if (pattern.test(text)) {
       const lines = text.split(/(?<=[.!?])\s*/);
@@ -50,6 +60,9 @@ export function cleanText(raw: string): string {
   }
 
   text = text.replace(/\s+/g, " ").trim();
+
+  if (text.length < 2) return "";
+
   return text;
 }
 
@@ -131,25 +144,35 @@ export async function transcribeChunk(
   const baseName = transcribePath.replace(/\.wav$/, "");
   const outFile = baseName + ".txt";
 
+  const isFinal = options?.pass === "final";
+
   const args = [
     "-m", modelPath,
     "-l", config.language,
     "-f", transcribePath,
-    "--no-timestamps",
     "-otxt",
     "-of", baseName,
     "--suppress-nst",
     "-sow",
     "--max-len", "300",
-    "--entropy-thold", String(config.whisperEntropyThreshold),
-    "--logprob-thold", String(config.whisperLogprobThreshold),
-    "--no-speech-thold", String(config.whisperNoSpeechThreshold),
+    "--entropy-thold", String(isFinal ? config.finalEntropyThreshold : config.whisperEntropyThreshold),
+    "--logprob-thold", String(isFinal ? config.finalLogprobThreshold : config.whisperLogprobThreshold),
+    "--no-speech-thold", String(isFinal ? config.finalNoSpeechThreshold : config.whisperNoSpeechThreshold),
     "--no-prints",
     "--prompt", config.prompt,
   ];
 
+  if (!isFinal) {
+    args.push("--no-timestamps");
+  } else {
+    if (config.finalBeamSize > 0) args.push("--beam-size", String(config.finalBeamSize));
+    if (config.finalBestOf > 0) args.push("--best-of", String(config.finalBestOf));
+  }
+
+  const timeout = isFinal ? 300_000 : 120_000;
+
   return new Promise((resolve, reject) => {
-    execFile(resolveWhisperBin(config), args, { timeout: 120_000, maxBuffer: 1024 * 1024 }, async (err) => {
+    execFile(resolveWhisperBin(config), args, { timeout, maxBuffer: 1024 * 1024 }, async (err) => {
       if (normalizedTmp) {
         await unlink(transcribePath).catch(() => {});
       }

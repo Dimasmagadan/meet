@@ -79,6 +79,35 @@ describe("cleanText", () => {
     assert.strictEqual(cleanText(text), text);
   });
 
+  it("collapses repeated words (3+ identical consecutive)", () => {
+    assert.strictEqual(cleanText("да да да да"), "да");
+    assert.strictEqual(cleanText("ну ну ну хорошо"), "ну хорошо");
+  });
+
+  it("collapses ellipsis sequences", () => {
+    assert.strictEqual(cleanText("Привет.... Мир"), "Привет... Мир");
+  });
+
+  it("collapses em-dash sequences", () => {
+    assert.strictEqual(cleanText("Привет — — — Мир"), "Привет — Мир");
+  });
+
+  it("removes hallucination: консультация...вопросы...ответы (prompt leak variant)", () => {
+    const result = cleanText("Консультация, вопросы и ответы. Давайте начнём.");
+    assert.ok(!result.includes("Консультация"));
+    assert.ok(result.includes("Давайте начнём"));
+  });
+
+  it("removes hallucination: лайк", () => {
+    const result = cleanText("Ставьте лайк! Итак, по проекту.");
+    assert.ok(!result.includes("лайк"));
+  });
+
+  it("returns empty for very short fragments", () => {
+    assert.strictEqual(cleanText(""), "");
+    assert.strictEqual(cleanText("а"), "");
+  });
+
   it("collapses whitespace", () => {
     assert.strictEqual(cleanText("  Привет   мир  "), "Привет мир");
   });

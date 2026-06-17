@@ -60,6 +60,11 @@ export interface Config {
   whisperEntropyThreshold: number;
   whisperLogprobThreshold: number;
   whisperNoSpeechThreshold: number;
+  finalEntropyThreshold: number;
+  finalLogprobThreshold: number;
+  finalNoSpeechThreshold: number;
+  finalBeamSize: number;
+  finalBestOf: number;
   maxDurationMinutes: number;
   noTextTimeoutMinutes: number;
   phrasebookPath: string;
@@ -120,6 +125,11 @@ export const DEFAULT_CONFIG: Config = {
   whisperEntropyThreshold: 2.4,
   whisperLogprobThreshold: -1.0,
   whisperNoSpeechThreshold: 0.6,
+  finalEntropyThreshold: 1.5,
+  finalLogprobThreshold: -1.5,
+  finalNoSpeechThreshold: 0.7,
+  finalBeamSize: 5,
+  finalBestOf: 3,
   maxDurationMinutes: 60,
   noTextTimeoutMinutes: 10,
   phrasebookPath: "~/.meet/phrasebook.json",
