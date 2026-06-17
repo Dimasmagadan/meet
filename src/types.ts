@@ -82,6 +82,19 @@ export interface TranscribeOptions {
   pass?: "live" | "final";
 }
 
+export interface MeetingStats {
+  title: string;
+  date: Date;
+  mode: string;
+  tags: string[];
+  durationSeconds: number | null;
+  wordCount: number;
+  dayOfWeek: number;
+  hour: number;
+  weekKey: string;
+  monthKey: string;
+}
+
 export interface AudioMetrics {
   rmsDb: number;
   peakDb: number;

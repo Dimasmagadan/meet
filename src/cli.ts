@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { nanoid } from "nanoid";
 import type { Session, Config } from "./types.js";
 import { analyzeWavFile } from "./audio-metrics.js";
+import { generateDashboard } from "./dashboard.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -97,6 +98,14 @@ export function createProgram(): Command {
         date: opts.date,
       };
       await transcribeImport(files, importOpts);
+    });
+
+  program
+    .command("dashboard")
+    .description("Generate HTML dashboard with meeting stats")
+    .option("--output <path>", "Output file path", "~/Meetings/dashboard.html")
+    .action(async (opts: { output?: string }) => {
+      await generateDashboard(opts.output);
     });
 
   return program;
