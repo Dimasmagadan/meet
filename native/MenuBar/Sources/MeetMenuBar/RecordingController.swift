@@ -27,8 +27,18 @@ class RecordingController {
     func start() {
         guard state == .idle else { return }
 
+        let whichNode = Process()
+        whichNode.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        whichNode.arguments = ["which", "node"]
+        let pipe = Pipe()
+        whichNode.standardOutput = pipe
+        try? whichNode.run()
+        whichNode.waitUntilExit()
+        let nodePath = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "/opt/homebrew/bin/node"
+
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/local/bin/node")
+        proc.executableURL = URL(fileURLWithPath: nodePath)
         proc.arguments = [meetBin, "start", "meeting", "--headless"]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
@@ -68,13 +78,16 @@ class RecordingController {
     }
 
     func stop() {
-        guard let proc = process, proc.isRunning else { return }
-        sendSignal(SIGINT, to: proc.processIdentifier)
+        if let proc = process, proc.isRunning {
+            sendSignal(SIGINT, to: proc.processIdentifier)
+        } else if let pid = attachedPid {
+            sendSignal(SIGINT, to: pid)
+        }
     }
 
     func extend() {
         guard let pid = attachedPid else { return }
-        sendSignal(30, to: pid) // SIGUSR3
+        sendSignal(SIGWINCH, to: pid)
     }
 
     func attachToExistingSession(sessionDir: String) {

@@ -511,9 +511,13 @@ export class Recorder {
     process.on("SIGINT", this.sigintHandler);
     process.on("SIGTERM", this.sigtermHandler);
 
-    process.on("SIGUSR1", () => { void this.togglePause(); });
-    process.on("SIGUSR2", () => { void this.togglePause(); });
-    process.on("SIGUSR3", () => this.extendCap());
+    process.on("SIGUSR1", () => {
+      if (!this.paused) void this.togglePause();
+    });
+    process.on("SIGUSR2", () => {
+      if (this.paused) void this.togglePause();
+    });
+    process.on("SIGWINCH", () => this.extendCap());
 
     if (!this.opts.headless && process.stdin.isTTY) {
       process.stdin.setRawMode(true);
