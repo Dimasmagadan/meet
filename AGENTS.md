@@ -10,11 +10,13 @@ macOS (Apple Silicon) CLI. Records mic + system audio, transcribes locally with 
 meet start "Title"
 ├── src/main.ts              — entry, dispatches CLI commands
 ├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, status
+├── src/recorder.ts          — session orchestration: spawns Swift capture, wires Pipeline, handles stdin hotkeys
 ├── src/types.ts             — shared types: Session, Chunk, Config, TranscriptEntry
 ├── src/pipeline.ts          — chokidar watches *.wav, sequential whisper queue, dedup, durable state
 ├── src/transcriber.ts       — wraps whisper-cli per chunk, cleanText() filters noise/hallucinations
 ├── src/assembler.ts         — incremental appendEntry + final rewriteMarkdown, makeHeader
 ├── src/import.ts            — ffmpeg conversion, whisper-cli JSON parsing, batch file transcription
+├── src/entries-store.ts     — append-only entries.jsonl for crash-safe transcript persistence
 ├── src/storage.ts           — loadConfig, getOutputDir/getOutputPath, atomic writes, stale detection
 ├── src/finalize.ts          — background/foreground session finalization with progress tracking
 ├── src/final-pass.ts        — high-quality retranscription pass, echo/duplicate filtering
@@ -42,6 +44,8 @@ meet start "Title"
 npm install && npm run build                         # TypeScript
 cd native/AudioCapture && swift build -c release     # Swift
 node dist/main.js start "Meeting Title"              # Run
+npm run lint                                         # Type-check (tsc --noEmit)
+npm run build && node --test dist/import.test.js     # Single test file
 ```
 
 ## Key Constraints
@@ -132,6 +136,16 @@ Finalization can run in background (detached process) or foreground.
 - Atomic writes: always `.tmp` → `rename()`
 - No comments in code unless explaining a non-obvious gotcha
 - Tests: `node:test`, files named `*.test.ts` alongside source
+- ESM imports: all imports use `.js` extensions despite `.ts` source (Node16 module resolution)
+
+### Lock System
+
+Three file-based locks in `locks.ts`:
+- **Active recording** (`~/.meet/sessions/active-recording.lock`): prevents concurrent recordings, contains PID for stale detection
+- **Finalizer** (`{sessionDir}/finalizer.lock`): prevents duplicate finalization, uses `O_EXCL` for atomicity
+- **Global final-pass** (`~/.meet/sessions/final-pass.lock`): serializes heavy medium-model passes across all sessions
+
+All locks use `isPidAlive()` (via `process.kill(pid, 0)`) to detect dead processes and auto-clean stale locks.
 
 ## Critical Gotchas
 
@@ -148,14 +162,6 @@ Finalization can run in background (detached process) or foreground.
 - Live invocation: `whisper-cli -m ggml-small.bin -l ru -f <wav> --no-timestamps -otxt -of <base> --suppress-nst ...`
 - Import invocation: `whisper-cli -m ggml-medium.bin -l ru -f <wav> -oj -of <base> -sow --max-len 300 ...`
 - Models: `ggml-small.bin` (466MB, live), `ggml-medium.bin` (~1.5GB, final pass)
-
-## What's Not Done Yet
-
-- `meet recover` — process stale sessions (detection exists, recovery command doesn't)
-- `meet stop` — background sessions not in scope for MVP
-- Permission checks in `meet setup` — only checks binary/model/capture binary
-- Automated integration tests
-- Linux/Windows support
 
 ## Reference
 

@@ -16,6 +16,7 @@ export interface RecorderOptions {
   maxDurationMinutes: number;
   noTextTimeoutMinutes: number;
   voiceProcessing: boolean;
+  headless: boolean;
 }
 
 export class Recorder {
@@ -219,7 +220,7 @@ export class Recorder {
   }
 
   private async promptTags(): Promise<void> {
-    if (!process.stdin.isTTY) return;
+    if (this.opts.headless || !process.stdin.isTTY) return;
     try {
       const tags = await runTagPicker(this.session, { note: "Final transcription running in background…" });
       if (tags.length > 0) {
@@ -419,7 +420,7 @@ export class Recorder {
     }, 5000);
   }
 
-  private togglePause(): void {
+  private async togglePause(): Promise<void> {
     if (this.shuttingDown || this.opencodeRunning) return;
 
     if (this.paused) {
@@ -438,6 +439,11 @@ export class Recorder {
       process.stdout.write("\n");
       console.log(chalk.yellow("⏸ Paused"));
     }
+
+    await writeAtomic(
+      join(this.session.sessionDir, "session.json"),
+      JSON.stringify(this.session, null, 2),
+    );
   }
 
   private extendCap(): void {
@@ -505,7 +511,11 @@ export class Recorder {
     process.on("SIGINT", this.sigintHandler);
     process.on("SIGTERM", this.sigtermHandler);
 
-    if (process.stdin.isTTY) {
+    process.on("SIGUSR1", () => { void this.togglePause(); });
+    process.on("SIGUSR2", () => { void this.togglePause(); });
+    process.on("SIGUSR3", () => this.extendCap());
+
+    if (!this.opts.headless && process.stdin.isTTY) {
       process.stdin.setRawMode(true);
       process.stdin.resume();
       this.stdinDataHandler = (data: Buffer) => {
@@ -519,7 +529,7 @@ export class Recorder {
         } else if (key === "a" || key === "A") {
           this.askQuestion();
         } else if (key === "p" || key === "P") {
-          this.togglePause();
+          void this.togglePause();
         } else if (key === "e" || key === "E") {
           this.extendCap();
         }

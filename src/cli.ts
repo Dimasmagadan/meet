@@ -34,9 +34,10 @@ export function createProgram(): Command {
     .option("--max-duration <minutes>", "Auto-stop after N minutes (0 = disabled)", parseInt)
     .option("--no-text-timeout <minutes>", "Auto-stop after N processed minutes without transcript (0 = disabled)", parseInt)
     .option("--voice-processing", "Enable VoiceProcessing IO echo cancellation (default: off)")
-    .action(async (title: string, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean }) => {
+    .option("--headless", "Run without terminal interaction (for menu bar app / automation)")
+    .action(async (title: string, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean; headless?: boolean }) => {
       const mode = opts.mic ? "mic" as const : "full" as const;
-      await startSessionLoop(title, mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing);
+      await startSessionLoop(title, mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing, opts.headless);
     });
 
   program
@@ -111,11 +112,11 @@ export function createProgram(): Command {
   return program;
 }
 
-async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean) {
+async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean) {
   let title = initialTitle;
 
   while (true) {
-    const result = await startSession(title, mode, silenceTimeout, maxDurationMinutes, noTextTimeoutMinutes, voiceProcessing);
+    const result = await startSession(title, mode, silenceTimeout, maxDurationMinutes, noTextTimeoutMinutes, voiceProcessing, headless);
     if (!result.startNextMeeting) {
       break;
     }
@@ -124,7 +125,7 @@ async function startSessionLoop(initialTitle: string, mode: "full" | "mic", sile
   }
 }
 
-async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean): Promise<{ startNextMeeting: boolean }> {
+async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean): Promise<{ startNextMeeting: boolean }> {
   const config = loadConfig();
 
   const stale = findStaleSessions();
@@ -198,6 +199,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     maxDurationMinutes: maxDurationMinutes ?? config.maxDurationMinutes,
     noTextTimeoutMinutes: noTextTimeoutMinutes ?? config.noTextTimeoutMinutes,
     voiceProcessing: voiceProcessing ?? config.micVoiceProcessing,
+    headless: headless ?? false,
   });
 
   return await recorder.run();
