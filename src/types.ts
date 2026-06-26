@@ -143,7 +143,7 @@ export const DEFAULT_CONFIG: Config = {
   finalNoSpeechThreshold: 0.7,
   finalBeamSize: 5,
   finalBestOf: 3,
-  maxDurationMinutes: 60,
+  maxDurationMinutes: 75,
   noTextTimeoutMinutes: 10,
   phrasebookPath: "~/.meet/phrasebook.json",
   phrasebookReload: true,
