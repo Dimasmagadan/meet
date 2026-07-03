@@ -40,43 +40,18 @@ export function loadConfig(overrides?: Partial<Config>): Config {
     const raw = readFileSync(configPath, "utf-8");
     fileConfig = JSON.parse(raw);
   }
-  return {
-    modelPath: overrides?.modelPath ?? fileConfig.modelPath ?? DEFAULT_CONFIG.modelPath,
-    liveModelPath: overrides?.liveModelPath ?? fileConfig.liveModelPath ?? DEFAULT_CONFIG.liveModelPath,
-    finalModelPath: overrides?.finalModelPath ?? fileConfig.finalModelPath ?? DEFAULT_CONFIG.finalModelPath,
-    importModelPath: overrides?.importModelPath ?? fileConfig.importModelPath ?? DEFAULT_CONFIG.importModelPath,
-    finalRetranscribe: overrides?.finalRetranscribe ?? fileConfig.finalRetranscribe ?? DEFAULT_CONFIG.finalRetranscribe,
-    keepLiveTranscript: overrides?.keepLiveTranscript ?? fileConfig.keepLiveTranscript ?? DEFAULT_CONFIG.keepLiveTranscript,
-    outputDir: overrides?.outputDir ?? fileConfig.outputDir ?? DEFAULT_CONFIG.outputDir,
-    chunkDurationSeconds: overrides?.chunkDurationSeconds ?? fileConfig.chunkDurationSeconds ?? DEFAULT_CONFIG.chunkDurationSeconds,
-    language: overrides?.language ?? fileConfig.language ?? DEFAULT_CONFIG.language,
-    whisperBin: overrides?.whisperBin ?? fileConfig.whisperBin ?? DEFAULT_CONFIG.whisperBin,
-    captureBin: overrides?.captureBin ?? fileConfig.captureBin ?? DEFAULT_CONFIG.captureBin,
-    prompt: overrides?.prompt ?? fileConfig.prompt ?? DEFAULT_CONFIG.prompt,
-    opencodeBin: overrides?.opencodeBin ?? fileConfig.opencodeBin ?? DEFAULT_CONFIG.opencodeBin,
-    micVoiceProcessing: overrides?.micVoiceProcessing ?? fileConfig.micVoiceProcessing ?? DEFAULT_CONFIG.micVoiceProcessing,
-    silenceGate: overrides?.silenceGate ?? fileConfig.silenceGate ?? DEFAULT_CONFIG.silenceGate,
-    micRmsThresholdDb: overrides?.micRmsThresholdDb ?? fileConfig.micRmsThresholdDb ?? DEFAULT_CONFIG.micRmsThresholdDb,
-    sysRmsThresholdDb: overrides?.sysRmsThresholdDb ?? fileConfig.sysRmsThresholdDb ?? DEFAULT_CONFIG.sysRmsThresholdDb,
-    normalizeForWhisper: overrides?.normalizeForWhisper ?? fileConfig.normalizeForWhisper ?? DEFAULT_CONFIG.normalizeForWhisper,
-    whisperEntropyThreshold: overrides?.whisperEntropyThreshold ?? fileConfig.whisperEntropyThreshold ?? DEFAULT_CONFIG.whisperEntropyThreshold,
-    whisperLogprobThreshold: overrides?.whisperLogprobThreshold ?? fileConfig.whisperLogprobThreshold ?? DEFAULT_CONFIG.whisperLogprobThreshold,
-    whisperNoSpeechThreshold: overrides?.whisperNoSpeechThreshold ?? fileConfig.whisperNoSpeechThreshold ?? DEFAULT_CONFIG.whisperNoSpeechThreshold,
-    finalEntropyThreshold: overrides?.finalEntropyThreshold ?? fileConfig.finalEntropyThreshold ?? DEFAULT_CONFIG.finalEntropyThreshold,
-    finalLogprobThreshold: overrides?.finalLogprobThreshold ?? fileConfig.finalLogprobThreshold ?? DEFAULT_CONFIG.finalLogprobThreshold,
-    finalNoSpeechThreshold: overrides?.finalNoSpeechThreshold ?? fileConfig.finalNoSpeechThreshold ?? DEFAULT_CONFIG.finalNoSpeechThreshold,
-    finalBeamSize: overrides?.finalBeamSize ?? fileConfig.finalBeamSize ?? DEFAULT_CONFIG.finalBeamSize,
-    finalBestOf: overrides?.finalBestOf ?? fileConfig.finalBestOf ?? DEFAULT_CONFIG.finalBestOf,
-    maxDurationMinutes: overrides?.maxDurationMinutes ?? fileConfig.maxDurationMinutes ?? DEFAULT_CONFIG.maxDurationMinutes,
-    noTextTimeoutMinutes: overrides?.noTextTimeoutMinutes ?? fileConfig.noTextTimeoutMinutes ?? DEFAULT_CONFIG.noTextTimeoutMinutes,
-    phrasebookPath: overrides?.phrasebookPath ?? fileConfig.phrasebookPath ?? DEFAULT_CONFIG.phrasebookPath,
-    phrasebookReload: overrides?.phrasebookReload ?? fileConfig.phrasebookReload ?? DEFAULT_CONFIG.phrasebookReload,
-    vadEnabled: overrides?.vadEnabled ?? fileConfig.vadEnabled ?? DEFAULT_CONFIG.vadEnabled,
-    vadBin: overrides?.vadBin ?? fileConfig.vadBin ?? DEFAULT_CONFIG.vadBin,
-    vadMinSpeechMs: overrides?.vadMinSpeechMs ?? fileConfig.vadMinSpeechMs ?? DEFAULT_CONFIG.vadMinSpeechMs,
-    vadThreshold: overrides?.vadThreshold ?? fileConfig.vadThreshold ?? DEFAULT_CONFIG.vadThreshold,
-    vadFailOpen: overrides?.vadFailOpen ?? fileConfig.vadFailOpen ?? DEFAULT_CONFIG.vadFailOpen,
-    vadTimeoutMs: overrides?.vadTimeoutMs ?? fileConfig.vadTimeoutMs ?? DEFAULT_CONFIG.vadTimeoutMs,
+  return { ...DEFAULT_CONFIG, ...fileConfig, ...overrides };
+}
+
+// Returns a function that logs each distinct error `key` to stderr once,
+// so persistent failures (e.g. disk full) don't spam output on every chunk.
+export function createWarnOnce(): (key: string, err: unknown) => void {
+  const seen = new Set<string>();
+  return (key: string, err: unknown) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[meet] ${key}: ${msg}`);
   };
 }
 
@@ -131,7 +106,8 @@ export function getOutputPath(config: Config, title: string, startedAt: Date): s
   return join(getOutputDir(config, title, startedAt), "transcript.md");
 }
 
-export function getCaptureBinPath(): string {
+export function getCaptureBinPath(config?: Config): string {
+  if (config?.captureBin) return expandPath(config.captureBin);
   const repoRoot = resolve(import.meta.dirname, "..");
   return join(repoRoot, "native", "AudioCapture", ".build", "release", "AudioCapture");
 }

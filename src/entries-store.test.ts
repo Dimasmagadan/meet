@@ -89,4 +89,48 @@ test("appendEntryRecord and readEntryRecords", async (t) => {
 
     await rm(sessionDir, { recursive: true, force: true });
   });
+
+  await t.test("skips a torn last line but keeps prior valid records", async () => {
+    const path = join(sessionDir, "entries.jsonl");
+    await mkdir(sessionDir, { recursive: true });
+    const lines = Array.from({ length: 10 }, (_, i) =>
+      JSON.stringify({ source: "mic", index: i + 1, timestamp: "00:00:00", text: `chunk ${i + 1}`, rmsDb: -40 })
+    );
+    const torn = '{"source":"mic","index":11,"timestamp":"00:02:45","text":"cut off mid';
+    await writeFile(path, lines.join("\n") + "\n" + torn);
+
+    const records = await readEntryRecords(sessionDir);
+    assert.equal(records.length, 10);
+    assert.deepEqual(records.map((r) => r.index), [1,2,3,4,5,6,7,8,9,10]);
+
+    await rm(sessionDir, { recursive: true, force: true });
+  });
+
+  await t.test("skips a garbage middle line but keeps the rest", async () => {
+    const path = join(sessionDir, "entries.jsonl");
+    await mkdir(sessionDir, { recursive: true });
+    const entry1: EntryRecord = { source: "mic", index: 1, timestamp: "00:00:00", text: "First", rmsDb: -40 };
+    const entry2: EntryRecord = { source: "sys", index: 2, timestamp: "00:00:15", text: "Second", rmsDb: -50 };
+    await writeFile(path, JSON.stringify(entry1) + "\nnot json at all\n" + JSON.stringify(entry2) + "\n");
+
+    const records = await readEntryRecords(sessionDir);
+    assert.equal(records.length, 2);
+    assert.deepEqual(records[0], entry1);
+    assert.deepEqual(records[1], entry2);
+
+    await rm(sessionDir, { recursive: true, force: true });
+  });
+
+  await t.test("ignores blank lines interspersed between records", async () => {
+    const path = join(sessionDir, "entries.jsonl");
+    await mkdir(sessionDir, { recursive: true });
+    const entry1: EntryRecord = { source: "mic", index: 1, timestamp: "00:00:00", text: "First", rmsDb: -40 };
+    const entry2: EntryRecord = { source: "sys", index: 2, timestamp: "00:00:15", text: "Second", rmsDb: -50 };
+    await writeFile(path, JSON.stringify(entry1) + "\n\n\n" + JSON.stringify(entry2) + "\n");
+
+    const records = await readEntryRecords(sessionDir);
+    assert.equal(records.length, 2);
+
+    await rm(sessionDir, { recursive: true, force: true });
+  });
 });

@@ -88,7 +88,7 @@ Key constraints documented in `.opencode/skills/swift-audio/SKILL.md`:
 ### File naming
 
 - WAV chunks: `mic-001.wav`, `sys-001.wav` (zero-padded 3 digits)
-- Session state: `/tmp/meet-{id}/session.json`
+- Session state: `~/.meet/sessions/meet-{id}/session.json`
 - Output: `~/Meetings/YYYY-MM-DD_HH-MM-{slug}/transcript.md`
 
 ## Pull Requests

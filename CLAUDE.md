@@ -32,7 +32,7 @@ meet start "Title"
 │  ├─ Watches for new .wav files
 │  ├─ Queues whisper-cli transcription (sequential)
 │  ├─ Appends to transcript.md incrementally
-│  └─ Maintains session state in /tmp/meet-{id}/session.json
+│  └─ Maintains session state in ~/.meet/sessions/meet-{id}/session.json
 │
 └─ Finalization
    ├─ Re-transcribes with higher-quality model
@@ -117,7 +117,7 @@ Swift and Node communicate only via the filesystem:
 
 ### Session State (Durable to Crashes)
 
-Session state lives in `/tmp/meet-{id}/session.json` — written atomically after each chunk is transcribed:
+Session state lives in `~/.meet/sessions/meet-{id}/session.json` — written atomically after each chunk is transcribed:
 ```json
 {
   "id": "abc123",
@@ -299,6 +299,6 @@ If stuck, the next `SIGINT` drains remaining chunks.
 | Meeting output | `~/Meetings/` |
 | Config | `~/.meet/config.json` |
 | Models | `~/.meet/models/` |
-| Session state | `/tmp/meet-{id}/session.json` |
+| Session state | `~/.meet/sessions/meet-{id}/session.json` |
 | Swift binary | `native/AudioCapture/.build/release/AudioCapture` |
 | Compiled TypeScript | `dist/` |

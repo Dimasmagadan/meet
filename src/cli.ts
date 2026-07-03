@@ -134,7 +134,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     for (const s of stale) {
       console.log(chalk.yellow(`  ${s}`));
     }
-    console.log(chalk.yellow("  Run manually: meet recover (post-MVP)"));
+    console.log(chalk.yellow("  Run manually: meet finalize <sessionDir>"));
     console.log();
   }
 
@@ -226,7 +226,7 @@ function checkSetup(config: Config, mode: string): string[] {
     }
   }
 
-  const captureBin = getCaptureBinPath();
+  const captureBin = getCaptureBinPath(config);
   if (!existsSync(captureBin)) {
     errors.push(`AudioCapture not built: ${captureBin}. Run: cd native/AudioCapture && swift build -c release`);
   }
@@ -269,7 +269,7 @@ async function runSetup() {
     }
   }
 
-  const captureBin = getCaptureBinPath();
+  const captureBin = getCaptureBinPath(config);
   if (existsSync(captureBin)) {
     console.log(chalk.green("  AudioCapture: ") + captureBin);
   } else {
@@ -309,7 +309,7 @@ async function runDoctor(mode: "mic" | "full") {
   }
 
   const sessionDir = await mkdtemp(join(tmpdir(), "meet-doctor-"));
-  const captureBin = getCaptureBinPath();
+  const captureBin = getCaptureBinPath(config);
   const chunkDurationSeconds = 5;
   const captureArgs = [
     "--output-dir", sessionDir,

@@ -46,7 +46,7 @@ export function makeHeader(title: string, startedAt: string): string {
   return `# ${title} — ${dateStr} ${timeStr}\n\n`;
 }
 
-export async function appendEntry(filePath: string, header: string, entry: TranscriptEntry): Promise<void> {
+export async function appendEntry(filePath: string, entry: TranscriptEntry): Promise<void> {
   const line = formatEntry(entry);
   await appendFile(filePath, line);
 }

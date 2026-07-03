@@ -68,6 +68,44 @@ export function cleanText(raw: string): string {
 
 export { readPcmSamples, computeRmsDb, computePeakDb };
 
+export interface WhisperArgsOptions {
+  modelPath: string;
+  inputPath: string;
+  outputBase: string;
+  format: "txt" | "json";
+  pass: "live" | "final";
+  noTimestamps?: boolean;
+}
+
+export function buildWhisperArgs(config: Config, opts: WhisperArgsOptions): string[] {
+  const isFinal = opts.pass === "final";
+  const args = [
+    "-m", opts.modelPath,
+    "-l", config.language,
+    "-f", opts.inputPath,
+    opts.format === "json" ? "-oj" : "-otxt",
+    "-of", opts.outputBase,
+    "--suppress-nst",
+    "-sow",
+    "--max-len", "300",
+    "--entropy-thold", String(isFinal ? config.finalEntropyThreshold : config.whisperEntropyThreshold),
+    "--logprob-thold", String(isFinal ? config.finalLogprobThreshold : config.whisperLogprobThreshold),
+    "--no-speech-thold", String(isFinal ? config.finalNoSpeechThreshold : config.whisperNoSpeechThreshold),
+    "--no-prints",
+    "--prompt", config.prompt,
+  ];
+
+  if (opts.noTimestamps) {
+    args.push("--no-timestamps");
+  }
+  if (isFinal) {
+    if (config.finalBeamSize > 0) args.push("--beam-size", String(config.finalBeamSize));
+    if (config.finalBestOf > 0) args.push("--best-of", String(config.finalBestOf));
+  }
+
+  return args;
+}
+
 function normalizeWav(wavBuffer: Buffer, targetDb: number = -3.0): Buffer {
   const samples = readPcmSamples(wavBuffer);
   if (samples.length === 0) return wavBuffer;
@@ -146,28 +184,14 @@ export async function transcribeChunk(
 
   const isFinal = options?.pass === "final";
 
-  const args = [
-    "-m", modelPath,
-    "-l", config.language,
-    "-f", transcribePath,
-    "-otxt",
-    "-of", baseName,
-    "--suppress-nst",
-    "-sow",
-    "--max-len", "300",
-    "--entropy-thold", String(isFinal ? config.finalEntropyThreshold : config.whisperEntropyThreshold),
-    "--logprob-thold", String(isFinal ? config.finalLogprobThreshold : config.whisperLogprobThreshold),
-    "--no-speech-thold", String(isFinal ? config.finalNoSpeechThreshold : config.whisperNoSpeechThreshold),
-    "--no-prints",
-    "--prompt", config.prompt,
-  ];
-
-  if (!isFinal) {
-    args.push("--no-timestamps");
-  } else {
-    if (config.finalBeamSize > 0) args.push("--beam-size", String(config.finalBeamSize));
-    if (config.finalBestOf > 0) args.push("--best-of", String(config.finalBestOf));
-  }
+  const args = buildWhisperArgs(config, {
+    modelPath,
+    inputPath: transcribePath,
+    outputBase: baseName,
+    format: "txt",
+    pass: options?.pass ?? "live",
+    noTimestamps: !isFinal,
+  });
 
   const timeout = isFinal ? 300_000 : 120_000;
 

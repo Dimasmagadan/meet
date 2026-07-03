@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 import { readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, basename, extname, resolve } from "node:path";
@@ -6,7 +6,7 @@ import chalk from "chalk";
 import { nanoid } from "nanoid";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 import { loadConfig, expandPath, getOutputDir, getOutputPath, getSessionsDir, resolveWhisperBin } from "./storage.js";
-import { cleanText } from "./transcriber.js";
+import { cleanText, buildWhisperArgs } from "./transcriber.js";
 import { getPhrasebook } from "./phrasebook.js";
 import { assembleMarkdown } from "./assembler.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
@@ -268,21 +268,13 @@ async function runWhisper(
 ): Promise<ImportSegment[]> {
   const outputBase = join(sessionDir, "result");
 
-  const args = [
-    "-m", modelPath,
-    "-l", config.language,
-    "-f", wavPath,
-    "-oj",
-    "-of", outputBase,
-    "--suppress-nst",
-    "-sow",
-    "--max-len", "300",
-    "--entropy-thold", String(config.whisperEntropyThreshold),
-    "--logprob-thold", String(config.whisperLogprobThreshold),
-    "--no-speech-thold", String(config.whisperNoSpeechThreshold),
-    "--no-prints",
-    "--prompt", config.prompt,
-  ];
+  const args = buildWhisperArgs(config, {
+    modelPath,
+    inputPath: wavPath,
+    outputBase,
+    format: "json",
+    pass: "live",
+  });
 
   return new Promise((resolve, reject) => {
     execFile(whisperPath, args, { timeout: 1_800_000, maxBuffer: 10 * 1024 * 1024 }, async (err) => {
@@ -466,5 +458,11 @@ export function selectModel(config: Config, preference?: "small" | "medium"): st
 
 function checkFfmpeg(): boolean {
   const paths = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"];
-  return paths.some((p) => existsSync(p));
+  if (paths.some((p) => existsSync(p))) return true;
+  try {
+    execSync("which ffmpeg", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }

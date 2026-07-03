@@ -11,16 +11,27 @@ export async function appendEntryRecord(sessionDir: string, entry: EntryRecord):
 
 export async function readEntryRecords(sessionDir: string): Promise<EntryRecord[]> {
   const path = join(sessionDir, "entries.jsonl");
+  let content: string;
   try {
-    const content = await readFile(path, "utf-8");
-    if (!content.trim()) return [];
-    return content
-      .trim()
-      .split("\n")
-      .filter((line) => line.trim())
-      .map((line) => JSON.parse(line));
-  } catch (err) {
+    content = await readFile(path, "utf-8");
+  } catch {
     // File doesn't exist yet
     return [];
   }
+  if (!content.trim()) return [];
+
+  const records: EntryRecord[] = [];
+  let skipped = 0;
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line));
+    } catch {
+      skipped++;
+    }
+  }
+  if (skipped > 0) {
+    console.error(`entries-store: skipped ${skipped} unparseable line(s) in ${path}`);
+  }
+  return records;
 }

@@ -3,12 +3,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 import { Pipeline } from "./pipeline.js";
-import { appendEntry, makeHeader, chunkToTimestamp } from "./assembler.js";
+import { appendEntry, chunkToTimestamp } from "./assembler.js";
 import { runOpencodeQuestion } from "./opencode.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
 import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
-import { getCaptureBinPath, writeAtomic } from "./storage.js";
+import { getCaptureBinPath, writeAtomic, createWarnOnce } from "./storage.js";
 import { join } from "node:path";
 
 export interface RecorderOptions {
@@ -36,12 +36,15 @@ export class Recorder {
   private pauseStartedAt: number | null = null;
   private readonly startedAt: Date;
   private readonly outputFile: string;
-  private readonly header: string;
   private startNextMeeting = false;
   private resolveRun: (() => void) | null = null;
   private sigintHandler: (() => void) | null = null;
   private sigtermHandler: (() => void) | null = null;
+  private sigusr1Handler: (() => void) | null = null;
+  private sigusr2Handler: (() => void) | null = null;
+  private sigwinchHandler: (() => void) | null = null;
   private stdinDataHandler: ((data: Buffer) => void) | null = null;
+  private warn = createWarnOnce();
 
   constructor(session: Session, config: Config, opts: RecorderOptions) {
     this.session = session;
@@ -49,7 +52,6 @@ export class Recorder {
     this.opts = opts;
     this.startedAt = new Date(session.startedAt);
     this.outputFile = session.outputFile;
-    this.header = makeHeader(session.title, session.startedAt);
     this.pipeline = new Pipeline(session);
   }
 
@@ -73,9 +75,6 @@ export class Recorder {
 
   private initPipeline(): void {
     this.pipeline.setTranscribeCallback((source, index, text) => {
-      if (source === "mic") this.micChunks = Math.max(this.micChunks, index);
-      else this.sysChunks = Math.max(this.sysChunks, index);
-
       const chunkOffset = index * this.session.chunkDurationSeconds;
       this.session.latestProcessedOffsetSeconds = Math.max(
         this.session.latestProcessedOffsetSeconds,
@@ -95,7 +94,7 @@ export class Recorder {
         this.session.startedAt,
       );
       const entry: TranscriptEntry = { source, chunkIndex: index, timestamp, text };
-      appendEntry(this.outputFile, this.header, entry).catch(() => {});
+      appendEntry(this.outputFile, entry).catch((err) => this.warn("transcript append failed", err));
     });
 
     this.pipeline.initHealthMonitor(this.config);
@@ -109,7 +108,7 @@ export class Recorder {
   }
 
   private startCapture(): void {
-    const captureBin = getCaptureBinPath();
+    const captureBin = getCaptureBinPath(this.config);
     const captureArgs = [
       "--output-dir", this.session.sessionDir,
       "--chunk-duration", String(this.config.chunkDurationSeconds),
@@ -211,6 +210,18 @@ export class Recorder {
       process.removeListener("SIGTERM", this.sigtermHandler);
       this.sigtermHandler = null;
     }
+    if (this.sigusr1Handler) {
+      process.removeListener("SIGUSR1", this.sigusr1Handler);
+      this.sigusr1Handler = null;
+    }
+    if (this.sigusr2Handler) {
+      process.removeListener("SIGUSR2", this.sigusr2Handler);
+      this.sigusr2Handler = null;
+    }
+    if (this.sigwinchHandler) {
+      process.removeListener("SIGWINCH", this.sigwinchHandler);
+      this.sigwinchHandler = null;
+    }
     if (this.stdinDataHandler && process.stdin.isTTY) {
       process.stdin.removeListener("data", this.stdinDataHandler);
       this.stdinDataHandler = null;
@@ -225,6 +236,10 @@ export class Recorder {
       const tags = await runTagPicker(this.session, { note: "Final transcription running in background…" });
       if (tags.length > 0) {
         this.session.tags = tags;
+        await writeAtomic(
+          join(this.session.sessionDir, "session.json"),
+          JSON.stringify(this.session, null, 2),
+        );
         await writeMetaFile(this.session, tags);
         console.log(chalk.green(`Tags: ${tags.join(", ")}`));
       } else {
@@ -511,13 +526,22 @@ export class Recorder {
     process.on("SIGINT", this.sigintHandler);
     process.on("SIGTERM", this.sigtermHandler);
 
-    process.on("SIGUSR1", () => {
+    this.sigusr1Handler = () => {
       if (!this.paused) void this.togglePause();
-    });
-    process.on("SIGUSR2", () => {
+    };
+    this.sigusr2Handler = () => {
       if (this.paused) void this.togglePause();
-    });
-    process.on("SIGWINCH", () => this.extendCap());
+    };
+    process.on("SIGUSR1", this.sigusr1Handler);
+    process.on("SIGUSR2", this.sigusr2Handler);
+
+    // SIGWINCH is sent by the kernel on every terminal resize, so only the
+    // headless (menu bar) path — which never resizes a TTY — wires it to
+    // extendCap(). Interactive users extend the cap with the 'e' hotkey.
+    if (this.opts.headless) {
+      this.sigwinchHandler = () => this.extendCap();
+      process.on("SIGWINCH", this.sigwinchHandler);
+    }
 
     if (!this.opts.headless && process.stdin.isTTY) {
       process.stdin.setRawMode(true);

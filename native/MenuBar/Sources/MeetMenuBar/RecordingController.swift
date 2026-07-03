@@ -115,9 +115,7 @@ class RecordingController {
     func elapsedString() -> String {
         guard let started = startedAt else { return "00:00" }
         let elapsed = Int(Date().timeIntervalSince(started))
-        let m = String(elapsed / 60).padding(toLength: 2, withPad: "0", startingAt: 0)
-        let s = String(elapsed % 60).padding(toLength: 2, withPad: "0", startingAt: 0)
-        return "\(m):\(s)"
+        return String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
     }
 
     func quit() {

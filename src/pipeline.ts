@@ -3,11 +3,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import chokidar from "chokidar";
 import type { Session, Config } from "./types.js";
-import { writeSession, loadConfig } from "./storage.js";
+import { writeSession, loadConfig, createWarnOnce } from "./storage.js";
 import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
 import { analyzeWavFile } from "./audio-metrics.js";
 import { CaptureHealthMonitor, type HealthWarning, type CaptureHealthConfig } from "./capture-health.js";
 import { appendEntryRecord } from "./entries-store.js";
+import { chunkToTimestamp } from "./assembler.js";
 
 type TranscribeCallback = (source: "mic" | "sys", index: number, text: string) => void;
 type FailureCallback = (source: "mic" | "sys", index: number, error: string) => void;
@@ -33,6 +34,8 @@ export class Pipeline {
   private drainTotal = 0;
   private healthMonitor: CaptureHealthMonitor | null = null;
   private healthCheckCounter = 0;
+  private warn = createWarnOnce();
+  private queueDrained: (() => void) | null = null;
 
   constructor(session: Session) {
     this.session = session;
@@ -157,7 +160,11 @@ export class Pipeline {
         this.drainTotal--;
         trackProgress({ done: this.completedDuringDrain, total: this.drainTotal });
       }
-      this.processNext();
+      if (this.queue.length > 0) {
+        this.processNext();
+      } else {
+        this.queueDrained?.();
+      }
       return;
     }
 
@@ -199,8 +206,9 @@ export class Pipeline {
         this.onTranscribed(item.source, item.index, result.text);
       }
 
-      // Append to entries.jsonl for reliable recovery
-      const timestamp = new Date().toISOString().split("T")[1].slice(0, 8);
+      // Append to entries.jsonl for reliable recovery. Use chunk-relative time
+      // (not transcription wall-clock time) so it matches transcript.md timestamps.
+      const timestamp = chunkToTimestamp(result.chunkIndex, this.session.chunkDurationSeconds, this.session.startedAt);
       if (result.metrics) {
         await appendEntryRecord(this.session.sessionDir, {
           source: result.source,
@@ -208,10 +216,13 @@ export class Pipeline {
           timestamp,
           text: result.text,
           rmsDb: result.metrics.rmsDb,
-        }).catch(() => {});
+        }).catch((err) => {
+          this.warn("entries.jsonl append failed", err);
+          this.session.lastError = `entries.jsonl append failed: ${err instanceof Error ? err.message : String(err)}`;
+        });
       }
 
-      await writeSession(this.session).catch(() => {});
+      await writeSession(this.session).catch((err) => this.warn("session.json write failed", err));
     } catch (err) {
       this.session.processedChunks.push({
         source: item.source,
@@ -220,7 +231,7 @@ export class Pipeline {
         status: "failed",
       });
       this.session.lastError = String(err);
-      await writeSession(this.session).catch(() => {});
+      await writeSession(this.session).catch((err) => this.warn("session.json write failed", err));
 
       if (this.onFailure) {
         this.onFailure(item.source, item.index, String(err));
@@ -235,6 +246,8 @@ export class Pipeline {
     this.processing = false;
     if (this.queue.length > 0) {
       this.processNext();
+    } else {
+      this.queueDrained?.();
     }
   }
 
@@ -242,12 +255,16 @@ export class Pipeline {
     this.completedDuringDrain = this.session.processedChunks.filter((c) => c.status === "done").length;
     this.drainTotal = this.completedDuringDrain + this.queue.length;
     this.drainProgressCb?.({ done: this.completedDuringDrain, total: this.drainTotal });
-    while (this.processing || this.queue.length > 0) {
+
+    if (!this.processing && this.queue.length === 0) return;
+
+    await new Promise<void>((resolve) => {
+      this.queueDrained = resolve;
       if (!this.processing && this.queue.length > 0) {
         this.processNext();
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    });
+    this.queueDrained = null;
   }
 
   getStats() {

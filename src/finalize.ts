@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { Session, Config, TranscriptEntry, FinalizeProgress } from "./types.js";
+import type { Session, Config, TranscriptEntry, FinalizeProgress, EntryRecord } from "./types.js";
 import { loadConfig, resolveModelPath, writeAtomic } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
 import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
@@ -103,6 +103,23 @@ function filterStoredEntriesByAudio(
   return filtered;
 }
 
+// Merges the three text sources finalization can recover, lowest priority first:
+// entries.jsonl (survives even if this process never touched the chunk) <
+// markdown fallback (only used when entries.jsonl is empty) < in-process live results
+// (this run's own drain, always freshest).
+export function buildBaseResults(
+  storedRecords: EntryRecord[],
+  fallbackEntries: TranscriptEntry[],
+  liveResults: Map<string, string>,
+): Map<string, string> {
+  const storedTextMap = new Map(
+    storedRecords
+      .filter((r) => r.text)
+      .map((r) => [`${r.source}-${String(r.index).padStart(3, "0")}`, r.text] as const)
+  );
+  return new Map([...storedTextMap, ...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
+}
+
 async function waitForInactiveRecording(
   session: Session,
   phase: FinalizeProgress["phase"],
@@ -178,14 +195,24 @@ export async function finalizeSession(
       liveResults.set(key, text);
     });
 
-    const liveBeforeChunk = options.pauseForActiveRecording
-      ? async () => { await waitForInactiveRecording(session, "live", progressWriter, log); }
-      : undefined;
+    const finalModelPath = resolveModelPath(config, "final");
+    const willRunFinalPass = config.finalRetranscribe && existsSync(finalModelPath);
 
-    await pipeline.stop(async (progress) => {
-      await progressWriter.update(makeProgress("live", progress.done, progress.total));
-      log(`Live pass: ${progress.done}/${progress.total}`);
-    }, liveBeforeChunk);
+    if (willRunFinalPass) {
+      // The final pass re-transcribes every chunk with the higher-quality model,
+      // so draining pending chunks with the live model first would just double
+      // the whisper-cli runs for no benefit.
+      await pipeline.close();
+    } else {
+      const liveBeforeChunk = options.pauseForActiveRecording
+        ? async () => { await waitForInactiveRecording(session, "live", progressWriter, log); }
+        : undefined;
+
+      await pipeline.stop(async (progress) => {
+        await progressWriter.update(makeProgress("live", progress.done, progress.total));
+        log(`Live pass: ${progress.done}/${progress.total}`);
+      }, liveBeforeChunk);
+    }
 
     const refreshedSession: Session = JSON.parse(await readFile(sessionPath, "utf-8"));
     session.processedChunks = refreshedSession.processedChunks;
@@ -214,20 +241,28 @@ export async function finalizeSession(
 
     let entries: TranscriptEntry[];
 
-    // Build base results from live + stored entries
-    const baseResults = new Map([...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
+    // Base results merge entries.jsonl (survives even chunks this process never
+    // touched), the transcript.md fallback, and this run's own live drain.
+    const baseResults = buildBaseResults(storedRecords, fallbackEntries, liveResults);
+    const sessionEntries = entriesFromSession(session, baseResults);
+    // Non-silent candidate entries from stored+live text — used both as the
+    // fallback when the final pass is unavailable/fails, and as the safety-net
+    // comparison below (previously compared only against markdown, which is
+    // empty whenever entries.jsonl exists).
+    const baseEntries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
+
+    const fallbackAudioEntries = async (): Promise<TranscriptEntry[]> => {
+      if (baseEntries.length > 0) return baseEntries;
+      if (fallbackEntries.length > 0) return filterEntriesByAudio(fallbackEntries, session, config);
+      return [];
+    };
 
     let finalPassLocked = false;
     try {
       if (config.finalRetranscribe) {
-        const finalModelPath = resolveModelPath(config, "final");
         if (!existsSync(finalModelPath)) {
           warn(`Final model not found: ${finalModelPath}, using live transcript`);
-          const sessionEntries = entriesFromSession(session, baseResults);
-          entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
-          if (entries.length === 0 && fallbackEntries.length > 0) {
-            entries = await filterEntriesByAudio(fallbackEntries, session, config);
-          }
+          entries = await fallbackAudioEntries();
         } else {
           // Wait for global final-pass slot (only one big-model pass at a time)
           await waitForGlobalFinalPassSlot(sessionDir, session, progressWriter, log);
@@ -240,26 +275,17 @@ export async function finalizeSession(
               ? async () => { await waitForInactiveRecording(session, "final", progressWriter, log); }
               : undefined;
 
-            const sessionEntries = entriesFromSession(session, baseResults);
             entries = await runFinalPass(session, config, (done, total) => {
               progressWriter.update(makeProgress("final", done, total));
               log(`Final pass: ${done}/${total} chunks`);
             }, sessionEntries, beforeChunk);
           } catch (err) {
             warn(`Final pass failed: ${err instanceof Error ? err.message : String(err)}, using live transcript`);
-            const sessionEntries = entriesFromSession(session, baseResults);
-            entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
-            if (entries.length === 0 && fallbackEntries.length > 0) {
-              entries = await filterEntriesByAudio(fallbackEntries, session, config);
-            }
+            entries = await fallbackAudioEntries();
           }
         }
       } else {
-        const sessionEntries = entriesFromSession(session, baseResults);
-        entries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
-        if (entries.length === 0 && fallbackEntries.length > 0) {
-          entries = await filterEntriesByAudio(fallbackEntries, session, config);
-        }
+        entries = await fallbackAudioEntries();
       }
     } finally {
       if (finalPassLocked) {
@@ -271,10 +297,9 @@ export async function finalizeSession(
     await progressWriter.forceFlush();
 
     if (entries.length > 0) {
-      const filteredFallbackEntries = await filterEntriesByAudio(fallbackEntries, session, config);
-      if (filteredFallbackEntries.length > 0 && entries.length < filteredFallbackEntries.length) {
-        warn(`Final pass produced ${entries.length} entries vs ${filteredFallbackEntries.length} non-silent live entries, keeping live`);
-        entries = filteredFallbackEntries;
+      if (baseEntries.length > 0 && entries.length < baseEntries.length) {
+        warn(`Final pass produced ${entries.length} entries vs ${baseEntries.length} non-silent live/stored entries, keeping live`);
+        entries = baseEntries;
       }
       await rewriteMarkdown(session.outputFile, session.title, session.startedAt, entries);
     }
