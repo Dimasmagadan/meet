@@ -112,6 +112,12 @@ export function getCaptureBinPath(config?: Config): string {
   return join(repoRoot, "native", "AudioCapture", ".build", "release", "AudioCapture");
 }
 
+export function resolveAnalysisBin(config?: Config): string {
+  if (config?.analysisBin) return expandPath(config.analysisBin);
+  const repoRoot = resolve(import.meta.dirname, "..");
+  return join(repoRoot, "native", "AudioCapture", ".build", "release", "AudioAnalysis");
+}
+
 export async function ensureDir(path: string): Promise<void> {
   await mkdir(expandPath(path), { recursive: true });
 }

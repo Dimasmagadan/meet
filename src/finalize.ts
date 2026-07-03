@@ -1,15 +1,18 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Session, Config, TranscriptEntry, FinalizeProgress, EntryRecord } from "./types.js";
-import { loadConfig, resolveModelPath, writeAtomic } from "./storage.js";
+import { loadConfig, resolveModelPath, resolveAnalysisBin, writeAtomic } from "./storage.js";
 import { Pipeline } from "./pipeline.js";
 import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
 import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcriptEntriesToMap } from "./assembler.js";
 import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock, readGlobalFinalPassLock } from "./locks.js";
 import { analyzeWavFile } from "./audio-metrics.js";
 import { readEntryRecords } from "./entries-store.js";
+import { concatSysChunks, runDiarizer, assignSpeakers, relabelSegments, cleanupSysConcat, type DiarSegment } from "./diarization.js";
+import { computeTalkTime } from "./talk-time.js";
+import { runParakeetPass } from "./parakeet-pass.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
 
@@ -158,6 +161,126 @@ async function waitForGlobalFinalPassSlot(
   }
 }
 
+interface DiarizationOutcome {
+  entries: TranscriptEntry[];
+  segments: DiarSegment[];
+  speakersRecord: Record<string, unknown>;
+}
+
+// Diarizes sys-source entries into "Speaker N" labels (F1). Fails open: any
+// error leaves entries unmodified and records the failure in speakers.json
+// instead of throwing, so diarization never blocks finalization.
+export async function runDiarizationStep(
+  session: Session,
+  config: Config,
+  entries: TranscriptEntry[],
+  warn: (msg: string) => void,
+  log: (msg: string) => void,
+): Promise<DiarizationOutcome> {
+  const speakersRecord: Record<string, unknown> = {
+    version: 1,
+    sessionId: session.id,
+    diarization: { ok: false },
+  };
+
+  if (!config.diarizationEnabled) return { entries, segments: [], speakersRecord };
+  if (session.mode !== "full") return { entries, segments: [], speakersRecord };
+  if (!entries.some((e) => e.source === "sys")) return { entries, segments: [], speakersRecord };
+
+  const analysisBin = resolveAnalysisBin(config);
+  if (!existsSync(analysisBin)) {
+    warn(`Diarization skipped: AudioAnalysis binary not found at ${analysisBin}, keeping Others labels`);
+    speakersRecord.diarization = { ok: false, error: "AudioAnalysis binary not found" };
+    return { entries, segments: [], speakersRecord };
+  }
+
+  let sysFileCount = 0;
+  try {
+    const files = await readdir(session.sessionDir);
+    sysFileCount = files.filter((f) => /^sys-\d{3}\.wav$/.test(f)).length;
+  } catch {
+    return { entries, segments: [], speakersRecord };
+  }
+  if (sysFileCount === 0) return { entries, segments: [], speakersRecord };
+
+  const startedAt = Date.now();
+  try {
+    log("Diarization pass...");
+    const { wavPath, offsets } = await concatSysChunks(session.sessionDir);
+    try {
+      const rawSegments = await runDiarizer(config, wavPath);
+      const segments = relabelSegments(rawSegments);
+      const diarizedEntries = assignSpeakers(entries, segments, offsets, config.diarizationMinOverlap);
+      const speakerIds = new Set(segments.map((s) => s.speaker));
+
+      speakersRecord.diarization = { ok: true, speakerCount: speakerIds.size, binaryMs: Date.now() - startedAt };
+      speakersRecord.segments = segments;
+      speakersRecord.entryAssignments = diarizedEntries
+        .filter((e) => e.source === "sys")
+        .map((e) => ({ chunkIndex: e.chunkIndex, speaker: e.speaker ?? null }));
+
+      return { entries: diarizedEntries, segments, speakersRecord };
+    } finally {
+      await cleanupSysConcat(session.sessionDir);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    warn(`Diarization failed: ${message}, keeping Others labels`);
+    speakersRecord.diarization = { ok: false, error: message };
+    return { entries, segments: [], speakersRecord };
+  }
+}
+
+// Re-transcribes the session with Parakeet for a side-by-side quality/speed
+// comparison (F3). Fails open: any error just skips the A/B artifacts —
+// transcript.md was already written and is unaffected.
+async function runParakeetComparisonStep(
+  session: Session,
+  config: Config,
+  outputDir: string,
+  speakersRecord: Record<string, unknown>,
+  whisperWallMs: number,
+  warn: (msg: string) => void,
+  log: (msg: string) => void,
+  progressWriter: ReturnType<typeof createDebouncedProgressWriter>,
+): Promise<void> {
+  const analysisBin = resolveAnalysisBin(config);
+  if (!existsSync(analysisBin)) return;
+
+  try {
+    log("Parakeet A/B pass...");
+    await progressWriter.update(makeProgress("ab", 0, 0));
+
+    const speakerByChunk = new Map<number, string>();
+    const entryAssignments = speakersRecord.entryAssignments as
+      | Array<{ chunkIndex: number; speaker: string | null }>
+      | undefined;
+    for (const assignment of entryAssignments ?? []) {
+      if (assignment.speaker) speakerByChunk.set(assignment.chunkIndex, assignment.speaker);
+    }
+
+    const result = await runParakeetPass(session, config, speakerByChunk, (done, total) => {
+      progressWriter.update(makeProgress("ab", done, total));
+      log(`Parakeet A/B pass: ${done}/${total} chunks`);
+    });
+
+    const parakeetPath = session.outputFile.replace(/transcript\.md$/, "transcript.parakeet.md");
+    await rewriteMarkdown(parakeetPath, `${session.title} — Parakeet A/B`, session.startedAt, result.entries);
+
+    const abReport = {
+      date: new Date().toISOString(),
+      chunks: result.chunks,
+      whisper: { model: config.finalModelPath.replace(/^.*\//, ""), wallMs: whisperWallMs },
+      parakeet: { model: "parakeet-tdt-0.6b-v3-coreml", wallMs: result.wallMs },
+      notes: "compare transcript.md vs transcript.parakeet.md",
+    };
+    await writeAtomic(join(outputDir, "ab-report.json"), JSON.stringify(abReport, null, 2)).catch(() => {});
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    warn(`Parakeet A/B pass failed: ${message}, main transcript unaffected`);
+  }
+}
+
 export async function finalizeSession(
   sessionDir: string,
   options: FinalizeOptions,
@@ -258,6 +381,7 @@ export async function finalizeSession(
     };
 
     let finalPassLocked = false;
+    let finalPassWallMs = 0;
     try {
       if (config.finalRetranscribe) {
         if (!existsSync(finalModelPath)) {
@@ -275,10 +399,12 @@ export async function finalizeSession(
               ? async () => { await waitForInactiveRecording(session, "final", progressWriter, log); }
               : undefined;
 
+            const finalPassStartedAt = Date.now();
             entries = await runFinalPass(session, config, (done, total) => {
               progressWriter.update(makeProgress("final", done, total));
               log(`Final pass: ${done}/${total} chunks`);
             }, sessionEntries, beforeChunk);
+            finalPassWallMs = Date.now() - finalPassStartedAt;
           } catch (err) {
             warn(`Final pass failed: ${err instanceof Error ? err.message : String(err)}, using live transcript`);
             entries = await fallbackAudioEntries();
@@ -287,21 +413,42 @@ export async function finalizeSession(
       } else {
         entries = await fallbackAudioEntries();
       }
+
+      await progressWriter.update(makeProgress("write", entries.length, entries.length));
+      await progressWriter.forceFlush();
+
+      if (entries.length > 0) {
+        if (baseEntries.length > 0 && entries.length < baseEntries.length) {
+          warn(`Final pass produced ${entries.length} entries vs ${baseEntries.length} non-silent live/stored entries, keeping live`);
+          entries = baseEntries;
+        }
+
+        await progressWriter.update(makeProgress("diarize", 0, 0));
+        const { entries: diarizedEntries, segments, speakersRecord } = await runDiarizationStep(session, config, entries, warn, log);
+        entries = diarizedEntries;
+
+        const talkTime = computeTalkTime({
+          entryRecords: storedRecords,
+          chunkDurationSeconds: session.chunkDurationSeconds,
+          micRmsThresholdDb: config.micRmsThresholdDb,
+          sysRmsThresholdDb: config.sysRmsThresholdDb,
+          diarSegments: segments,
+        });
+        speakersRecord.talkTime = talkTime;
+
+        const outputDir = dirname(session.outputFile);
+        await writeAtomic(join(outputDir, "speakers.json"), JSON.stringify(speakersRecord, null, 2)).catch(() => {});
+
+        await rewriteMarkdown(session.outputFile, session.title, session.startedAt, entries, talkTime);
+
+        if (config.parakeetComparePass) {
+          await runParakeetComparisonStep(session, config, outputDir, speakersRecord, finalPassWallMs, warn, log, progressWriter);
+        }
+      }
     } finally {
       if (finalPassLocked) {
         releaseGlobalFinalPassLock();
       }
-    }
-
-    await progressWriter.update(makeProgress("write", entries.length, entries.length));
-    await progressWriter.forceFlush();
-
-    if (entries.length > 0) {
-      if (baseEntries.length > 0 && entries.length < baseEntries.length) {
-        warn(`Final pass produced ${entries.length} entries vs ${baseEntries.length} non-silent live/stored entries, keeping live`);
-        entries = baseEntries;
-      }
-      await rewriteMarkdown(session.outputFile, session.title, session.startedAt, entries);
     }
 
     session.status = "done";

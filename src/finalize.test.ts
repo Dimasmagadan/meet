@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { buildBaseResults } from "./finalize.js";
-import type { EntryRecord, TranscriptEntry } from "./types.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildBaseResults, runDiarizationStep } from "./finalize.js";
+import { DEFAULT_CONFIG } from "./types.js";
+import type { EntryRecord, TranscriptEntry, Session, Config } from "./types.js";
 
 test("buildBaseResults", async (t) => {
   await t.test("stored entries.jsonl text is used when nothing else has it", () => {
@@ -56,5 +60,90 @@ test("buildBaseResults", async (t) => {
     assert.equal(result.get("mic-001"), "chunk one");
     assert.equal(result.get("sys-001"), "chunk one sys");
     assert.equal(result.get("mic-002"), "chunk two");
+  });
+});
+
+test("runDiarizationStep", async (t) => {
+  const makeSession = (sessionDir: string): Session => ({
+    id: "test-session",
+    title: "Test",
+    mode: "full",
+    startedAt: "2026-05-13T14:30:00.000Z",
+    chunkDurationSeconds: 15,
+    sessionDir,
+    outputFile: join(sessionDir, "transcript.md"),
+    capturePid: null,
+    status: "finalizing",
+    processedChunks: [],
+    lastError: null,
+    autoStopReason: null,
+    latestProcessedOffsetSeconds: 0,
+    lastMeaningfulTextAtOffsetSeconds: null,
+    hasMeaningfulText: false,
+    tags: [],
+  });
+
+  const entries: TranscriptEntry[] = [
+    { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "hello" },
+    { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "hi there" },
+  ];
+
+  const noop = () => {};
+
+  await t.test("skips and fails open when AudioAnalysis binary is missing", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-diarize-"));
+    try {
+      const session = makeSession(sessionDir);
+      const config: Config = { ...DEFAULT_CONFIG, analysisBin: join(sessionDir, "nonexistent-binary") };
+      const warnings: string[] = [];
+      const { entries: result, speakersRecord } = await runDiarizationStep(session, config, entries, (m) => warnings.push(m), noop);
+
+      assert.deepStrictEqual(result, entries);
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /Diarization skipped/);
+      assert.equal((speakersRecord.diarization as { ok: boolean }).ok, false);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("skips silently when diarization is disabled", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-diarize-"));
+    try {
+      const session = makeSession(sessionDir);
+      const config: Config = { ...DEFAULT_CONFIG, diarizationEnabled: false };
+      const warnings: string[] = [];
+      const { entries: result } = await runDiarizationStep(session, config, entries, (m) => warnings.push(m), noop);
+
+      assert.deepStrictEqual(result, entries);
+      assert.equal(warnings.length, 0);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("skips when there are no sys entries", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-diarize-"));
+    try {
+      const session = makeSession(sessionDir);
+      const config: Config = { ...DEFAULT_CONFIG };
+      const micOnly: TranscriptEntry[] = [{ source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "hello" }];
+      const { entries: result } = await runDiarizationStep(session, config, micOnly, noop, noop);
+      assert.deepStrictEqual(result, micOnly);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("skips when session mode is mic-only", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-diarize-"));
+    try {
+      const session = { ...makeSession(sessionDir), mode: "mic" as const };
+      const config: Config = { ...DEFAULT_CONFIG };
+      const { entries: result } = await runDiarizationStep(session, config, entries, noop, noop);
+      assert.deepStrictEqual(result, entries);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
   });
 });

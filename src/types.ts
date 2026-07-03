@@ -10,7 +10,7 @@ export interface Chunk {
 export type SessionStatus = "recording" | "stopped" | "queued" | "finalizing" | "paused" | "done" | "error";
 
 export interface FinalizeProgress {
-  phase: "stopping" | "live" | "final" | "write" | "done" | "paused" | "error";
+  phase: "stopping" | "live" | "final" | "write" | "diarize" | "ab" | "done" | "paused" | "error";
   done: number;
   total: number;
   message: string | null;
@@ -75,6 +75,10 @@ export interface Config {
   vadThreshold: number;
   vadFailOpen: boolean;
   vadTimeoutMs: number;
+  diarizationEnabled: boolean;
+  diarizationMinOverlap: number;
+  analysisBin: string;
+  parakeetComparePass: boolean;
 }
 
 export interface TranscribeOptions {
@@ -89,6 +93,7 @@ export interface MeetingStats {
   tags: string[];
   durationSeconds: number | null;
   wordCount: number;
+  talkTime?: { me: number; others: number; speakerCount: number };
   dayOfWeek: number;
   hour: number;
   weekKey: string;
@@ -106,6 +111,7 @@ export interface TranscriptEntry {
   chunkIndex: number;
   timestamp: string;
   text: string;
+  speaker?: string;
 }
 
 export interface EntryRecord {
@@ -153,4 +159,8 @@ export const DEFAULT_CONFIG: Config = {
   vadThreshold: 0.5,
   vadFailOpen: true,
   vadTimeoutMs: 30_000,
+  diarizationEnabled: true,
+  diarizationMinOverlap: 0.3,
+  analysisBin: "",
+  parakeetComparePass: true,
 };

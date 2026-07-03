@@ -30,7 +30,7 @@ function parseMetaFile(metaPath: string): { title: string; date: Date; mode: str
   }
 }
 
-function parseTranscript(transcriptPath: string): { durationSeconds: number | null; wordCount: number } {
+function parseTranscript(transcriptPath: string): { durationSeconds: number | null; wordCount: number; talkTime: MeetingStats["talkTime"] } {
   try {
     const raw = readFileSync(transcriptPath, "utf-8");
     const timestamps = [...raw.matchAll(/\*\*\[(\d{2}):(\d{2}):(\d{2})\]/g)];
@@ -50,10 +50,45 @@ function parseTranscript(transcriptPath: string): { durationSeconds: number | nu
     const text = textLines.map(l => l.replace(/^\*\*\[\d{2}:\d{2}:\d{2}\]\*\s*\w+:\s*/, "")).join(" ");
     const wordCount = text.split(/\s+/).filter(Boolean).length;
 
-    return { durationSeconds, wordCount };
+    return { durationSeconds, wordCount, talkTime: parseTalkTimeMarkdown(raw) };
   } catch {
-    return { durationSeconds: null, wordCount: 0 };
+    return { durationSeconds: null, wordCount: 0, talkTime: undefined };
   }
+}
+
+// Prefers speakers.json (structured, always present when F1/F2 ran); falls
+// back to parsing the "## Talk Time" markdown section for older transcripts
+// or when speakers.json didn't survive (manual copy, etc).
+function readSpeakersJsonTalkTime(dirPath: string): MeetingStats["talkTime"] {
+  const path = join(dirPath, "speakers.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const data = JSON.parse(readFileSync(path, "utf-8"));
+    const speakers: Array<{ label: string; seconds: number }> = data?.talkTime?.speakers ?? [];
+    if (speakers.length === 0) return undefined;
+    return summarizeTalkTime(speakers);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseTalkTimeMarkdown(raw: string): MeetingStats["talkTime"] {
+  const section = raw.split(/^## Talk Time$/m)[1];
+  if (!section) return undefined;
+  const rowRegex = /^- (.+?): (\d+)m (\d+)s \(\d+%\)$/gm;
+  const speakers: Array<{ label: string; seconds: number }> = [];
+  for (const m of section.matchAll(rowRegex)) {
+    speakers.push({ label: m[1], seconds: Number(m[2]) * 60 + Number(m[3]) });
+  }
+  if (speakers.length === 0) return undefined;
+  return summarizeTalkTime(speakers);
+}
+
+function summarizeTalkTime(speakers: Array<{ label: string; seconds: number }>): MeetingStats["talkTime"] {
+  const me = speakers.find((s) => s.label === "Me")?.seconds ?? 0;
+  const others = speakers.filter((s) => s.label !== "Me").reduce((sum, s) => sum + s.seconds, 0);
+  const speakerCount = speakers.filter((s) => /^Speaker \d+$/.test(s.label)).length;
+  return { me, others, speakerCount };
 }
 
 function getWeekKey(date: Date): string {
@@ -88,9 +123,10 @@ export function collectMeetings(): MeetingStats[] {
     const meta = parseMetaFile(metaPath);
     if (!meta) continue;
 
-    const { durationSeconds, wordCount } = existsSync(transcriptPath)
+    const { durationSeconds, wordCount, talkTime: markdownTalkTime } = existsSync(transcriptPath)
       ? parseTranscript(transcriptPath)
-      : { durationSeconds: null, wordCount: 0 };
+      : { durationSeconds: null, wordCount: 0, talkTime: undefined };
+    const talkTime = readSpeakersJsonTalkTime(dirPath) ?? markdownTalkTime;
 
     meetings.push({
       title: meta.title,
@@ -99,6 +135,7 @@ export function collectMeetings(): MeetingStats[] {
       tags: meta.tags,
       durationSeconds,
       wordCount,
+      talkTime,
       dayOfWeek: meta.date.getDay(),
       hour: meta.date.getHours(),
       weekKey: getWeekKey(meta.date),
@@ -122,6 +159,13 @@ function generateHTML(meetings: MeetingStats[]): string {
   const dateRange = meetings.length > 0
     ? `${meetings[0].date.toLocaleDateString("ru-RU")} — ${meetings[meetings.length - 1].date.toLocaleDateString("ru-RU")}`
     : "—";
+
+  // Overall Me-vs-Others talk ratio, aggregated across meetings with talk-time data
+  const withTalkTime = meetings.filter(m => m.talkTime);
+  const totalMeSeconds = withTalkTime.reduce((s, m) => s + m.talkTime!.me, 0);
+  const totalOthersSeconds = withTalkTime.reduce((s, m) => s + m.talkTime!.others, 0);
+  const totalTalkSeconds = totalMeSeconds + totalOthersSeconds;
+  const mePercent = totalTalkSeconds > 0 ? Math.round((totalMeSeconds / totalTalkSeconds) * 100) : 0;
 
   // Tag distribution
   const tagCounts = new Map<string, number>();
@@ -166,7 +210,8 @@ function generateHTML(meetings: MeetingStats[]): string {
     const dateStr = m.date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
     const timeStr = m.date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
     const tags = m.tags.map(t => `<span class="tag">${t}</span>`).join(" ");
-    return `<tr><td>${dateStr} ${timeStr}</td><td>${m.title}</td><td>${dur}</td><td>${m.wordCount}</td><td>${tags}</td></tr>`;
+    const speakers = m.talkTime ? String(m.talkTime.speakerCount || 1) : "—";
+    return `<tr><td>${dateStr} ${timeStr}</td><td>${m.title}</td><td>${dur}</td><td>${m.wordCount}</td><td>${speakers}</td><td>${tags}</td></tr>`;
   }).join("\n");
 
   const allTags = [...tagCounts.keys()].sort();
@@ -230,6 +275,11 @@ function generateHTML(meetings: MeetingStats[]): string {
     <div class="value">${tagCounts.size}</div>
     <div class="sub">${allTags.join(", ") || "none"}</div>
   </div>
+  <div class="card">
+    <div class="label">Talk Ratio (Me / Others)</div>
+    <div class="value">${withTalkTime.length > 0 ? `${mePercent}% / ${100 - mePercent}%` : "—"}</div>
+    <div class="sub">${withTalkTime.length} meeting${withTalkTime.length === 1 ? "" : "s"} with talk-time data</div>
+  </div>
 </div>
 
 <div class="charts">
@@ -271,7 +321,7 @@ function generateHTML(meetings: MeetingStats[]): string {
 </div>
 <div class="chart-box">
   <table id="meetingsTable">
-    <thead><tr><th>Date</th><th>Title</th><th>Duration</th><th>Words</th><th>Tags</th></tr></thead>
+    <thead><tr><th>Date</th><th>Title</th><th>Duration</th><th>Words</th><th>Speakers</th><th>Tags</th></tr></thead>
     <tbody>
     ${tableRows}
     </tbody>

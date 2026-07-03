@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { loadConfig, getOutputPath, getOutputDir, getCaptureBinPath, findStaleSessions, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath } from "./storage.js";
+import { loadConfig, getOutputPath, getOutputDir, getCaptureBinPath, resolveAnalysisBin, findStaleSessions, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath } from "./storage.js";
 import { Recorder } from "./recorder.js";
 import { makeHeader } from "./assembler.js";
 import { finalizeSession } from "./finalize.js";
@@ -10,7 +10,7 @@ import { transcribeImport, type ImportOptions } from "./import.js";
 import { spawn, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
 import type { Session, Config } from "./types.js";
@@ -278,6 +278,20 @@ async function runSetup() {
     ok = false;
   }
 
+  const analysisBin = resolveAnalysisBin(config);
+  if (existsSync(analysisBin)) {
+    console.log(chalk.green("  AudioAnalysis: ") + analysisBin);
+    console.log(chalk.gray("    Downloading diarization + Parakeet CoreML models, one-time, ~1 GB..."));
+    try {
+      execSync(`"${analysisBin}" models --ensure`, { stdio: "inherit" });
+    } catch {
+      console.log(chalk.yellow("    Model download/verify failed (speaker diarization and Parakeet A/B pass will be skipped until fixed)"));
+    }
+  } else {
+    console.log(chalk.yellow("  AudioAnalysis: NOT BUILT (speaker diarization and Parakeet A/B pass disabled, optional)"));
+    console.log(chalk.gray("    Build: cd native/AudioCapture && swift build --product AudioAnalysis -c release"));
+  }
+
   const outputDir = expandPath(config.outputDir);
   await mkdir(outputDir, { recursive: true });
   console.log(chalk.green("  output dir: ") + outputDir);
@@ -306,6 +320,17 @@ async function runDoctor(mode: "mic" | "full") {
       console.log(chalk.red(e));
     }
     process.exit(1);
+  }
+
+  const analysisBin = resolveAnalysisBin(config);
+  if (existsSync(analysisBin)) {
+    console.log(chalk.green(`AudioAnalysis: ${analysisBin}`));
+    const cacheDir = join(homedir(), "Library", "Application Support", "FluidAudio");
+    console.log(existsSync(cacheDir)
+      ? chalk.green(`  models cache: ${cacheDir}`)
+      : chalk.yellow("  models cache: not found (run meet setup to download, ~1 GB)"));
+  } else {
+    console.log(chalk.yellow("AudioAnalysis: not built (speaker diarization and Parakeet A/B pass disabled)"));
   }
 
   const sessionDir = await mkdtemp(join(tmpdir(), "meet-doctor-"));

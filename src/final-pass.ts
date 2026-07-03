@@ -5,7 +5,7 @@ import { copyFile } from "node:fs/promises";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 import { loadConfig, resolveModelPath } from "./storage.js";
 import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
-import { analyzeWavFile } from "./audio-metrics.js";
+import { analyzeWavFile, type AudioMetrics } from "./audio-metrics.js";
 import { filterEntries, type FinalChunkResult, type FilterConfig } from "./filters.js";
 import { chunkToTimestamp } from "./assembler.js";
 
@@ -16,27 +16,36 @@ export async function copyLiveTranscript(outputFile: string): Promise<void> {
   }
 }
 
-export async function runFinalPass(
+export interface AudibleChunk {
+  source: "mic" | "sys";
+  index: number;
+  wav: string;
+  wavPath: string;
+  metrics: AudioMetrics;
+  // false when below the source's silence-gate threshold — callers should
+  // skip transcription but still account for the chunk in their own results.
+  audible: boolean;
+}
+
+// Shared chunk-iteration shape for any full re-transcription pass (whisper
+// final pass, Parakeet A/B pass): same file listing, same silence gating, so
+// both passes see exactly the same chunk set and their outputs are
+// comparable apples-to-apples.
+export async function forEachAudibleChunk(
   session: Session,
   config: Config,
-  onProgress?: (done: number, total: number) => void,
-  liveEntries?: TranscriptEntry[],
+  onChunk: (chunk: AudibleChunk, done: number, total: number) => Promise<void>,
   beforeChunk?: () => Promise<void>,
-): Promise<TranscriptEntry[]> {
-  if (!existsSync(session.sessionDir)) {
-    return [];
-  }
+): Promise<void> {
+  if (!existsSync(session.sessionDir)) return;
 
   const files = await readdir(session.sessionDir);
   const wavFiles = files
     .filter((f) => /^((mic|sys)-\d{3}\.wav)$/.test(f))
     .sort();
 
-  const finalModelPath = resolveModelPath(config, "final");
-
-  const results: FinalChunkResult[] = [];
-  let done = 0;
   const total = wavFiles.length;
+  let done = 0;
 
   for (const wav of wavFiles) {
     const parsed = parseChunkFilename(wav);
@@ -45,55 +54,69 @@ export async function runFinalPass(
     await beforeChunk?.();
 
     const wavPath = join(session.sessionDir, wav);
-
     const metrics = await analyzeWavFile(wavPath);
-
     const threshold = parsed.source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
-    if (metrics.rmsDb < threshold) {
+    const audible = metrics.rmsDb >= threshold;
+
+    done++;
+    await onChunk({ source: parsed.source, index: parsed.index, wav, wavPath, metrics, audible }, done, total);
+  }
+}
+
+export async function runFinalPass(
+  session: Session,
+  config: Config,
+  onProgress?: (done: number, total: number) => void,
+  liveEntries?: TranscriptEntry[],
+  beforeChunk?: () => Promise<void>,
+): Promise<TranscriptEntry[]> {
+  const finalModelPath = resolveModelPath(config, "final");
+  const results: FinalChunkResult[] = [];
+
+  await forEachAudibleChunk(session, config, async (chunk, done, total) => {
+    if (!chunk.audible) {
       results.push({
-        source: parsed.source,
-        index: parsed.index,
-        wav,
+        source: chunk.source,
+        index: chunk.index,
+        wav: chunk.wav,
         text: "",
-        rmsDb: metrics.rmsDb,
-        peakDb: metrics.peakDb,
+        rmsDb: chunk.metrics.rmsDb,
+        peakDb: chunk.metrics.peakDb,
       });
-      done++;
       onProgress?.(done, total);
-      continue;
+      return;
     }
 
     try {
-      const result = await transcribeChunk(wavPath, config, parsed.index, parsed.source, {
+      const result = await transcribeChunk(chunk.wavPath, config, chunk.index, chunk.source, {
         modelPath: finalModelPath,
         pass: "final",
       });
 
       results.push({
-        source: parsed.source,
-        index: parsed.index,
-        wav,
+        source: chunk.source,
+        index: chunk.index,
+        wav: chunk.wav,
         text: result.text,
-        rmsDb: metrics.rmsDb,
-        peakDb: metrics.peakDb,
+        rmsDb: chunk.metrics.rmsDb,
+        peakDb: chunk.metrics.peakDb,
       });
     } catch {
       const liveEntry = liveEntries?.find(
-        (e) => e.source === parsed.source && e.chunkIndex === parsed.index
+        (e) => e.source === chunk.source && e.chunkIndex === chunk.index
       );
       results.push({
-        source: parsed.source,
-        index: parsed.index,
-        wav,
+        source: chunk.source,
+        index: chunk.index,
+        wav: chunk.wav,
         text: liveEntry?.text ?? "",
-        rmsDb: metrics.rmsDb,
-        peakDb: metrics.peakDb,
+        rmsDb: chunk.metrics.rmsDb,
+        peakDb: chunk.metrics.peakDb,
       });
     }
 
-    done++;
     onProgress?.(done, total);
-  }
+  }, beforeChunk);
 
   const filterConfig: FilterConfig = {
     micRmsThresholdDb: config.micRmsThresholdDb,

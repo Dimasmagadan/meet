@@ -117,6 +117,18 @@ describe("assembleMarkdown", () => {
     assert.ok(md.startsWith("# Empty"));
   });
 
+  it("renders diarized speaker labels for sys entries", () => {
+    const entries: TranscriptEntry[] = [
+      { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "Первый", speaker: "Speaker 1" },
+      { source: "sys", chunkIndex: 2, timestamp: "14:30:15", text: "Второй", speaker: "Speaker 2" },
+      { source: "sys", chunkIndex: 3, timestamp: "14:30:30", text: "Без метки" },
+    ];
+    const md = assembleMarkdown("Test", "2026-05-13T14:30:00.000Z", entries);
+    assert.ok(md.includes("Speaker 1:** Первый"));
+    assert.ok(md.includes("Speaker 2:** Второй"));
+    assert.ok(md.includes("Others:** Без метки"));
+  });
+
   it("formats file source without speaker label", () => {
     const entries: TranscriptEntry[] = [
       { source: "file", chunkIndex: 0, timestamp: "00:00:00", text: "Вступление" },
@@ -171,6 +183,31 @@ describe("parseTranscriptEntries", () => {
   it("handles text with colons", () => {
     const entries = parseTranscriptEntries("**[14:30:00] Me:** время: 14:30\n");
     assert.strictEqual(entries[0].text, "время: 14:30");
+  });
+
+  it("parses Speaker N entries as sys source with speaker set", () => {
+    const entries = parseTranscriptEntries("**[14:30:15] Speaker 1:** Привет всем\n");
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0].source, "sys");
+    assert.strictEqual(entries[0].speaker, "Speaker 1");
+    assert.strictEqual(entries[0].text, "Привет всем");
+  });
+
+  it("round-trips Speaker N through assemble/parse", () => {
+    const original: TranscriptEntry[] = [
+      { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "Первый", speaker: "Speaker 1" },
+      { source: "sys", chunkIndex: 2, timestamp: "14:30:15", text: "Второй", speaker: "Speaker 12" },
+    ];
+    const md = assembleMarkdown("Test", "2026-05-13T14:30:00.000Z", original);
+    const parsed = parseTranscriptEntries(md);
+    assert.strictEqual(parsed[0].speaker, "Speaker 1");
+    assert.strictEqual(parsed[1].speaker, "Speaker 12");
+  });
+
+  it("still parses legacy Others transcripts without a speaker field", () => {
+    const entries = parseTranscriptEntries("**[14:30:15] Others:** Здравствуйте\n");
+    assert.strictEqual(entries[0].source, "sys");
+    assert.strictEqual(entries[0].speaker, undefined);
   });
 });
 

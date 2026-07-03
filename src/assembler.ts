@@ -1,5 +1,7 @@
 import { appendFile, writeFile } from "node:fs/promises";
 import type { TranscriptEntry, Session } from "./types.js";
+import type { TalkTimeStats } from "./talk-time.js";
+import { formatTalkTimeSection } from "./talk-time.js";
 
 export function chunkToTimestamp(chunkIndex: number, chunkDurationSeconds: number, startedAt: string): string {
   const start = new Date(startedAt);
@@ -35,7 +37,7 @@ function formatEntry(entry: TranscriptEntry): string {
   if (entry.source === "file") {
     return `**[${entry.timestamp}]** ${entry.text}\n`;
   }
-  const label = entry.source === "mic" ? "Me" : "Others";
+  const label = entry.source === "mic" ? "Me" : (entry.speaker ?? "Others");
   return `**[${entry.timestamp}] ${label}:** ${entry.text}\n`;
 }
 
@@ -51,14 +53,15 @@ export async function appendEntry(filePath: string, entry: TranscriptEntry): Pro
   await appendFile(filePath, line);
 }
 
-export function assembleMarkdown(title: string, startedAt: string, entries: TranscriptEntry[]): string {
-  const lines: string[] = [
-    `# ${title} — ${new Date(startedAt).toLocaleDateString("ru-RU", { year: "numeric", month: "2-digit", day: "2-digit" })} ${new Date(startedAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`,
-    "",
-  ];
+export function assembleMarkdown(title: string, startedAt: string, entries: TranscriptEntry[], talkTime?: TalkTimeStats): string {
+  const lines: string[] = [makeHeader(title, startedAt)];
 
   for (const entry of entries) {
     lines.push(formatEntry(entry));
+  }
+
+  if (talkTime) {
+    lines.push("\n" + formatTalkTimeSection(talkTime));
   }
 
   return lines.join("");
@@ -81,14 +84,15 @@ export function timestampToChunkIndex(timestamp: string, chunkDurationSeconds: n
 
 export function parseTranscriptEntries(content: string, session?: { chunkDurationSeconds: number; startedAt: string }): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
-  const lineRegex = /^\*\*\[(\d{2}:\d{2}:\d{2})\] (Me|Others):\*\*\s*(.+)$/;
+  const lineRegex = /^\*\*\[(\d{2}:\d{2}:\d{2})\] (Me|Others|Speaker \d+):\*\*\s*(.+)$/;
   for (const line of content.split("\n")) {
     const m = lineRegex.exec(line.trim());
     if (!m) continue;
     const [, timestamp, label, text] = m;
     const source = label === "Me" ? "mic" as const : "sys" as const;
     const chunkIndex = session ? timestampToChunkIndex(timestamp, session.chunkDurationSeconds, session.startedAt) : 0;
-    entries.push({ source, chunkIndex, timestamp, text: text.trim() });
+    const speaker = /^Speaker \d+$/.test(label) ? label : undefined;
+    entries.push({ source, chunkIndex, timestamp, text: text.trim(), ...(speaker ? { speaker } : {}) });
   }
   return entries;
 }
@@ -102,7 +106,7 @@ export function transcriptEntriesToMap(entries: TranscriptEntry[]): Map<string, 
   return map;
 }
 
-export async function rewriteMarkdown(filePath: string, title: string, startedAt: string, entries: TranscriptEntry[]): Promise<void> {
-  const markdown = assembleMarkdown(title, startedAt, entries);
+export async function rewriteMarkdown(filePath: string, title: string, startedAt: string, entries: TranscriptEntry[], talkTime?: TalkTimeStats): Promise<void> {
+  const markdown = assembleMarkdown(title, startedAt, entries, talkTime);
   await writeFile(filePath, markdown, "utf-8");
 }

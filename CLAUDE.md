@@ -38,7 +38,10 @@ meet start "Title"
    ├─ Re-transcribes with higher-quality model
    ├─ Filters echoes and duplicates
    ├─ Applies silence gating and phrasebook
-   └─ Rewrites transcript.md with sorted entries
+   ├─ Diarizes system audio (AudioAnalysis diarize) → "Speaker N" labels, speakers.json
+   ├─ Computes per-speaker talk-time stats
+   ├─ Rewrites transcript.md with sorted entries + Talk Time footer
+   └─ Optional Parakeet A/B pass (AudioAnalysis transcribe) → transcript.parakeet.md, ab-report.json
 ```
 
 ### Module Breakdown
@@ -73,6 +76,20 @@ meet start "Title"
 **src/final-pass.ts** — Post-recording quality improvement
 - Re-transcribes all chunks with medium model
 - Filters echo/duplicate segments
+- `forEachAudibleChunk()` — shared chunk-iteration/silence-gating helper, also used by `parakeet-pass.ts`
+
+**src/diarization.ts** — Speaker diarization (final pass only, F1)
+- `concatSysChunks()` — streams sys-*.wav chunks into one WAV, returns per-chunk time offsets
+- `runDiarizer()` — spawns `AudioAnalysis diarize`, parses JSON segments
+- `assignSpeakers()` — majority time-overlap assignment of segments to sys entries; renumbers to "Speaker 1", "Speaker 2", ...
+
+**src/talk-time.ts** — Per-speaker talk-time stats (F2)
+- `computeTalkTime()` — Me from mic chunk-counting, Speaker N from diarization segment durations (or Others by sys chunk-counting when diarization is unavailable)
+- `formatTalkTimeSection()` — renders the `## Talk Time` transcript footer
+
+**src/parakeet-pass.ts** — Parakeet-TDT A/B comparison pass (F3)
+- `runParakeetPass()` — re-transcribes the same audible chunk set as the final pass via `AudioAnalysis transcribe`, phrasebook only (no whisper-specific filtering), reusing F1 speaker labels
+- Writes `transcript.parakeet.md` + `ab-report.json` for manual quality comparison against `transcript.md`
 
 **src/storage.ts** — Config and file I/O
 - `loadConfig()` — reads ~/.meet/config.json
@@ -97,12 +114,21 @@ meet start "Title"
 **src/locks.ts** — File-based synchronization
 - Prevents concurrent finalization
 
-**native/AudioCapture/** — Swift CLI
+**native/AudioCapture/** — Swift CLI (audio capture)
 - `main.swift` — CLI entry, mode selection (mic/full), signal handling
 - `MicCapture.swift` — AVAudioEngine mic tap with VoiceProcessing IO workaround
 - `SystemAudioCapture.swift` — ScreenCaptureKit audio-only extraction
 - `WAVWriter.swift` — 16kHz mono 16-bit PCM WAV writer, atomic chunk handoff
 - `Logger.swift` — Structured JSON logging to stderr
+
+**native/AudioCapture/Sources/AudioAnalysis/** — Swift CLI (speaker diarization + Parakeet ASR, FluidAudio)
+- Second executable target in the same SPM package; separate from `AudioCapture` so the capture binary's size/permissions stay untouched
+- `main.swift` — ArgumentParser root with `diarize`, `transcribe`, `models` subcommands
+- `DiarizeCommand.swift` — `DiarizerModels`/`DiarizerManager` → JSON segments on stdout
+- `TranscribeCommand.swift` — `UnifiedAsrManager` (Parakeet-TDT-0.6B) → JSON `{text, durationMs}`
+- `ModelsCommand.swift` — `--ensure` downloads/verifies both model sets for `meet setup`
+- `WavIO.swift` — reads our own 16kHz mono 16-bit PCM WAVs into Float32 samples
+- Node ↔ Swift boundary is process + JSON, same philosophy as `whisper-cli`
 
 ## Key Design Patterns
 
@@ -156,7 +182,7 @@ npm run build && node --test dist/filters.test.js
 
 **Test locations:**
 - `src/*.test.ts` files alongside their source modules
-- Examples: `audio-metrics.test.ts`, `assembler.test.ts`, `vad.test.ts`
+- Examples: `audio-metrics.test.ts`, `assembler.test.ts`, `vad.test.ts`, `diarization.test.ts`, `talk-time.test.ts`
 
 **Test conventions:**
 - One test file per module
@@ -223,6 +249,10 @@ Key settings:
 - `language` — Whisper language code (default: `ru`)
 - `finalRetranscribe` — run final pass after recording (default: `true`)
 - `silenceGate` — skip silent chunks (default: `true`)
+- `diarizationEnabled` — speaker diarization on the final pass (default: `true`)
+- `diarizationMinOverlap` — below this chunk-overlap ratio a sys entry stays "Others" (default: `0.3`)
+- `analysisBin` — path to the `AudioAnalysis` binary (default: resolved like `captureBin`)
+- `parakeetComparePass` — run the Parakeet A/B pass after finalize (default: `true`)
 
 **Tags**: Define tags in `tags.md` at project root (used by interactive picker)
 
@@ -301,4 +331,6 @@ If stuck, the next `SIGINT` drains remaining chunks.
 | Models | `~/.meet/models/` |
 | Session state | `~/.meet/sessions/meet-{id}/session.json` |
 | Swift binary | `native/AudioCapture/.build/release/AudioCapture` |
+| AudioAnalysis binary | `native/AudioCapture/.build/release/AudioAnalysis` |
+| FluidAudio model cache | `~/Library/Application Support/FluidAudio/` |
 | Compiled TypeScript | `dist/` |
