@@ -192,7 +192,21 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
-  console.log(chalk.gray("Press q to quit (bg all), s to stop (drain live inline), n to next meeting, p to pause, e to +15m, a to ask opencode\n"));
+  console.log(
+    chalk.gray("Press ") +
+      chalk.bold("q") +
+      chalk.gray(" to quit (bg all), ") +
+      chalk.bold("s") +
+      chalk.gray(" to stop (drain live inline), ") +
+      chalk.bold("n") +
+      chalk.gray(" to next meeting, ") +
+      chalk.bold("p") +
+      chalk.gray(" to pause, ") +
+      chalk.bold("e") +
+      chalk.gray(" to +15m, ") +
+      chalk.bold("a") +
+      chalk.gray(" to ask opencode\n"),
+  );
 
   const recorder = new Recorder(session, config, {
     silenceTimeout,

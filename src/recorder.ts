@@ -548,17 +548,17 @@ export class Recorder {
       process.stdin.resume();
       this.stdinDataHandler = (data: Buffer) => {
         const key = data.toString();
-        if (key === "q" || key === "Q") {
+        if (key === "q" || key === "Q" || key === "й" || key === "Й") {
           void this.shutdown();
-        } else if (key === "s" || key === "S") {
+        } else if (key === "s" || key === "S" || key === "ы" || key === "Ы") {
           void this.stopAndFinalizeForeground();
-        } else if (key === "n" || key === "N") {
+        } else if (key === "n" || key === "N" || key === "т" || key === "Т") {
           void this.nextMeeting();
-        } else if (key === "a" || key === "A") {
+        } else if (key === "a" || key === "A" || key === "ф" || key === "Ф") {
           this.askQuestion();
-        } else if (key === "p" || key === "P") {
+        } else if (key === "p" || key === "P" || key === "з" || key === "З") {
           void this.togglePause();
-        } else if (key === "e" || key === "E") {
+        } else if (key === "e" || key === "E" || key === "у" || key === "У") {
           this.extendCap();
         }
       };
