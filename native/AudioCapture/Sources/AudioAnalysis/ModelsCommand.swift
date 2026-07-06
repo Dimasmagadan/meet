@@ -22,8 +22,7 @@ struct ModelsCommand: AsyncParsableCommand {
 
         var asrStatus = "ok"
         do {
-            let manager = UnifiedAsrManager()
-            try await manager.loadModels()
+            _ = try await AsrModels.downloadAndLoad()
         } catch {
             asrStatus = "error: \(error)"
         }

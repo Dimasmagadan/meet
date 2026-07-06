@@ -264,6 +264,10 @@ async function runParakeetComparisonStep(
       log(`Parakeet A/B pass: ${done}/${total} chunks`);
     });
 
+    if (result.failedChunks > 0) {
+      warn(`Parakeet A/B pass: ${result.failedChunks}/${result.chunks} chunks failed to transcribe`);
+    }
+
     const parakeetPath = session.outputFile.replace(/transcript\.md$/, "transcript.parakeet.md");
     await rewriteMarkdown(parakeetPath, `${session.title} — Parakeet A/B`, session.startedAt, result.entries);
 
@@ -271,7 +275,7 @@ async function runParakeetComparisonStep(
       date: new Date().toISOString(),
       chunks: result.chunks,
       whisper: { model: config.finalModelPath.replace(/^.*\//, ""), wallMs: whisperWallMs },
-      parakeet: { model: "parakeet-tdt-0.6b-v3-coreml", wallMs: result.wallMs },
+      parakeet: { model: "FluidInference/parakeet-tdt-0.6b-v3-coreml", wallMs: result.wallMs },
       notes: "compare transcript.md vs transcript.parakeet.md",
     };
     await writeAtomic(join(outputDir, "ab-report.json"), JSON.stringify(abReport, null, 2)).catch(() => {});

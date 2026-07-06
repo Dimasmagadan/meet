@@ -8,16 +8,24 @@ import { getPhrasebook } from "./phrasebook.js";
 export async function transcribeWithParakeet(config: Config, wavPath: string): Promise<string> {
   const bin = resolveAnalysisBin(config);
   const stdout = await new Promise<string>((resolve, reject) => {
-    execFile(bin, ["transcribe", "--input", wavPath], { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(`AudioAnalysis transcribe failed: ${err.message}${stderr ? ` (${stderr.trim()})` : ""}`));
-        return;
-      }
-      resolve(stdout);
-    });
+    execFile(
+      bin,
+      ["transcribe", "--input", wavPath, "--language", config.language],
+      { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          reject(new Error(`AudioAnalysis transcribe failed: ${err.message}${stderr ? ` (${stderr.trim()})` : ""}`));
+          return;
+        }
+        resolve(stdout);
+      },
+    );
   });
 
-  const parsed = JSON.parse(stdout) as { text: string };
+  // The CoreML/E5RT runtime can print extra diagnostic lines to stdout after
+  // our JSON line; only the first line is ours to parse.
+  const firstLine = stdout.split("\n", 1)[0];
+  const parsed = JSON.parse(firstLine) as { text: string };
   return parsed.text;
 }
 
@@ -25,6 +33,7 @@ export interface ParakeetPassResult {
   entries: TranscriptEntry[];
   chunks: number;
   wallMs: number;
+  failedChunks: number;
 }
 
 // Re-transcribes the same audible chunk set as the whisper final pass with
@@ -42,6 +51,7 @@ export async function runParakeetPass(
   const entries: TranscriptEntry[] = [];
   const startedAt = Date.now();
   let chunkCount = 0;
+  let failedChunks = 0;
 
   await forEachAudibleChunk(session, config, async (chunk, done, total) => {
     onProgress?.(done, total);
@@ -52,6 +62,7 @@ export async function runParakeetPass(
     try {
       text = await transcribeWithParakeet(config, chunk.wavPath);
     } catch {
+      failedChunks++;
       return;
     }
 
@@ -75,5 +86,5 @@ export async function runParakeetPass(
 
   entries.sort((a, b) => (a.chunkIndex !== b.chunkIndex ? a.chunkIndex - b.chunkIndex : (a.source === "mic" ? -1 : 1)));
 
-  return { entries, chunks: chunkCount, wallMs: Date.now() - startedAt };
+  return { entries, chunks: chunkCount, wallMs: Date.now() - startedAt, failedChunks };
 }
