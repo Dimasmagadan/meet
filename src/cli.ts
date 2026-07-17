@@ -16,6 +16,8 @@ import { nanoid } from "nanoid";
 import type { Session, Config } from "./types.js";
 import { analyzeWavFile } from "./audio-metrics.js";
 import { generateDashboard } from "./dashboard.js";
+import { getTriggers } from "./triggers.js";
+import { sendMacNotification, type AttentionAlert } from "./attention.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -345,6 +347,27 @@ async function runDoctor(mode: "mic" | "full") {
       : chalk.yellow("  models cache: not found (run meet setup to download, ~1 GB)"));
   } else {
     console.log(chalk.yellow("AudioAnalysis: not built (speaker diarization and Parakeet A/B pass disabled)"));
+  }
+
+  if (config.attentionAlerts) {
+    const triggers = getTriggers(config);
+    console.log(chalk.green(`triggers: ${triggers.triggerCount} loaded from ${expandPath(config.triggersPath)}`));
+    const testAlert: AttentionAlert = {
+      kind: "trigger",
+      trigger: "test",
+      snippet: "meet doctor test notification",
+      timestamp: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+      chunkIndex: 0,
+      windowChunks: 0,
+    };
+    try {
+      await sendMacNotification(testAlert, config.attentionSound);
+      console.log(chalk.gray("Sent a test notification. If no banner appeared, allow notifications for your terminal app in System Settings → Notifications."));
+    } catch (err) {
+      console.log(chalk.yellow(`Test notification failed: ${err instanceof Error ? err.message : String(err)}`));
+    }
+  } else {
+    console.log(chalk.yellow("attention alerts: disabled"));
   }
 
   const sessionDir = await mkdtemp(join(tmpdir(), "meet-doctor-"));

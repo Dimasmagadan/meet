@@ -14,6 +14,7 @@ Local meeting transcription for macOS (Apple Silicon). Records mic + system audi
 - **File import** — transcribe existing audio/video files (m4a, mp3, mp4, wav, etc.)
 - **Interactive tag picker** — tag meetings for organization after recording
 - **Auto-stop** — configurable max duration and no-speech timeout
+- **Attention alerts** — macOS notification + terminal recap when someone says your name during a call
 - **Crash safety** — finalized chunks and transcript survive hard kills
 - **Russian language** optimized (configurable for any language)
 
@@ -152,6 +153,12 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `finalRetranscribe` | `true` | Run high-quality final pass |
 | `silenceGate` | `true` | Skip silent chunks |
 | `phrasebookPath` | `~/.meet/phrasebook.json` | Custom phrase replacements |
+| `attentionAlerts` | `true` | Master switch for live trigger-word alerts |
+| `triggersPath` | `~/.meet/triggers.json` | Trigger word list |
+| `triggersReload` | `true` | Hot-reload the triggers file on change |
+| `attentionCooldownSeconds` | `60` | Min seconds between alerts |
+| `attentionRecapSeconds` | `180` | Terminal recap window on trigger |
+| `attentionSound` | `Glass` | macOS notification sound name |
 
 ### Phrasebook
 
@@ -165,6 +172,25 @@ Create `~/.meet/phrasebook.json` to define custom text replacements applied to t
   ]
 }
 ```
+
+### Attention alerts
+
+During a call, `meet` watches the **live** transcription of other participants (system audio only — your own mic speech is never matched) for trigger words. On a match you get a macOS notification and a terminal banner recapping the last few minutes of transcript, so you can catch up if you were distracted.
+
+Create `~/.meet/triggers.json`:
+
+```json
+{
+  "triggers": ["Дим", "Dmitr", "Дмитрий"]
+}
+```
+
+- Matching is a case-insensitive substring check, so short stems (`"Дим"`) also catch inflected forms (`"Диму"`, `"Димой"`).
+- Triggers must be written in **post-phrasebook** form — matching happens after phrasebook replacements are applied.
+- Alerts are rate-limited by `attentionCooldownSeconds` (default 60s) so a repeated mention doesn't spam notifications.
+- Because live transcription runs in 15s chunks through a sequential queue, an alert can lag 15–45s behind the actual speech — the banner shows the speech-time timestamp, not "just now".
+- `meet doctor` prints trigger status and fires a test notification. If nothing appears, allow notifications for your terminal app in **System Settings → Notifications**.
+- No triggers file, or `attentionAlerts: false` in config, disables the feature entirely with no warnings.
 
 ### Tags
 
@@ -224,6 +250,8 @@ src/
 ├── audio-metrics.ts     WAV RMS/peak analysis for silence gating
 ├── filters.ts           Post-transcription text filters
 ├── phrasebook.ts        Regex-based phrase replacement engine
+├── triggers.ts          Trigger-word matching for live attention alerts
+├── attention.ts         Attention alerts: cooldown, terminal recap, macOS notification
 ├── vad.ts               Voice activity detection wrapper
 ├── locks.ts             File-based locks for finalization and recording
 ├── status.ts            Display active session status

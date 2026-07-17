@@ -19,6 +19,10 @@ CLI tool for macOS (Apple Silicon) that records meetings, transcribes them local
 
 ---
 
+**Post-MVP:** Features shipped after this MVP plan are specced individually under `specs/` (e.g. `specs/SPEC_SPEAKERS_2026-07-03.md` for diarization/talk-time/Parakeet A/B, `specs/SPEC_ATTENTION_2026-07-17.md` for live trigger-word attention alerts) rather than folded back into this frozen MVP scope.
+
+---
+
 ## Specification
 
 ### MVP Scope

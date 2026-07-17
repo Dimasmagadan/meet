@@ -79,6 +79,12 @@ export interface Config {
   diarizationMinOverlap: number;
   analysisBin: string;
   parakeetComparePass: boolean;
+  attentionAlerts: boolean;
+  triggersPath: string;
+  triggersReload: boolean;
+  attentionCooldownSeconds: number;
+  attentionRecapSeconds: number;
+  attentionSound: string;
 }
 
 export interface TranscribeOptions {
@@ -163,4 +169,10 @@ export const DEFAULT_CONFIG: Config = {
   diarizationMinOverlap: 0.3,
   analysisBin: "",
   parakeetComparePass: true,
+  attentionAlerts: true,
+  triggersPath: "~/.meet/triggers.json",
+  triggersReload: true,
+  attentionCooldownSeconds: 60,
+  attentionRecapSeconds: 180,
+  attentionSound: "Glass",
 };

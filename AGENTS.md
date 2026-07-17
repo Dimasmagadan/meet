@@ -27,6 +27,8 @@ meet start "Title"
 ├── src/audio-metrics.ts     — WAV RMS/peak analysis for silence gating
 ├── src/filters.ts           — post-transcription text filters
 ├── src/phrasebook.ts        — regex-based phrase replacement engine (hot-reload)
+├── src/triggers.ts          — trigger-word matching for live attention alerts (hot-reload, phrasebook clone)
+├── src/attention.ts         — AttentionMonitor: trigger detection, cooldown, terminal recap, macOS notification
 ├── src/vad.ts               — voice activity detection wrapper (optional)
 ├── src/locks.ts             — file-based locks for finalization and active recording
 ├── src/status.ts            — display active session/finalization status
@@ -131,6 +133,7 @@ Finalization can run in background (detached process) or foreground.
 
 - Chunk naming: `mic-001.wav`, `sys-001.wav` (zero-padded 3 digits)
 - Speaker labels by source: mic → "Me", system → "Others" (not diarization)
+- Live attention alerts: sys-channel text checked against `~/.meet/triggers.json`; on match, macOS notification + terminal recap banner (see `specs/SPEC_ATTENTION_2026-07-17.md`)
 - Transcription queue: sequential (one whisper-cli instance at a time)
 - Graceful shutdown: SIGINT/SIGTERM/q → stop capture → rescan → drain queue → finalize
 - Atomic writes: always `.tmp` → `rename()`

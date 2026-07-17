@@ -3,7 +3,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 import { Pipeline } from "./pipeline.js";
-import { appendEntry, chunkToTimestamp } from "./assembler.js";
+import { appendEntry, chunkToTimestamp, entriesFromSession } from "./assembler.js";
+import { AttentionMonitor, buildRecap, formatRecap, sendMacNotification } from "./attention.js";
 import { runOpencodeQuestion } from "./opencode.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
@@ -45,6 +46,7 @@ export class Recorder {
   private sigwinchHandler: (() => void) | null = null;
   private stdinDataHandler: ((data: Buffer) => void) | null = null;
   private warn = createWarnOnce();
+  private attention: AttentionMonitor;
 
   constructor(session: Session, config: Config, opts: RecorderOptions) {
     this.session = session;
@@ -53,6 +55,7 @@ export class Recorder {
     this.startedAt = new Date(session.startedAt);
     this.outputFile = session.outputFile;
     this.pipeline = new Pipeline(session);
+    this.attention = new AttentionMonitor(session);
   }
 
   async run(): Promise<{ startNextMeeting: boolean }> {
@@ -95,6 +98,16 @@ export class Recorder {
       );
       const entry: TranscriptEntry = { source, chunkIndex: index, timestamp, text };
       appendEntry(this.outputFile, entry).catch((err) => this.warn("transcript append failed", err));
+
+      if (source === "sys" && !this.shuttingDown && !this.paused) {
+        const alert = this.attention.check(index, text);
+        if (alert) {
+          const entries = entriesFromSession(this.session, this.pipeline.getResults());
+          process.stdout.write("\n");
+          console.log(formatRecap(alert, buildRecap(entries, index, alert.windowChunks)));
+          sendMacNotification(alert, this.config.attentionSound).catch((err) => this.warn("notification failed", err));
+        }
+      }
     });
 
     this.pipeline.initHealthMonitor(this.config);
