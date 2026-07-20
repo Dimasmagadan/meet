@@ -100,11 +100,13 @@ export class Recorder {
       appendEntry(this.outputFile, entry).catch((err) => this.warn("transcript append failed", err));
 
       if (source === "sys" && !this.shuttingDown && !this.paused) {
-        const alert = this.attention.check(index, text);
+        const alert = this.attention.check(index, text, () =>
+          entriesFromSession(this.session, this.pipeline.getResults())
+        );
         if (alert) {
           const entries = entriesFromSession(this.session, this.pipeline.getResults());
           process.stdout.write("\n");
-          console.log(formatRecap(alert, buildRecap(entries, index, alert.windowChunks)));
+          console.log(formatRecap(alert, buildRecap(entries, index, alert.recapEntries)));
           sendMacNotification(alert, this.config.attentionSound).catch((err) => this.warn("notification failed", err));
         }
       }

@@ -6,3 +6,5 @@ dist/
 meet-*/
 .build/
 tags.md
+triggers.json
+phrasebook.json

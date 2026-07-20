@@ -33,7 +33,7 @@ meet start "Title"
 │  ├─ Queues whisper-cli transcription (sequential)
 │  ├─ Appends to transcript.md incrementally
 │  ├─ Maintains session state in ~/.meet/sessions/meet-{id}/session.json
-│  └─ Checks sys-channel text against ~/.meet/triggers.json → macOS notification + terminal recap
+│  └─ Checks sys-channel text against ./triggers.json → macOS notification + terminal recap
 │
 └─ Finalization
    ├─ Re-transcribes with higher-quality model
@@ -94,12 +94,12 @@ meet start "Title"
 
 **src/triggers.ts** — Trigger-word matching (live attention alerts)
 - Structural clone of `phrasebook.ts`: `Triggers.load()`, `maybeReload()` (mtime hot-reload), module singleton `getTriggers()`
-- `match()` — case-insensitive substring match against `~/.meet/triggers.json`, first trigger in file order wins, returns a ~40-char snippet around the hit
+- `match()` — case-insensitive substring match against `./triggers.json`, first trigger in file order wins, returns a ~40-char snippet around the hit
 - Missing/invalid/empty file → identity mode (no match, no warnings), same convention as phrasebook
 
 **src/attention.ts** — Live trigger-word alerts (Recorder-only, see `specs/SPEC_ATTENTION_2026-07-17.md`)
 - `AttentionMonitor.check(chunkIndex, text)` — reloads config + triggers per call (same precedent as pipeline's per-chunk `loadConfig()`), gates on `config.attentionAlerts`, then trigger match, then a per-`kind` cooldown (`Map<kind, lastAlertAtMs>` — extension point for a future `"pause"` kind)
-- `buildRecap()` / `formatRecap()` — last `attentionRecapSeconds` of `entriesFromSession(...)` rendered as a terminal banner (matched line highlighted)
+- `buildRecap()` / `formatRecap()` — last `attentionRecapEntries` of `entriesFromSession(...)` ending at the trigger chunk, rendered as a terminal banner with the trigger word highlighted; suppressed if any recap entry is `source === "mic"`
 - `buildNotificationArgs()` / `sendMacNotification()` — `osascript` via `on run argv` (`execFile`, never a shell) so transcript text is passed as data, never interpolated into AppleScript source
 - Wired from `Recorder.initPipeline()`'s transcribe callback, sys-channel only, skipped during shutdown drain/pause
 
@@ -119,7 +119,7 @@ meet start "Title"
 - RMS/peak calculation for silence gating
 
 **src/phrasebook.ts** — Custom phrase replacement
-- Hot-reloads ~/.meet/phrasebook.json on each transcription
+- Hot-reloads ./phrasebook.json on each transcription
 
 **src/vad.ts** — Optional voice activity detection (not currently used)
 
@@ -266,15 +266,15 @@ Key settings:
 - `analysisBin` — path to the `AudioAnalysis` binary (default: resolved like `captureBin`)
 - `parakeetComparePass` — run the Parakeet A/B pass after finalize (default: `true`)
 - `attentionAlerts` — master switch for live trigger-word alerts (default: `true`)
-- `triggersPath` — trigger word list (default: `~/.meet/triggers.json`)
+- `triggersPath` — trigger word list (default: `./triggers.json`)
 - `triggersReload` — mtime hot-reload of the triggers file (default: `true`)
 - `attentionCooldownSeconds` — min seconds between alerts, per alert kind (default: `60`)
-- `attentionRecapSeconds` — terminal recap window on trigger (default: `180`)
+- `attentionRecapEntries` — transcript entries shown in attention recap (default: `3`)
 - `attentionSound` — macOS notification sound name (default: `Glass`)
 
 **Tags**: Define tags in `tags.md` at project root (used by interactive picker)
 
-**Phrasebook**: Custom replacements in `~/.meet/phrasebook.json`
+**Phrasebook**: Custom replacements in `phrasebook.json` at project root
 ```json
 {
   "replacements": [
@@ -283,7 +283,7 @@ Key settings:
 }
 ```
 
-**Triggers**: Attention-alert words in `~/.meet/triggers.json` (matched against post-phrasebook sys-channel text)
+**Triggers**: Attention-alert words in `triggers.json` at project root (matched against post-phrasebook sys-channel text)
 ```json
 {
   "triggers": ["Дим", "Dmitr", "Дмитрий"]

@@ -13,7 +13,7 @@ export type AttentionAlert = {
   snippet: string;
   timestamp: string;
   chunkIndex: number;
-  windowChunks: number;
+  recapEntries: number;
 };
 
 export interface AttentionSession {
@@ -41,7 +41,7 @@ export class AttentionMonitor {
     this.loadConfig = deps?.loadConfig ?? loadConfig;
   }
 
-  check(chunkIndex: number, text: string): AttentionAlert | null {
+  check(chunkIndex: number, text: string, getEntries: () => TranscriptEntry[]): AttentionAlert | null {
     const config = this.loadConfig();
     if (!config.attentionAlerts) return null;
 
@@ -55,6 +55,12 @@ export class AttentionMonitor {
     if (last !== undefined && nowMs - last < config.attentionCooldownSeconds * 1000) {
       return null;
     }
+
+    const recap = buildRecap(getEntries(), chunkIndex, config.attentionRecapEntries);
+    if (recap.some((e) => e.source === "mic")) {
+      return null;
+    }
+
     this.lastAlertAt.set(kind, nowMs);
 
     return {
@@ -63,19 +69,20 @@ export class AttentionMonitor {
       snippet: match.snippet,
       timestamp: chunkToTimestamp(chunkIndex, this.session.chunkDurationSeconds, this.session.startedAt),
       chunkIndex,
-      windowChunks: Math.ceil(config.attentionRecapSeconds / this.session.chunkDurationSeconds),
+      recapEntries: config.attentionRecapEntries,
     };
   }
 }
 
-export function buildRecap(entries: TranscriptEntry[], alertChunkIndex: number, windowChunks: number): TranscriptEntry[] {
-  const minChunkIndex = alertChunkIndex - windowChunks;
-  return entries.filter((entry) => entry.chunkIndex >= minChunkIndex);
+export function buildRecap(entries: TranscriptEntry[], alertChunkIndex: number, count: number): TranscriptEntry[] {
+  const upTo = entries.filter((e) => e.chunkIndex <= alertChunkIndex);
+  return upTo.slice(-count);
 }
 
 export function formatRecap(alert: AttentionAlert, entries: TranscriptEntry[]): string {
   const lines: string[] = [];
   const rule = "═".repeat(BANNER_WIDTH);
+  const triggerPattern = new RegExp(escapeRegex(alert.trigger), "gi");
 
   lines.push(chalk.yellow(rule));
   lines.push(chalk.yellow.bold(`  ⚡ ATTENTION [${alert.timestamp}] — trigger «${alert.trigger}» matched`));
@@ -84,13 +91,30 @@ export function formatRecap(alert: AttentionAlert, entries: TranscriptEntry[]): 
 
   for (const entry of entries) {
     const label = entry.source === "mic" ? "Me" : (entry.speaker ?? "Others");
-    const line = `  [${entry.timestamp}] ${label}: ${entry.text}`;
-    const isMatch = entry.source === "sys" && entry.chunkIndex === alert.chunkIndex;
-    lines.push(isMatch ? chalk.yellow.bold(line) : chalk.gray(line));
+    const body = highlightTrigger(entry.text, triggerPattern);
+    lines.push(chalk.gray(`  [${entry.timestamp}] ${label}: `) + body);
   }
 
   lines.push(chalk.yellow(`${rule} end recap`));
   return lines.join("\n") + "\n";
+}
+
+function highlightTrigger(text: string, pattern: RegExp): string {
+  pattern.lastIndex = 0;
+  const parts: string[] = [];
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(text)) !== null) {
+    parts.push(text.slice(lastIdx, m.index));
+    parts.push(chalk.yellow.bold(m[0]));
+    lastIdx = m.index + m[0].length;
+  }
+  parts.push(text.slice(lastIdx));
+  return parts.join("");
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function buildNotificationArgs(alert: AttentionAlert, sound: string): string[] {

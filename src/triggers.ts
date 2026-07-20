@@ -1,5 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
+
+export const DEFAULT_TRIGGERS_PATH = resolve(import.meta.dirname, "..", "triggers.json");
 
 export interface TriggerMatch {
   trigger: string;
@@ -103,7 +106,7 @@ let _cached: Triggers | null = null;
 let _cachedPath: string | null = null;
 
 export function getTriggers(config: { triggersPath?: string; triggersReload?: boolean }): Triggers {
-  const path = config.triggersPath ?? "~/.meet/triggers.json";
+  const path = config.triggersPath ?? DEFAULT_TRIGGERS_PATH;
   const shouldReload = config.triggersReload ?? true;
 
   if (!_cached || _cachedPath !== path) {

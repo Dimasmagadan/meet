@@ -1,5 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
+
+export const DEFAULT_PHRASEBOOK_PATH = resolve(import.meta.dirname, "..", "phrasebook.json");
 
 export interface PhrasebookRuleInput {
   from: string;
@@ -103,7 +106,7 @@ let _cached: Phrasebook | null = null;
 let _cachedPath: string | null = null;
 
 export function getPhrasebook(config: { phrasebookPath?: string; phrasebookReload?: boolean }): Phrasebook {
-  const path = config.phrasebookPath ?? "~/.meet/phrasebook.json";
+  const path = config.phrasebookPath ?? DEFAULT_PHRASEBOOK_PATH;
   const shouldReload = config.phrasebookReload ?? true;
 
   if (!_cached || _cachedPath !== path) {

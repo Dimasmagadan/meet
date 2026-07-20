@@ -152,17 +152,17 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `prompt` | Russian consultation prompt | Whisper context prompt |
 | `finalRetranscribe` | `true` | Run high-quality final pass |
 | `silenceGate` | `true` | Skip silent chunks |
-| `phrasebookPath` | `~/.meet/phrasebook.json` | Custom phrase replacements |
+| `phrasebookPath` | `./phrasebook.json` | Custom phrase replacements |
 | `attentionAlerts` | `true` | Master switch for live trigger-word alerts |
-| `triggersPath` | `~/.meet/triggers.json` | Trigger word list |
+| `triggersPath` | `./triggers.json` | Trigger word list |
 | `triggersReload` | `true` | Hot-reload the triggers file on change |
 | `attentionCooldownSeconds` | `60` | Min seconds between alerts |
-| `attentionRecapSeconds` | `180` | Terminal recap window on trigger |
+| `attentionRecapEntries` | `3` | Transcript entries shown in attention recap |
 | `attentionSound` | `Glass` | macOS notification sound name |
 
 ### Phrasebook
 
-Create `~/.meet/phrasebook.json` to define custom text replacements applied to transcripts:
+Create `phrasebook.json` in the project root to define custom text replacements applied to transcripts:
 
 ```json
 {
@@ -177,7 +177,7 @@ Create `~/.meet/phrasebook.json` to define custom text replacements applied to t
 
 During a call, `meet` watches the **live** transcription of other participants (system audio only — your own mic speech is never matched) for trigger words. On a match you get a macOS notification and a terminal banner recapping the last few minutes of transcript, so you can catch up if you were distracted.
 
-Create `~/.meet/triggers.json`:
+Create `triggers.json` in the project root:
 
 ```json
 {

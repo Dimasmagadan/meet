@@ -1,3 +1,6 @@
+import { DEFAULT_TRIGGERS_PATH } from "./triggers.js";
+import { DEFAULT_PHRASEBOOK_PATH } from "./phrasebook.js";
+
 export type CaptureMode = "full" | "mic";
 
 export interface Chunk {
@@ -83,7 +86,7 @@ export interface Config {
   triggersPath: string;
   triggersReload: boolean;
   attentionCooldownSeconds: number;
-  attentionRecapSeconds: number;
+  attentionRecapEntries: number;
   attentionSound: string;
 }
 
@@ -157,7 +160,7 @@ export const DEFAULT_CONFIG: Config = {
   finalBestOf: 3,
   maxDurationMinutes: 75,
   noTextTimeoutMinutes: 10,
-  phrasebookPath: "~/.meet/phrasebook.json",
+  phrasebookPath: DEFAULT_PHRASEBOOK_PATH,
   phrasebookReload: true,
   vadEnabled: false,
   vadBin: "",
@@ -170,9 +173,9 @@ export const DEFAULT_CONFIG: Config = {
   analysisBin: "",
   parakeetComparePass: true,
   attentionAlerts: true,
-  triggersPath: "~/.meet/triggers.json",
+  triggersPath: DEFAULT_TRIGGERS_PATH,
   triggersReload: true,
   attentionCooldownSeconds: 60,
-  attentionRecapSeconds: 180,
+  attentionRecapEntries: 3,
   attentionSound: "Glass",
 };

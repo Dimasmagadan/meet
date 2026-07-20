@@ -358,7 +358,7 @@ async function runDoctor(mode: "mic" | "full") {
       snippet: "meet doctor test notification",
       timestamp: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
       chunkIndex: 0,
-      windowChunks: 0,
+      recapEntries: 0,
     };
     try {
       await sendMacNotification(testAlert, config.attentionSound);
