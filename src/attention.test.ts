@@ -172,6 +172,11 @@ describe("buildRecap", () => {
     const recap = buildRecap(entries, 10, 100);
     assert.deepStrictEqual(recap, entries);
   });
+
+  it("returns an empty array when count is 0 (guards against slice(-0) returning everything)", () => {
+    const recap = buildRecap(entries, 10, 0);
+    assert.deepStrictEqual(recap, []);
+  });
 });
 
 describe("formatRecap", () => {

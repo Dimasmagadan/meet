@@ -75,6 +75,7 @@ export class AttentionMonitor {
 }
 
 export function buildRecap(entries: TranscriptEntry[], alertChunkIndex: number, count: number): TranscriptEntry[] {
+  if (count <= 0) return [];
   const upTo = entries.filter((e) => e.chunkIndex <= alertChunkIndex);
   return upTo.slice(-count);
 }
