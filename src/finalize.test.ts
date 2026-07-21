@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildBaseResults, runDiarizationStep } from "./finalize.js";
+import { appendPostFinalizeNote } from "./summary.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import type { EntryRecord, TranscriptEntry, Session, Config } from "./types.js";
 
@@ -144,6 +145,67 @@ test("runDiarizationStep", async (t) => {
       assert.deepStrictEqual(result, entries);
     } finally {
       rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("appendPostFinalizeNote", async (t) => {
+  const makeSession = (sessionDir: string): Session => ({
+    id: "test-session",
+    title: "Test",
+    mode: "full",
+    startedAt: "2026-05-13T14:30:00.000Z",
+    chunkDurationSeconds: 15,
+    sessionDir,
+    outputFile: join(sessionDir, "transcript.md"),
+    capturePid: null,
+    status: "done",
+    processedChunks: [],
+    lastError: null,
+    autoStopReason: null,
+    latestProcessedOffsetSeconds: 0,
+    lastMeaningfulTextAtOffsetSeconds: null,
+    hasMeaningfulText: false,
+    tags: [],
+  });
+
+  await t.test("does NOT create summary.md when absent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-finalize-sum-"));
+    try {
+      const session = makeSession(dir);
+      await appendPostFinalizeNote(session);
+      assert.equal(existsSync(join(dir, "summary.md")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("appends the post-finalize note when summary.md exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-finalize-sum-"));
+    try {
+      const session = makeSession(dir);
+      writeFileSync(join(dir, "summary.md"), "# Draft\n\ncontent\n", "utf-8");
+      await appendPostFinalizeNote(session);
+      const after = readFileSync(join(dir, "summary.md"), "utf-8");
+      assert.match(after, /Note \(post-finalize\):/);
+      assert.match(after, /Speaker N labels/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("is idempotent on re-finalize", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-finalize-sum-"));
+    try {
+      const session = makeSession(dir);
+      writeFileSync(join(dir, "summary.md"), "# Draft\n", "utf-8");
+      await appendPostFinalizeNote(session);
+      await appendPostFinalizeNote(session);
+      const after = readFileSync(join(dir, "summary.md"), "utf-8");
+      const matches = after.match(/Note \(post-finalize\):/g) ?? [];
+      assert.equal(matches.length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

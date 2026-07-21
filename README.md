@@ -15,6 +15,7 @@ Local meeting transcription for macOS (Apple Silicon). Records mic + system audi
 - **Interactive tag picker** — tag meetings for organization after recording
 - **Auto-stop** — configurable max duration and no-speech timeout
 - **Attention alerts** — macOS notification + terminal recap when someone says your name during a call
+- **Live extractive summary** — rolling `summary.md` next to `transcript.md`, resource-aware (pauses under load)
 - **Crash safety** — finalized chunks and transcript survive hard kills
 - **Russian language** optimized (configurable for any language)
 
@@ -80,6 +81,7 @@ meet status                     Show active recording/finalization jobs
 | `--max-duration <min>` | Auto-stop after N minutes | 60 |
 | `--no-text-timeout <min>` | Auto-stop after N processed minutes without transcript | 10 |
 | `--voice-processing` | Enable VoiceProcessing IO echo cancellation | off |
+| `--no-summary` | Disable live extractive summary draft during recording | off |
 
 ### Keyboard controls during recording
 
@@ -112,11 +114,27 @@ Meetings are saved to `~/Meetings/` with timestamped subdirectories:
 ~/Meetings/
 ├── 2026-05-13_14-30-weekly-standup/
 │   ├── transcript.md
+│   ├── summary.md          # live draft, generated during recording
 │   └── meta.md
 └── 2026-05-14_10-00-client-call/
     ├── transcript.md
+    ├── summary.md
     └── meta.md
 ```
+
+### Live summary (`summary.md`)
+
+During a recording, `meet` produces a rolling **extractive** summary next to `transcript.md`. It uses a TextRank-based scorer over a sliding window of the most recent transcript entries and writes `summary.md` every ~2 minutes (configurable via `summaryIntervalChunks`). The summary includes:
+
+- **Key points** — top N entries by TextRank score, chronological
+- **Candidate action items** — heuristic regex matches (`нужно`, `надо`, `сделаем`, `deadline`, `до пятницы`, etc.)
+- **Participants** — derived from audio source (`Me` / `Others`)
+
+The summarizer is **resource-aware**: it polls `sysctl vm.loadavg` and `vm_stat`, pauses when CPU load exceeds `summaryCpuThresholdLoad` (default 6) or free memory drops below `summaryMemThresholdMb` (default 768MB), and resumes automatically when pressure clears. Status line shows `summary: ok`, `summary: waiting`, `summary: paused (cpu X.X/8c)`, or `summary: disabled`.
+
+This is a **low-quality first tier** — explicitly a draft, not polished. A future `meet summary --full` flag (separate spec) will run a post-finalize LLM refine pass. The transcript is never affected by summarizer state.
+
+To disable: `meet start --no-summary "Title"` or `summaryEnabled: false` in `~/.meet/config.json`.
 
 ### Transcript format (live recording)
 
@@ -159,6 +177,14 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `attentionCooldownSeconds` | `60` | Min seconds between alerts |
 | `attentionRecapEntries` | `3` | Transcript entries shown in attention recap |
 | `attentionSound` | `Glass` | macOS notification sound name |
+| `summaryEnabled` | `true` | Master switch for live extractive summary |
+| `summaryIntervalChunks` | `8` | Run summarizer every N chunks (~2 min at 15s) |
+| `summaryTopN` | `5` | Key points per window |
+| `summaryWindowMaxEntries` | `200` | Sliding window ceiling (entries considered) |
+| `summaryMinEntries` | `8` | Don't summarize below this many entries |
+| `summaryCpuThresholdLoad` | `6` | Pause when 1-min loadavg exceeds this (raw value) |
+| `summaryMemThresholdMb` | `768` | Pause below this free memory |
+| `summaryCatchupIntervalMs` | `30000` | Retry interval while overloaded |
 
 ### Phrasebook
 
@@ -252,6 +278,8 @@ src/
 ├── phrasebook.ts        Regex-based phrase replacement engine
 ├── triggers.ts          Trigger-word matching for live attention alerts
 ├── attention.ts         Attention alerts: cooldown, terminal recap, macOS notification
+├── summary.ts           Extractive TextRank summary + SummaryScheduler (rolling draft)
+├── system-monitor.ts    macOS resource pressure: loadavg, vm_stat, whisper-cli cache
 ├── vad.ts               Voice activity detection wrapper
 ├── locks.ts             File-based locks for finalization and recording
 ├── status.ts            Display active session status

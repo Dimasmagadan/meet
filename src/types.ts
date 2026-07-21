@@ -88,6 +88,14 @@ export interface Config {
   attentionCooldownSeconds: number;
   attentionRecapEntries: number;
   attentionSound: string;
+  summaryEnabled: boolean;
+  summaryIntervalChunks: number;
+  summaryTopN: number;
+  summaryWindowMaxEntries: number;
+  summaryMinEntries: number;
+  summaryCpuThresholdLoad: number;
+  summaryMemThresholdMb: number;
+  summaryCatchupIntervalMs: number;
 }
 
 export interface TranscribeOptions {
@@ -178,4 +186,12 @@ export const DEFAULT_CONFIG: Config = {
   attentionCooldownSeconds: 60,
   attentionRecapEntries: 3,
   attentionSound: "Glass",
+  summaryEnabled: true,
+  summaryIntervalChunks: 8,
+  summaryTopN: 5,
+  summaryWindowMaxEntries: 200,
+  summaryMinEntries: 8,
+  summaryCpuThresholdLoad: 6,
+  summaryMemThresholdMb: 768,
+  summaryCatchupIntervalMs: 30_000,
 };

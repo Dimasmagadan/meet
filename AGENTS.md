@@ -29,6 +29,8 @@ meet start "Title"
 ├── src/phrasebook.ts        — regex-based phrase replacement engine (hot-reload)
 ├── src/triggers.ts          — trigger-word matching for live attention alerts (hot-reload, phrasebook clone)
 ├── src/attention.ts         — AttentionMonitor: trigger detection, cooldown, terminal recap, macOS notification
+├── src/summary.ts           — extractive TextRank summary + SummaryScheduler (rolling summary.md during recording)
+├── src/system-monitor.ts    — macOS resource pressure: sysctl loadavg, vm_stat free mem, pgrep whisper-cli cache
 ├── src/vad.ts               — voice activity detection wrapper (optional)
 ├── src/locks.ts             — file-based locks for finalization and active recording
 ├── src/status.ts            — display active session/finalization status

@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import { dirname, join } from "node:path";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 import { Pipeline } from "./pipeline.js";
 import { appendEntry, chunkToTimestamp, entriesFromSession } from "./assembler.js";
@@ -10,7 +11,9 @@ import { runTagPicker, writeMetaFile } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
 import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
 import { getCaptureBinPath, writeAtomic, createWarnOnce } from "./storage.js";
-import { join } from "node:path";
+import { SummaryScheduler, summaryOutputPath } from "./summary.js";
+import { getSystemPressure } from "./system-monitor.js";
+import { existsSync } from "node:fs";
 
 export interface RecorderOptions {
   silenceTimeout: number;
@@ -47,6 +50,7 @@ export class Recorder {
   private stdinDataHandler: ((data: Buffer) => void) | null = null;
   private warn = createWarnOnce();
   private attention: AttentionMonitor;
+  private summaryScheduler: SummaryScheduler | null;
 
   constructor(session: Session, config: Config, opts: RecorderOptions) {
     this.session = session;
@@ -56,6 +60,23 @@ export class Recorder {
     this.outputFile = session.outputFile;
     this.pipeline = new Pipeline(session);
     this.attention = new AttentionMonitor(session);
+    this.summaryScheduler = config.summaryEnabled
+      ? new SummaryScheduler({
+          session,
+          outputFile: summaryOutputPath(session),
+          intervalChunks: config.summaryIntervalChunks,
+          catchupIntervalMs: config.summaryCatchupIntervalMs,
+          minEntries: config.summaryMinEntries,
+          topN: config.summaryTopN,
+          maxWindowEntries: config.summaryWindowMaxEntries,
+          getEntries: () => entriesFromSession(this.session, this.pipeline.getResults()),
+          getPressure: () => getSystemPressure({
+            cpuThresholdLoad: config.summaryCpuThresholdLoad,
+            memThresholdMb: config.summaryMemThresholdMb,
+          }),
+          warn: (msg, err) => this.warn(msg, err),
+        })
+      : null;
   }
 
   async run(): Promise<{ startNextMeeting: boolean }> {
@@ -98,6 +119,8 @@ export class Recorder {
       );
       const entry: TranscriptEntry = { source, chunkIndex: index, timestamp, text };
       appendEntry(this.outputFile, entry).catch((err) => this.warn("transcript append failed", err));
+
+      this.summaryScheduler?.onChunk(source, index);
 
       if (source === "sys" && !this.shuttingDown && !this.paused) {
         const alert = this.attention.check(index, text, () =>
@@ -285,6 +308,7 @@ export class Recorder {
         const label = this.autoStopReason === "max_duration" ? "max duration" : "no text timeout";
         console.log(chalk.yellow(`Auto-stopped (${label}).`));
       }
+      await this.summaryScheduler?.flush();
       await this.promptTags();
       this.spawnBackgroundFinalizer();
       console.log(chalk.green(`Finalizer started in background (meet status to check)`));
@@ -319,6 +343,7 @@ export class Recorder {
         process.stdout.write("\n");
       }
 
+      await this.summaryScheduler?.flush();
       await this.promptTags();
       this.spawnBackgroundFinalizer();
       console.log(chalk.green(`Final pass running in background (meet status to check)`));
@@ -339,6 +364,7 @@ export class Recorder {
 
     try {
       await this.stopRecording();
+      await this.summaryScheduler?.flush();
       this.spawnBackgroundFinalizer();
       console.log(chalk.green(`Finalizer running in background (meet status to check)`));
     } catch (err) {
@@ -442,12 +468,25 @@ export class Recorder {
       }
 
       const status = this.paused ? chalk.yellow("PAUSED") : chalk.cyan(`Recording ${mins}:${secs}`);
+      const summarySuffix = this.formatSummaryStatusSuffix();
       process.stdout.write(
-        `\r${status} | chunks: mic ${this.micChunks}, sys ${this.sysChunks} | transcribed: ${stats.totalDone} | ${lagStr}${capStr}${noTextStr} | ${now}  `,
+        `\r${status} | chunks: mic ${this.micChunks}, sys ${this.sysChunks} | transcribed: ${stats.totalDone} | ${lagStr}${capStr}${noTextStr}${summarySuffix} | ${now}  `,
       );
 
       this.checkAutoStop();
     }, 5000);
+  }
+
+  private formatSummaryStatusSuffix(): string {
+    const sched = this.summaryScheduler;
+    if (!sched) return ""; // --no-summary: feature is off, no suffix at all
+    if (sched.isDisabled()) return " | summary: error"; // runtime crash, distinct from CLI off
+    const pressure = sched.getLastPressure();
+    if (pressure && pressure.overloaded) {
+      return ` | summary: paused (${pressure.reason ?? "system load"})`;
+    }
+    // File exists → "ok"; otherwise we're still gathering chunks.
+    return existsSync(summaryOutputPath(this.session)) ? " | summary: ok" : " | summary: waiting";
   }
 
   private async togglePause(): Promise<void> {

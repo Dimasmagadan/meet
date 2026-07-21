@@ -13,6 +13,7 @@ import { readEntryRecords } from "./entries-store.js";
 import { concatSysChunks, runDiarizer, assignSpeakers, relabelSegments, cleanupSysConcat, type DiarSegment } from "./diarization.js";
 import { computeTalkTime } from "./talk-time.js";
 import { runParakeetPass } from "./parakeet-pass.js";
+import { appendPostFinalizeNote } from "./summary.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
 
@@ -444,6 +445,10 @@ export async function finalizeSession(
         await writeAtomic(join(outputDir, "speakers.json"), JSON.stringify(speakersRecord, null, 2)).catch(() => {});
 
         await rewriteMarkdown(session.outputFile, session.title, session.startedAt, entries, talkTime);
+
+        // Post-finalize note: stamp summary.md (if present) so the reader knows
+        // the draft used live Me/Others labels while transcript.md got Speaker N.
+        await appendPostFinalizeNote(session);
 
         if (config.parakeetComparePass) {
           await runParakeetComparisonStep(session, config, outputDir, speakersRecord, finalPassWallMs, warn, log, progressWriter);
