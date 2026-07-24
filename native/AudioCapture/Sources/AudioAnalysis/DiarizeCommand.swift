@@ -53,11 +53,15 @@ struct DiarizeCommand: AsyncParsableCommand {
         // L2-normalized WeSpeaker) for cross-session speaker recognition. Keyed by
         // the same raw speaker id that appears in each segment's `speaker` field.
         // No extra inference: read from the manager's populated speaker database.
-        let embeddingsJSON = manager.speakerManager.getAllSpeakers().reduce(
-            into: [String: [Double]]()
-        ) { result, entry in
-            result[entry.key] = entry.value.currentEmbedding.map { Double($0) }
-        }
+        // Filter to segment-derived ids: assignSpeaker registers a DB entry on total
+        // speech duration, but createSegmentIfValid drops each run below
+        // minSpeechDuration — so fragmented backchannel can sit in the DB with zero
+        // segments. Keeping them would seed phantom identities into the registry.
+        let embeddingsJSON = manager.speakerManager.getAllSpeakers()
+            .filter { speakerIds.contains($0.key) }
+            .reduce(into: [String: [Double]]()) { acc, entry in
+                acc[entry.key] = entry.value.currentEmbedding.map { Double($0) }
+            }
 
         JSONOutput.emit([
             "segments": segmentsJSON,
