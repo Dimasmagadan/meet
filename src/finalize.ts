@@ -14,6 +14,7 @@ import { concatSysChunks, runDiarizer, assignSpeakers, relabelSegments, cleanupS
 import { computeTalkTime } from "./talk-time.js";
 import { runParakeetPass } from "./parakeet-pass.js";
 import { appendPostFinalizeNote } from "./summary.js";
+import { runOpencodeIndex } from "./opencode.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
 
@@ -452,6 +453,16 @@ export async function finalizeSession(
 
         if (config.parakeetComparePass) {
           await runParakeetComparisonStep(session, config, outputDir, speakersRecord, finalPassWallMs, warn, log, progressWriter);
+        }
+
+        if (config.opencodeIndexPass) {
+          try {
+            log("Generating index (opencode)...");
+            const indexMarkdown = await runOpencodeIndex(config, session.outputFile, session.title);
+            await writeAtomic(join(outputDir, "index.md"), indexMarkdown);
+          } catch (err) {
+            warn(`Index generation failed: ${err instanceof Error ? err.message : String(err)}, transcript unaffected`);
+          }
         }
       }
     } finally {

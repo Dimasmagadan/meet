@@ -328,6 +328,7 @@ async function runSetup() {
   try {
     const opencodePath = execSync("which opencode 2>/dev/null", { encoding: "utf-8" }).trim();
     console.log(chalk.green("  opencode: ") + opencodePath);
+    console.log(chalk.gray(`    index.md on recordings: ${config.opencodeIndexPass ? "enabled" : "disabled (set opencodeIndexPass: true in config.json)"}`));
   } catch {
     console.log(chalk.yellow("  opencode: NOT FOUND (optional, for s/a hotkeys during recording)"));
     console.log(chalk.gray("    Install: https://opencode.ai"));

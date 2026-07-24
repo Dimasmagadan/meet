@@ -99,6 +99,7 @@ export interface Config {
   summaryCpuThresholdLoad: number;
   summaryMemThresholdMb: number;
   summaryCatchupIntervalMs: number;
+  opencodeIndexPass: boolean;
 }
 
 export interface TranscribeOptions {
@@ -199,4 +200,5 @@ export const DEFAULT_CONFIG: Config = {
   summaryCpuThresholdLoad: 6,
   summaryMemThresholdMb: 768,
   summaryCatchupIntervalMs: 30_000,
+  opencodeIndexPass: false,
 };
