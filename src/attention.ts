@@ -4,6 +4,7 @@ import type { Config, TranscriptEntry } from "./types.js";
 import { loadConfig } from "./storage.js";
 import { getTriggers } from "./triggers.js";
 import { chunkToTimestamp } from "./assembler.js";
+import { escapeRegex } from "./regex-utils.js";
 
 export type AttentionAlertKind = "trigger";
 
@@ -112,10 +113,6 @@ function highlightTrigger(text: string, pattern: RegExp): string {
   }
   parts.push(text.slice(lastIdx));
   return parts.join("");
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function buildNotificationArgs(alert: AttentionAlert, sound: string): string[] {
