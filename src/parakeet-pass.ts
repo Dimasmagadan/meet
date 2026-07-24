@@ -4,6 +4,7 @@ import { forEachAudibleChunk } from "./final-pass.js";
 import { chunkToTimestamp } from "./assembler.js";
 import { resolveAnalysisBin } from "./storage.js";
 import { getPhrasebook } from "./phrasebook.js";
+import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
 
 export async function transcribeWithParakeet(config: Config, wavPath: string): Promise<string> {
   const bin = resolveAnalysisBin(config);
@@ -47,14 +48,20 @@ export async function runParakeetPass(
   config: Config,
   speakerByChunk: Map<number, string>,
   onProgress?: (done: number, total: number) => void,
+  sensor?: PressureSensor,
 ): Promise<ParakeetPassResult> {
   const entries: TranscriptEntry[] = [];
   const startedAt = Date.now();
   let chunkCount = 0;
   let failedChunks = 0;
 
+  // One wall-clock budget for the whole A/B pass; threaded into each per-chunk
+  // gate check so the total back-off is bounded. Batch pass only.
+  const gate = config.gateHeavyPasses ? makeDeadline(config.gateBudgetMs) : null;
+
   await forEachAudibleChunk(session, config, async (chunk, done, total) => {
     onProgress?.(done, total);
+    if (gate) await whenNotOverloaded(gate, sensor);
     if (!chunk.audible) return;
     chunkCount++;
 

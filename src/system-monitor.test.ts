@@ -1,10 +1,35 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseLoadavg, parseFreeMemoryMb, getSystemPressure, _resetWhisperCache } from "./system-monitor.js";
+import {
+  parseLoadavg,
+  parseFreeMemoryMb,
+  getSystemPressure,
+  isWhisperRunning,
+  isAudioAnalysisRunning,
+  whenNotOverloaded,
+  makeDeadline,
+  _resetWhisperCache,
+  _resetAudioAnalysisCache,
+  type ResourcePressure,
+  type PressureSensor,
+} from "./system-monitor.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
+
+function makePressure(over: Partial<ResourcePressure> = {}): ResourcePressure {
+  return {
+    cpuLoad1min: 1,
+    cpuCores: 8,
+    freeMemoryMb: 4096,
+    whisperRunning: false,
+    audioAnalysisRunning: false,
+    overloaded: false,
+    reason: null,
+    ...over,
+  };
+}
 
 describe("parseLoadavg", () => {
   it("parses the standard space-separated macOS format", () => {
@@ -107,6 +132,102 @@ describe("isWhisperRunning cache", () => {
     const a = await isWhisperRunning();
     const b = await isWhisperRunning();
     assert.strictEqual(a, b);
+  });
+});
+
+describe("isAudioAnalysisRunning cache", () => {
+  it("caches pgrep result across rapid successive calls", async () => {
+    _resetAudioAnalysisCache();
+    const a = await isAudioAnalysisRunning();
+    const b = await isAudioAnalysisRunning();
+    assert.strictEqual(a, b);
+  });
+});
+
+describe("getSystemPressure heavy-child attribution", () => {
+  it("populates audioAnalysisRunning as a boolean", async () => {
+    const p = await getSystemPressure({ cpuThresholdLoad: 100, memThresholdMb: 0 });
+    assert.strictEqual(typeof p.audioAnalysisRunning, "boolean");
+  });
+
+  it("attributes the heavy child in the reason when overloaded", async () => {
+    // Force overloaded via thresholds; attribute string depends on whether a
+    // heavy child is actually running on this machine, so we only assert the
+    // base cpu reason is present (heavy-child suffix is informational).
+    const p = await getSystemPressure({ cpuThresholdLoad: -1, memThresholdMb: 0 });
+    assert.strictEqual(p.overloaded, true);
+    assert.match(p.reason ?? "", /cpu/);
+  });
+});
+
+describe("makeDeadline", () => {
+  it("remainingMs starts at the budget and is non-negative", () => {
+    const d = makeDeadline(1000);
+    const r = d.remainingMs();
+    assert.ok(r <= 1000 && r > 900, `expected ~1000, got ${r}`);
+  });
+
+  it("remainingMs decreases over time and floors at 0", async () => {
+    const d = makeDeadline(30);
+    await new Promise((r) => setTimeout(r, 40));
+    assert.strictEqual(d.remainingMs(), 0);
+  });
+});
+
+describe("whenNotOverloaded", () => {
+  it("resolves immediately when not overloaded (sensor called once)", async () => {
+    let calls = 0;
+    const sensor: PressureSensor = async () => {
+      calls++;
+      return makePressure({ overloaded: false });
+    };
+    const t0 = Date.now();
+    await whenNotOverloaded(makeDeadline(10_000), sensor);
+    const elapsed = Date.now() - t0;
+    assert.strictEqual(calls, 1);
+    assert.ok(elapsed < 50, `expected no wait, took ${elapsed}ms`);
+  });
+
+  it("awaits and re-polls while overloaded, then resolves once load drops", async () => {
+    let calls = 0;
+    const sensor: PressureSensor = async () => {
+      calls++;
+      return makePressure({ overloaded: calls < 3 });
+    };
+    const d = makeDeadline(10_000);
+    d.pollMs = 5;
+    await whenNotOverloaded(d, sensor);
+    assert.ok(calls >= 3, `expected >=3 sensor calls, got ${calls}`);
+  });
+
+  it("resolves once the pass budget is exhausted even if still overloaded", async () => {
+    let calls = 0;
+    const sensor: PressureSensor = async () => {
+      calls++;
+      return makePressure({ overloaded: true, reason: "cpu 9.0/8c" });
+    };
+    const d = makeDeadline(40);
+    d.pollMs = 5;
+    const t0 = Date.now();
+    await whenNotOverloaded(d, sensor);
+    const elapsed = Date.now() - t0;
+    // Budget bounds total wait: ~40ms (+ a little slop), never the 10s default.
+    assert.ok(elapsed < 500, `expected ~40ms budget-bound wait, took ${elapsed}ms`);
+    assert.ok(d.remainingMs() === 0);
+    assert.ok(calls >= 2);
+  });
+
+  it("fail-opens immediately when the sensor throws", async () => {
+    let calls = 0;
+    const sensor: PressureSensor = async () => {
+      calls++;
+      throw new Error("sensor unavailable");
+    };
+    const t0 = Date.now();
+    await whenNotOverloaded(makeDeadline(10_000), sensor);
+    const elapsed = Date.now() - t0;
+    assert.strictEqual(calls, 1);
+    assert.ok(elapsed < 50, `expected no wait, took ${elapsed}ms`);
   });
 });
 

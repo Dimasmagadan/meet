@@ -15,6 +15,7 @@ import { computeTalkTime } from "./talk-time.js";
 import { runParakeetPass } from "./parakeet-pass.js";
 import { appendPostFinalizeNote } from "./summary.js";
 import { runOpencodeIndex } from "./opencode.js";
+import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
 
@@ -178,6 +179,7 @@ export async function runDiarizationStep(
   entries: TranscriptEntry[],
   warn: (msg: string) => void,
   log: (msg: string) => void,
+  sensor?: PressureSensor,
 ): Promise<DiarizationOutcome> {
   const speakersRecord: Record<string, unknown> = {
     version: 1,
@@ -210,6 +212,11 @@ export async function runDiarizationStep(
     log("Diarization pass...");
     const { wavPath, offsets } = await concatSysChunks(session.sessionDir);
     try {
+      // Single heavy CoreML call — one gate check with the whole diarize as
+      // its budget. Batch pass only; never blocks the live path.
+      if (config.gateHeavyPasses) {
+        await whenNotOverloaded(makeDeadline(config.gateBudgetMs), sensor);
+      }
       const rawSegments = await runDiarizer(config, wavPath);
       const segments = relabelSegments(rawSegments);
       const diarizedEntries = assignSpeakers(entries, segments, offsets, config.diarizationMinOverlap);

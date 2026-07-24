@@ -8,6 +8,7 @@ import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
 import { analyzeWavFile, type AudioMetrics } from "./audio-metrics.js";
 import { filterEntries, type FinalChunkResult, type FilterConfig } from "./filters.js";
 import { chunkToTimestamp } from "./assembler.js";
+import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
 
 export async function copyLiveTranscript(outputFile: string): Promise<void> {
   const livePath = outputFile.replace(/transcript\.md$/, "transcript.live.md");
@@ -69,11 +70,19 @@ export async function runFinalPass(
   onProgress?: (done: number, total: number) => void,
   liveEntries?: TranscriptEntry[],
   beforeChunk?: () => Promise<void>,
+  sensor?: PressureSensor,
 ): Promise<TranscriptEntry[]> {
   const finalModelPath = resolveModelPath(config, "final");
   const results: FinalChunkResult[] = [];
 
+  // One wall-clock budget for the whole pass, threaded into every per-chunk
+  // gate check so a many-chunk pass can't stall N × maxWaitMs. Live path is
+  // un-gated; only this batch (medium-model) pass backs off under load.
+  const gate = config.gateHeavyPasses ? makeDeadline(config.gateBudgetMs) : null;
+
   await forEachAudibleChunk(session, config, async (chunk, done, total) => {
+    if (gate) await whenNotOverloaded(gate, sensor);
+
     if (!chunk.audible) {
       results.push({
         source: chunk.source,

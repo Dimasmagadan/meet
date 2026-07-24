@@ -48,6 +48,7 @@ function makePressure(over: Partial<ResourcePressure> = {}): ResourcePressure {
     cpuCores: 8,
     freeMemoryMb: 4096,
     whisperRunning: false,
+    audioAnalysisRunning: false,
     overloaded: false,
     reason: null,
     ...over,

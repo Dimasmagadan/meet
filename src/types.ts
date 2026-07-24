@@ -100,6 +100,8 @@ export interface Config {
   summaryMemThresholdMb: number;
   summaryCatchupIntervalMs: number;
   opencodeIndexPass: boolean;
+  gateHeavyPasses: boolean;
+  gateBudgetMs: number;
 }
 
 export interface TranscribeOptions {
@@ -201,4 +203,6 @@ export const DEFAULT_CONFIG: Config = {
   summaryMemThresholdMb: 768,
   summaryCatchupIntervalMs: 30_000,
   opencodeIndexPass: false,
+  gateHeavyPasses: true,
+  gateBudgetMs: 120_000,
 };
