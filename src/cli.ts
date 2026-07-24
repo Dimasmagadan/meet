@@ -7,6 +7,7 @@ import { finalizeSession } from "./finalize.js";
 import { showStatus } from "./status.js";
 import { isActiveRecording, readActiveRecordingLock } from "./locks.js";
 import { transcribeImport, type ImportOptions } from "./import.js";
+import { renameSpeaker } from "./speaker-rename.js";
 import { spawn, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -77,6 +78,16 @@ export function createProgram(): Command {
       } else {
         await runForegroundFinalize(sessionDir);
       }
+    });
+
+  program
+    .command("rename")
+    .description("Rename a diarized speaker label in a finalized meeting")
+    .argument("<meetingDir>", "Meeting output directory path")
+    .argument("<speakerId>", 'Speaker id, e.g. "Speaker 1"')
+    .argument("<newName>", "New display name")
+    .action(async (meetingDir: string, speakerId: string, newName: string) => {
+      await runRename(meetingDir, speakerId, newName);
     });
 
   program
@@ -488,6 +499,31 @@ async function spawnBackgroundFinalizer(sessionDir: string) {
   child.unref();
   console.log(chalk.green(`Background finalizer started (pid ${child.pid})`));
   console.log(chalk.gray(`Progress: meet status`));
+}
+
+async function runRename(meetingDir: string, speakerId: string, newName: string) {
+  const dir = expandPath(meetingDir);
+  try {
+    const result = await renameSpeaker(dir, speakerId, newName);
+    const summary = result.files
+      .map((f) => {
+        const bits: string[] = [];
+        if (f.bodyMatches > 0) bits.push(`body ${f.bodyMatches}`);
+        if (f.footerMatches > 0) bits.push(`footer ${f.footerMatches}`);
+        if (f.indexMatches > 0) bits.push(`${f.indexMatches}`);
+        return `${f.file} (${bits.join(", ")})`;
+      })
+      .join(", ");
+    console.log(chalk.green(`renamed ${speakerId} → ${newName}: ${summary}`));
+
+    const totalBody = result.files.reduce((n, f) => n + f.bodyMatches, 0);
+    if (totalBody === 0) {
+      console.log(chalk.yellow(`  (no transcript entries found for ${speakerId} — they may not have spoken)`));
+    }
+  } catch (err) {
+    console.log(chalk.red(err instanceof Error ? err.message : String(err)));
+    process.exit(1);
+  }
 }
 
 async function listMeetings() {
