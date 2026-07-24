@@ -4,6 +4,7 @@ import type { Config, TranscribeOptions, AudioMetrics } from "./types.js";
 import { readPcmSamples, computeRmsDb, computePeakDb } from "./audio-metrics.js";
 import { detectSpeech } from "./vad.js";
 import { getPhrasebook } from "./phrasebook.js";
+import { getVocabulary } from "./vocabulary.js";
 import { resolveWhisperBin, resolveModelPath } from "./storage.js";
 
 export interface TranscribeResult {
@@ -92,7 +93,7 @@ export function buildWhisperArgs(config: Config, opts: WhisperArgsOptions): stri
     "--logprob-thold", String(isFinal ? config.finalLogprobThreshold : config.whisperLogprobThreshold),
     "--no-speech-thold", String(isFinal ? config.finalNoSpeechThreshold : config.whisperNoSpeechThreshold),
     "--no-prints",
-    "--prompt", config.prompt,
+    "--prompt", config.prompt + getVocabulary(config).toPromptSuffix(config.prompt),
   ];
 
   if (opts.noTimestamps) {

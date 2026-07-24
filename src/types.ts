@@ -1,5 +1,6 @@
 import { DEFAULT_TRIGGERS_PATH } from "./triggers.js";
 import { DEFAULT_PHRASEBOOK_PATH } from "./phrasebook.js";
+import { DEFAULT_VOCABULARY_PATH } from "./vocabulary.js";
 
 export type CaptureMode = "full" | "mic";
 
@@ -85,6 +86,8 @@ export interface Config {
   attentionAlerts: boolean;
   triggersPath: string;
   triggersReload: boolean;
+  vocabularyPath: string;
+  vocabularyReload: boolean;
   attentionCooldownSeconds: number;
   attentionRecapEntries: number;
   attentionSound: string;
@@ -183,6 +186,8 @@ export const DEFAULT_CONFIG: Config = {
   attentionAlerts: true,
   triggersPath: DEFAULT_TRIGGERS_PATH,
   triggersReload: true,
+  vocabularyPath: DEFAULT_VOCABULARY_PATH,
+  vocabularyReload: true,
   attentionCooldownSeconds: 60,
   attentionRecapEntries: 3,
   attentionSound: "Glass",
