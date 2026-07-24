@@ -55,6 +55,7 @@ meet start "Title"
 - `setup` — dependency/permission verification
 - `doctor` — 12-second audio health check
 - `list` / `status` / `finalize` — session management
+- `rename <meetingDir> <speakerId> <newName>` — patch a diarized `Speaker N` label to a real name across a finalized meeting's output (see `src/speaker-rename.ts`)
 
 **src/pipeline.ts** — Core event loop
 - Watches WAV files with chokidar
@@ -102,6 +103,19 @@ meet start "Title"
 - `buildRecap()` / `formatRecap()` — last `attentionRecapEntries` of `entriesFromSession(...)` ending at the trigger chunk, rendered as a terminal banner with the trigger word highlighted; suppressed if any recap entry is `source === "mic"`
 - `buildNotificationArgs()` / `sendMacNotification()` — `osascript` via `on run argv` (`execFile`, never a shell) so transcript text is passed as data, never interpolated into AppleScript source
 - Wired from `Recorder.initPipeline()`'s transcribe callback, sys-channel only, skipped during shutdown drain/pause
+
+**src/speaker-rename.ts** — Post-finalize speaker rename (`meet rename`)
+- `renameSpeaker()` — reads `speakers.json` from a finalized meeting dir (session dir is already deleted by this point), validates the speaker id against `segments`/`entryAssignments`, then patches every `transcript*.md` (body label + Talk Time footer regexes) and `index.md` (Unicode-aware word-boundary replace) in place
+- `speakerNames` map in `speakers.json` holds canonical id → current display label, so a second rename re-targets the previously-applied name, not the stale `Speaker N` id
+- Uses shared `escapeRegex` from `regex-utils.ts`
+
+**src/vocabulary.ts** — Custom whisper vocabulary (hot-reload)
+- Structural clone of `triggers.ts`/`phrasebook.ts`: `Vocabulary.load()`, `maybeReload()`, module singleton `getVocabulary()`
+- `toPromptSuffix(basePrompt, maxTotalChars = 200)` — sizes against the **combined** `config.prompt` + suffix (not the suffix alone), appends `. Термины: a, b, c` in file order until the budget is hit
+- Wired into `buildWhisperArgs()` in `transcriber.ts` for both live and final passes
+- `./vocabulary.json`: `{ "terms": ["Acme", "Smith"] }`, missing/invalid file → identity mode
+
+**src/regex-utils.ts** — Shared `escapeRegex()`, extracted from byte-identical private copies previously in `phrasebook.ts`/`attention.ts`; also used by `speaker-rename.ts`
 
 **src/storage.ts** — Config and file I/O
 - `loadConfig()` — reads ~/.meet/config.json
@@ -194,7 +208,7 @@ npm run build && node --test dist/filters.test.js
 
 **Test locations:**
 - `src/*.test.ts` files alongside their source modules
-- Examples: `audio-metrics.test.ts`, `assembler.test.ts`, `vad.test.ts`, `diarization.test.ts`, `talk-time.test.ts`, `triggers.test.ts`, `attention.test.ts`
+- Examples: `audio-metrics.test.ts`, `assembler.test.ts`, `vad.test.ts`, `diarization.test.ts`, `talk-time.test.ts`, `triggers.test.ts`, `attention.test.ts`, `vocabulary.test.ts`, `speaker-rename.test.ts`
 
 **Test conventions:**
 - One test file per module
@@ -271,6 +285,9 @@ Key settings:
 - `attentionCooldownSeconds` — min seconds between alerts, per alert kind (default: `60`)
 - `attentionRecapEntries` — transcript entries shown in attention recap (default: `3`)
 - `attentionSound` — macOS notification sound name (default: `Glass`)
+- `vocabularyPath` — custom whisper-prompt vocabulary list (default: `./vocabulary.json`)
+- `vocabularyReload` — mtime hot-reload of the vocabulary file (default: `true`)
+- `opencodeIndexPass` — run `runOpencodeIndex()` after `meet start` recordings finalize, writing `index.md` (default: `false` — opt-in since it needs the optional `opencode` CLI and adds up to 180s to finalize)
 
 **Tags**: Define tags in `tags.md` at project root (used by interactive picker)
 
@@ -287,6 +304,13 @@ Key settings:
 ```json
 {
   "triggers": ["Дим", "Dmitr", "Дмитрий"]
+}
+```
+
+**Vocabulary**: Custom whisper-prompt terms in `vocabulary.json` at project root (folded into `--prompt` for both live and final passes)
+```json
+{
+  "terms": ["Acme", "Smith", "ScreenCaptureKit"]
 }
 ```
 

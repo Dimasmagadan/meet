@@ -8,14 +8,19 @@ Local meeting transcription for macOS (Apple Silicon). Records mic + system audi
 
 - **Dual-channel capture** — mic (you) and system audio (others) recorded simultaneously
 - **Local transcription** — whisper.cpp with Metal GPU acceleration, no internet required
-- **Source-based speaker labels** — mic = "Me", system audio = "Others"
+- **Speaker diarization** — system audio labeled "Speaker 1", "Speaker 2", ... on the final pass (falls back to "Others" if diarization is off/unavailable); mic is always "Me"
+- **Speaker rename** — `meet rename` swaps a diarized label for a real name across a finished meeting's output
+- **Talk-time stats** — per-speaker duration/percentage footer on every finalized transcript
 - **Live transcription** — chunks processed during recording, transcript written incrementally
 - **Final retranscription pass** — higher-quality model reprocesses all audio after recording stops
+- **Parakeet A/B pass** (optional) — re-transcribes with Parakeet-TDT alongside whisper for manual quality comparison
+- **Custom vocabulary** — hot-reloadable `vocabulary.json` biases whisper toward rare names/jargon
 - **File import** — transcribe existing audio/video files (m4a, mp3, mp4, wav, etc.)
 - **Interactive tag picker** — tag meetings for organization after recording
 - **Auto-stop** — configurable max duration and no-speech timeout
 - **Attention alerts** — macOS notification + terminal recap when someone says your name during a call
 - **Live extractive summary** — rolling `summary.md` next to `transcript.md`, resource-aware (pauses under load)
+- **Meeting index** (optional) — Summary/Decisions/Action Items via opencode, for both imports and live recordings
 - **Crash safety** — finalized chunks and transcript survive hard kills
 - **Russian language** optimized (configurable for any language)
 
@@ -70,6 +75,7 @@ meet doctor [mic|full]          Test audio capture (12-second health check)
 meet list                       List past meetings
 meet finalize <sessionDir>      Finalize a stopped recording session
 meet status                     Show active recording/finalization jobs
+meet rename <dir> <id> <name>   Rename a diarized speaker label in a finalized meeting
 ```
 
 ### `start` options
@@ -114,7 +120,11 @@ Meetings are saved to `~/Meetings/` with timestamped subdirectories:
 ~/Meetings/
 ├── 2026-05-13_14-30-weekly-standup/
 │   ├── transcript.md
-│   ├── summary.md          # live draft, generated during recording
+│   ├── transcript.parakeet.md  # optional Parakeet A/B pass
+│   ├── ab-report.json          # optional, alongside transcript.parakeet.md
+│   ├── speakers.json           # diarization segments + speakerNames (renamed labels)
+│   ├── index.md                # optional, opencodeIndexPass or meet transcribe
+│   ├── summary.md              # live draft, generated during recording
 │   └── meta.md
 └── 2026-05-14_10-00-client-call/
     ├── transcript.md
@@ -138,13 +148,36 @@ To disable: `meet start --no-summary "Title"` or `summaryEnabled: false` in `~/.
 
 ### Transcript format (live recording)
 
+During recording, system audio is labeled "Others" (source-based). On the final pass, `meet` diarizes system audio and renumbers those entries to "Speaker N", adding a Talk Time footer:
+
 ```markdown
 # Weekly Standup — 13.05.2026 14:30
 
 **[14:30:00] Me:** Let's discuss the quarterly goals...
-**[14:30:00] Others:** Sure, I have all the data...
+**[14:30:00] Speaker 1:** Sure, I have all the data...
 **[14:30:15] Me:** Great, what are the key metrics?
+
+## Talk Time
+
+- Me: 5m 30s (52%)
+- Speaker 1: 5m 5s (48%)
 ```
+
+If diarization is disabled, fails, or the session is mic-only, entries stay "Others" and Talk Time falls back to chunk-counting.
+
+### Speaker rename
+
+`Speaker N` labels are per-session — rename them to real names once diarization is done and the meeting has been finalized:
+
+```bash
+meet rename ~/Meetings/2026-07-23_14-30-standup "Speaker 1" "Женя"
+```
+
+This patches every `transcript*.md` (body + Talk Time footer) and `index.md` in the meeting directory, and persists the mapping in `speakers.json` so a second rename re-targets the name you last set, not the stale `Speaker N` id.
+
+### Parakeet A/B pass
+
+When `AudioAnalysis` is built and `parakeetComparePass: true` (default), finalize also re-transcribes the same audio with Parakeet-TDT, writing `transcript.parakeet.md` and `ab-report.json` next to `transcript.md` for manual quality comparison. Reuses the same diarized speaker labels; has no Talk Time footer.
 
 ### Transcript format (file import)
 
@@ -171,6 +204,13 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `finalRetranscribe` | `true` | Run high-quality final pass |
 | `silenceGate` | `true` | Skip silent chunks |
 | `phrasebookPath` | `./phrasebook.json` | Custom phrase replacements |
+| `vocabularyPath` | `./vocabulary.json` | Custom whisper-prompt vocabulary (rare names/terms) |
+| `vocabularyReload` | `true` | Hot-reload the vocabulary file on change |
+| `diarizationEnabled` | `true` | Speaker diarization on the final pass |
+| `diarizationMinOverlap` | `0.3` | Below this chunk-overlap ratio, a sys entry stays "Others" |
+| `analysisBin` | resolved like `captureBin` | Path to the `AudioAnalysis` binary |
+| `parakeetComparePass` | `true` | Run the Parakeet A/B pass after finalize |
+| `opencodeIndexPass` | `false` | Generate `index.md` (Summary/Decisions/Action Items) after `meet start` recordings finalize |
 | `attentionAlerts` | `true` | Master switch for live trigger-word alerts |
 | `triggersPath` | `./triggers.json` | Trigger word list |
 | `triggersReload` | `true` | Hot-reload the triggers file on change |
@@ -198,6 +238,18 @@ Create `phrasebook.json` in the project root to define custom text replacements 
   ]
 }
 ```
+
+### Vocabulary
+
+Create `vocabulary.json` in the project root to bias whisper's decoder toward rare names/jargon it tends to mis-transcribe:
+
+```json
+{
+  "terms": ["Acme", "Smith", "ScreenCaptureKit"]
+}
+```
+
+Terms are folded into whisper's `--prompt` (alongside `config.prompt`) for both live and final passes — a soft bias, not a hard dictionary override. Hot-reloads on file change; missing/invalid file disables the feature with no warnings.
 
 ### Attention alerts
 
@@ -252,7 +304,9 @@ meet start "Meeting Title"
     ├── Rescan + drain transcription queue
     ├── Final retranscription pass (medium model)
     ├── Filter silent chunks by audio metrics
-    └── Rewrite sorted markdown transcript
+    ├── Diarize system audio → Speaker N + Talk Time footer
+    ├── Rewrite sorted markdown transcript
+    └── Optional: Parakeet A/B pass, opencode index.md
 ```
 
 ## Project Structure
@@ -260,7 +314,7 @@ meet start "Meeting Title"
 ```
 src/
 ├── main.ts              Entry point
-├── cli.ts               Commander CLI: start, setup, list, transcribe, doctor, finalize, status
+├── cli.ts               Commander CLI: start, setup, list, transcribe, doctor, finalize, status, rename
 ├── types.ts             Shared types: Session, Config, TranscriptEntry, Chunk
 ├── pipeline.ts          File watcher + whisper queue, dedup, health monitoring
 ├── transcriber.ts       whisper-cli wrapper, cleanText() noise filter
@@ -268,6 +322,12 @@ src/
 ├── storage.ts           Config loading, output paths, atomic writes, stale detection
 ├── finalize.ts          Background/foreground session finalization
 ├── final-pass.ts        High-quality retranscription with echo/duplicate filtering
+├── diarization.ts       Speaker diarization (final pass) → "Speaker N" labels
+├── talk-time.ts         Per-speaker talk-time stats, Talk Time footer
+├── parakeet-pass.ts     Optional Parakeet-TDT A/B pass → transcript.parakeet.md
+├── speaker-rename.ts    meet rename: patch a diarized label to a real name
+├── vocabulary.ts        Hot-reloadable custom whisper vocabulary
+├── regex-utils.ts       Shared escapeRegex()
 ├── import.ts            ffmpeg conversion, whisper JSON parsing, batch transcription
 ├── tags.ts              Interactive tag picker
 ├── opencode.ts          opencode integration for index generation and Q&A
@@ -287,18 +347,20 @@ src/
 
 native/AudioCapture/
 ├── Package.swift
-└── Sources/AudioCapture/
-    ├── main.swift              CLI entry, mode selection, signal handling
-    ├── MicCapture.swift        AVAudioEngine input tap, VoiceProcessing IO
-    ├── SystemAudioCapture.swift ScreenCaptureKit audio-only capture
-    ├── WAVWriter.swift         16kHz mono 16-bit PCM WAV, atomic rename
-    └── Logger.swift            Structured JSON logging
+├── Sources/AudioCapture/
+│   ├── main.swift              CLI entry, mode selection, signal handling
+│   ├── MicCapture.swift        AVAudioEngine input tap, VoiceProcessing IO
+│   ├── SystemAudioCapture.swift ScreenCaptureKit audio-only capture
+│   ├── WAVWriter.swift         16kHz mono 16-bit PCM WAV, atomic rename
+│   └── Logger.swift            Structured JSON logging
+└── Sources/AudioAnalysis/      Second binary: diarize/transcribe/models (FluidAudio)
 ```
 
 ## Known Limitations
 
 - **macOS Apple Silicon only** — no Intel, no Linux, no Windows
-- **Source-based speaker labels** — "Me" / "Others" by audio source, not per-person diarization
+- **Per-session speaker identity** — diarization labels "Speaker N" within one meeting only; no cross-meeting voice fingerprinting, so the same person gets renamed per meeting
+- **Diarization is a final-pass feature** — during live recording, system audio is still "Others"; "Speaker N" labels only appear after finalization
 - **Foreground recording** — `meet start` blocks the terminal (background mode planned)
 - **No `meet stop`** — stop with `q` key or Ctrl-C
 - **No `meet recover`** — stale sessions are detected but not auto-recovered

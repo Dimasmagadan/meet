@@ -9,7 +9,7 @@ macOS (Apple Silicon) CLI. Records mic + system audio, transcribes locally with 
 ```
 meet start "Title"
 ├── src/main.ts              — entry, dispatches CLI commands
-├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, status
+├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, status, rename
 ├── src/recorder.ts          — session orchestration: spawns Swift capture, wires Pipeline, handles stdin hotkeys
 ├── src/types.ts             — shared types: Session, Chunk, Config, TranscriptEntry
 ├── src/pipeline.ts          — chokidar watches *.wav, sequential whisper queue, dedup, durable state
@@ -20,6 +20,12 @@ meet start "Title"
 ├── src/storage.ts           — loadConfig, getOutputDir/getOutputPath, atomic writes, stale detection
 ├── src/finalize.ts          — background/foreground session finalization with progress tracking
 ├── src/final-pass.ts        — high-quality retranscription pass, echo/duplicate filtering
+├── src/diarization.ts       — speaker diarization (final pass only): concatSysChunks, runDiarizer (AudioAnalysis diarize), assignSpeakers → "Speaker N" labels
+├── src/talk-time.ts         — per-speaker talk-time stats, renders the "## Talk Time" transcript footer
+├── src/parakeet-pass.ts     — optional Parakeet-TDT A/B pass (AudioAnalysis transcribe) → transcript.parakeet.md, ab-report.json
+├── src/speaker-rename.ts    — meet rename: patches a diarized "Speaker N" label to a real name across a finalized meeting's transcript*.md/index.md/speakers.json
+├── src/vocabulary.ts        — hot-reloadable custom whisper vocabulary (./vocabulary.json), folded into --prompt for live and final passes
+├── src/regex-utils.ts       — shared escapeRegex(), used by phrasebook.ts/attention.ts/speaker-rename.ts
 ├── src/tags.ts              — interactive tag picker with custom tag support
 ├── src/opencode.ts          — opencode CLI integration for index generation and Q&A
 ├── src/capture-events.ts    — parse Swift capture stderr events (JSON + text)
@@ -78,6 +84,8 @@ Prompt defaults to: `"Разговор на русском языке. Конс�
 
 Phrasebook (`phrasebook.json` in the project root) applies custom regex replacements to all transcript output.
 
+Vocabulary (`vocabulary.json` in the project root) folds rare names/terms into the same `--prompt` string (see `vocabulary.ts`) — a soft decoder bias, not a hard override.
+
 ## Output Format
 
 ### Live Recording
@@ -92,6 +100,8 @@ Transcript is written incrementally during recording (append per chunk), then fu
 **[14:30:00] Me:** Привет, давайте обсудим квартальные цели...
 **[14:30:00] Others:** Конечно, у меня есть все данные...
 ```
+
+On the final pass, "Others" entries are diarized and renumbered to "Speaker 1", "Speaker 2", ... (see `diarization.ts`), and a `## Talk Time` footer is appended (see `talk-time.ts`). `meet rename` can then attach a real name to a `Speaker N` id (see `speaker-rename.ts`).
 
 ### File Import
 
@@ -127,15 +137,21 @@ After recording stops:
 2. **Final pass** (optional, `finalRetranscribe: true`) — all chunks re-transcribed with medium model
 3. **Echo/duplicate filtering** — removes repeated segments from final pass
 4. **Silence gating** — chunks below RMS threshold filtered out
-5. **Rewrite** — sorted, deduplicated markdown written to output file
+5. **Diarization** (optional, `diarizationEnabled: true`) — `AudioAnalysis diarize` labels system-audio entries "Speaker N", written to `speakers.json`
+6. **Talk-time stats** — per-speaker duration/percentage, appended as a `## Talk Time` footer
+7. **Rewrite** — sorted, deduplicated markdown written to output file
+8. **Parakeet A/B pass** (optional, `parakeetComparePass: true`) — re-transcribes the same chunks with Parakeet-TDT, writes `transcript.parakeet.md` + `ab-report.json` for manual comparison
+9. **opencode index** (optional, `opencodeIndexPass: false`) — generates `index.md` (Summary/Decisions/Action Items) via `runOpencodeIndex()`, fails open (warns, never blocks the transcript)
 
 Finalization can run in background (detached process) or foreground.
 
 ## Conventions
 
 - Chunk naming: `mic-001.wav`, `sys-001.wav` (zero-padded 3 digits)
-- Speaker labels by source: mic → "Me", system → "Others" (not diarization)
+- Speaker labels: mic → "Me"; system audio is diarized on the final pass into "Speaker 1", "Speaker 2", ... (falls back to "Others" when diarization is disabled/unavailable/below `diarizationMinOverlap`) — see `diarization.ts`
+- `meet rename <meetingDir> <speakerId> <newName>` renames a diarized label to a real name after finalization (session dir is already gone by then, so it patches the output dir directly) — see `speaker-rename.ts`
 - Live attention alerts: sys-channel text checked against `triggers.json` in the project root; on match, macOS notification + terminal recap banner (see `specs/SPEC_ATTENTION_2026-07-17.md`)
+- Custom whisper vocabulary: hot-reloadable `vocabulary.json` folded into whisper's `--prompt` (see `vocabulary.ts`)
 - Transcription queue: sequential (one whisper-cli instance at a time)
 - Graceful shutdown: SIGINT/SIGTERM/q → stop capture → rescan → drain queue → finalize
 - Atomic writes: always `.tmp` → `rename()`
