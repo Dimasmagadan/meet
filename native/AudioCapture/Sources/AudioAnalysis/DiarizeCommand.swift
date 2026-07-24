@@ -49,10 +49,21 @@ struct DiarizeCommand: AsyncParsableCommand {
             ]
         }
 
+        // Surface the diarizer's already-computed per-speaker embeddings (256-d,
+        // L2-normalized WeSpeaker) for cross-session speaker recognition. Keyed by
+        // the same raw speaker id that appears in each segment's `speaker` field.
+        // No extra inference: read from the manager's populated speaker database.
+        let embeddingsJSON = manager.speakerManager.getAllSpeakers().reduce(
+            into: [String: [Double]]()
+        ) { result, entry in
+            result[entry.key] = entry.value.currentEmbedding.map { Double($0) }
+        }
+
         JSONOutput.emit([
             "segments": segmentsJSON,
             "speakerCount": speakerIds.count,
             "durationMs": durationMs,
+            "embeddings": embeddingsJSON,
         ])
     }
 }

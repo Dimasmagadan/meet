@@ -1,7 +1,7 @@
 # SDD Spec: Speaker Recognition, AI Perf, Codebase & Task Linking
 
 **Date:** 2026-07-24
-**Status:** Draft (awaiting approval to start P1+P4)
+**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-spike resolved 2026-07-24 (cheap path holds). Next: **S1**.
 **Owner:** Dmitrii Diakonov
 
 ---
@@ -54,6 +54,9 @@ Three workstreams from a project review of the `meet` repo (master @ current). A
 Diarization runs at finalize, when WAV chunks are still on disk (session dir is `rm`'d at `finalize.ts:467`). The diarize step already concatenates sys chunks into `sys-concat.wav` (`diarization.ts:27-73`) and runs `AudioAnalysis diarize`. The legacy `DiarizerManager` already clusters via `wespeaker_v2` embeddings internally — so per-speaker embeddings exist at that point and only need to be surfaced, not recomputed.
 
 #### Backend (Swift) — small output extension
+
+> ✅ **Shipped as part of S1-spike (2026-07-24).** Implemented exactly as specified below; `swift build -c release` clean. This completes the **Swift half of S1** — what remains for S1 is the Node side (registry, finalize wiring, CLI, tests).
+
 `native/AudioCapture/Sources/AudioAnalysis/DiarizeCommand.swift`: after `manager.performCompleteDiarization(...)` (line 36), read `manager.speakerManager` and emit each raw speaker id's existing embedding (WeSpeaker 256-d) in the diarize JSON output:
 
 ```json
@@ -66,6 +69,8 @@ No new subcommand, no `sys-concat.wav` slicing, no extra inference — embedding
 > **Spike gate (blocks PR ordering, do FIRST):** a ~30-min Swift spike answers one question — after `performCompleteDiarization`, can we read enumerable per-speaker embeddings from `manager`/`speakerManager` for ~0 cost, or must we fall back to the `embed` subcommand (extra inference)? Verify the exact `SpeakerManager` / `Speaker.currentEmbedding` API against FluidAudio v0.15.4 source (repo pins `0.15.4` per `Package.resolved`, spec referenced 0.12.4+). FluidAudio docs confirm `diarizer.extractEmbedding(audio)` and `speakerManager.getSpeaker(for:)` returning a `Speaker` with `currentEmbedding`.
 > - **Cheap path holds** → S1 stays "ship second" (one additive JSON field, ~0 cost).
 > - **Fallback needed** → slice `sys-concat.wav` per-segment in Node + `AudioAnalysis embed --input <wav>` calling `diarizer.extractEmbedding(samples)` (still local, one CoreML model, but a real extra inference pass). This is a materially heavier S1 — **reorder it behind L1/P2** since the "~0 cost" justification for shipping it second no longer holds.
+>
+> ✅ **RESOLVED 2026-07-24 — cheap path holds (no reorder).** Verified against FluidAudio 0.15.4 source + `swift build -c release` clean: `DiarizerManager.speakerManager` is a public var populated by `performCompleteDiarization` (via `assignSpeaker`); `SpeakerManager.getAllSpeakers() -> [String: Speaker]` is public — one-call enumeration; `Speaker.currentEmbedding: [Float]` is the L2-normalized 256-d WeSpeaker vector (`SpeakerManager.embeddingSize == 256`). `DiarizeCommand.swift` now emits `"embeddings": { "<speakerId>": [256 doubles] }` keyed by the same ids as each segment's `speaker` field; the existing Node parser (`diarization.ts:118`) reads only `segments` and ignores the new field, so it's backward-compatible. No `AudioAnalysis embed` subcommand exists today (would've been the fallback) — moot. **S1 proceeds in its current order.**
 
 #### Node — new `src/speaker-registry.ts`
 
@@ -173,6 +178,8 @@ After 2-3 real meetings, compare the report. If VBx is clearly better (more stab
 
 ### P1. System-pressure gates on all heavy passes  *(biggest single win)*
 
+> ✅ **Shipped** (commit `a25046e`). `whenNotOverloaded()` + `makeDeadline()` in `system-monitor.ts`; one per-pass wall-clock budget wired into `runFinalPass`, `runParakeetPass`, `runDiarizationStep` (each gains an optional injectable `sensor?` for tests). New config: `gateHeavyPasses` (default `true`), `gateBudgetMs` (default `120000`). Live path (`pipeline.ts`) un-gated and pinned by a source-level seam-guard test. Tests: `system-monitor.test.ts` (whenNotOverloaded/makeDeadline), new `final-pass.test.ts` + `pipeline.test.ts`. **Not yet done:** `meet doctor` CoreML/device lines belong to the P2+P3 PR.
+
 #### Problem
 `getSystemPressure()` (`system-monitor.ts:113-144`) reads 1-min loadavg, free memory, and `pgrep whisper-cli`. It is wired into **exactly one** consumer: `SummaryScheduler` (`summary.ts:391-441`) — i.e. the *cheapest* work in the system. Live whisper (`pipeline.ts:147`), the final pass (`final-pass.ts`), the parakeet pass (`parakeet-pass.ts:45`), diarize (`finalize.ts:228`), and opencode (`finalize.ts:458`) all ignore load and run back-to-back in one finalize process.
 
@@ -211,6 +218,11 @@ Effect: a stacked finalize (medium whisper → diarize → parakeet → opencode
 Spawn `whisper-cli` / `AudioAnalysis` with lowered priority so the Swift audio capture never starves during live recording. Apply `taskpolicy -c utility` (macOS background utility class) and/or `nice` on spawn options at: `transcriber.ts:200`, `parakeet-pass.ts:11`, `diarization.ts:109`. `AudioCapture` (capture) keeps default priority.
 
 ### P4. CoreML load visibility
+
+> ✅ **Shipped** (commit `a25046e`). `isAudioAnalysisRunning()` (`pgrep -f AudioAnalysis`) + `audioAnalysisRunning` field on `ResourcePressure`, surfaced in `reason` when overloaded (e.g. `cpu 9.0/8c, whisper+audioAnalysis`).
+>
+> ⚠️ **Design deviation from the literal spec wording:** "combine into the existing `overloaded` boolean" was implemented as **threshold-based only** (load/mem); the heavy-child flags are informational, *not* OR'd into `overloaded`. Rationale: a multi-chunk pass (final/parakeet) spawns→awaits→exits one child per chunk, so the 5s pgrep cache is stale-`true` immediately after each child exits — OR-ing it in would make the per-chunk gate back off during its own pass, manufacturing 2–4s artificial delay per chunk (hundreds of seconds over a long pass). The load/mem thresholds already trip when loadavg is high regardless of which child caused it, so "(any heavy child running + high loadavg → back off)" still holds. If a maintainer wants the boolean itself to reflect heavy-child presence, it's a one-line change — but it would regress the gate. Documented inline in `system-monitor.ts:getSystemPressure`.
+
 `system-monitor.ts:98` only `pgrep`s `whisper-cli`. Add `pgrep -f AudioAnalysis` so P1's gate actually sees diarize/parakeet CoreML pressure (currently invisible). Combine into the existing `overloaded` boolean (any heavy child process running + high loadavg → back off).
 
 ### P5. Backpressure on the live queue
@@ -290,7 +302,7 @@ Effect: `номер задачи 1234` and `номер задачи в битр�
 
 | File | Change | Workstream |
 |---|---|---|
-| `native/AudioCapture/Sources/AudioAnalysis/DiarizeCommand.swift` | emit `embeddings` per raw speaker id in diarize JSON | S1 |
+| `native/AudioCapture/Sources/AudioAnalysis/DiarizeCommand.swift` | emit `embeddings` per raw speaker id in diarize JSON | S1 — ✅ shipped (S1-spike) |
 | `src/speaker-registry.ts` | **new** — registry load/save, cosine, match/register | S1 |
 | `src/speaker-registry.test.ts` | **new** | S1 |
 | `src/diarization.ts` | parse `embeddings` from diarize output; thread through | S1 |
@@ -320,9 +332,9 @@ No changes touch the `AudioCapture` recording path (mic/system capture) — all 
 
 | PR | Scope | Risk | Verify |
 |---|---|---|---|
-| **P1+P4** | `whenNotOverloaded` gates on **batch passes only** (final/diarize/parakeet), per-pass wall-clock budget, + `pgrep AudioAnalysis` + tests | Low | `npm run lint && npm run build && node --test`; acceptance checks (injected overloaded sensor) assert batch backs off AND live path is un-gated — automated, not manual load-poking |
-| **S1-spike** | 30-min Swift spike: are per-speaker embeddings enumerable post-diarization for ~0 cost? | — | decides whether S1 stays here or reorders behind L1/P2 (fallback `embed` subcommand = extra inference) |
-| **S1** | diarize JSON embeddings + registry (backend-stamped, backend-scoped match) + finalize match/register + `meet rename` registry write + `meet speakers list/forget` + matches.log + tests | Med | build Swift + Node; registry round-trip test; rename-then-finalize auto-applies name; acceptance checks cover the diarize-JSON seam + backend-flip quarantine |
+| ✅ **P1+P4** — shipped `a25046e` | `whenNotOverloaded` gates on **batch passes only** (final/diarize/parakeet), per-pass wall-clock budget, + `pgrep AudioAnalysis` + tests | Low | ✅ `tsc --noEmit` clean, **397/397 tests pass**; acceptance checks (injected overloaded sensor) assert batch backs off AND live path is un-gated. ⚠️ design deviation: `overloaded` kept threshold-based (see P4 note) |
+| ✅ **S1-spike** — resolved 2026-07-24 | 30-min Swift spike: are per-speaker embeddings enumerable post-diarization for ~0 cost? | — | ✅ **Cheap path holds.** `manager.speakerManager.getAllSpeakers()` (public) + `Speaker.currentEmbedding` (256-d) read for ~0 cost; `DiarizeCommand.swift` emits `embeddings` field; `swift build -c release` clean. S1 stays in order — no reorder. |
+| **S1** | ~~diarize JSON embeddings~~ ✅ (shipped in S1-spike) + registry (backend-stamped, backend-scoped match) + finalize match/register + `meet rename` registry write + `meet speakers list/forget` + matches.log + tests | Med | Node side only remains; registry round-trip test; rename-then-finalize auto-applies name; acceptance checks cover the diarize-JSON seam + backend-flip quarantine |
 | **L1** | `git-context.ts` + `meet link` + `--repo` + meta.md/dashboard | Low | lint/build/test; start from a repo, confirm sha/branch in meta.md |
 | **P2+P3** | Metal flags + `taskpolicy` QoS + doctor device/CoreML lines | Med | measure wall-time before/after on a sample WAV |
 | **L2** | phrasebook `regex` mode + Bitrix URL rule + tests | Low | lint/build/test; sample mention → full URL |
