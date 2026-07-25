@@ -39,7 +39,7 @@ meet start "Title"
 ├── src/attention.ts         — AttentionMonitor: trigger detection, cooldown, terminal recap, macOS notification
 ├── src/summary.ts           — extractive TextRank summary + SummaryScheduler (rolling summary.md during recording)
 ├── src/system-monitor.ts    — macOS resource pressure: sysctl loadavg, vm_stat free mem, pgrep whisper-cli/AudioAnalysis cache; `whenNotOverloaded`/`makeDeadline` gate heavy BATCH passes only (P1)
-├── src/compute-device.ts    — P2: `detectWhisperCompute` runs `whisper-cli --help` once (cached), parses stderr for `loaded MTL backend` + GPU name; `metalFlagSupported` gates whether `--metal` is emitted (most brew builds auto-load Metal with no flag)
+├── src/compute-device.ts    — P2 (doctor-only): `detectWhisperCompute` runs `whisper-cli --help` once (cached), parses stderr for `loaded MTL backend` + GPU name; **no flag emitted** — whisper.cpp has no positive `--metal` (GPU on by default; only `-ng`/`--no-gpu`, `-dev N` exist)
 ├── src/process-priority.ts  — P3: `applyQoS`/`buildQoSArgs` wrap whisper-cli/AudioAnalysis spawns with `taskpolicy -c utility` so the Swift capture keeps priority; fail-open when taskpolicy is absent
 ├── src/vad.ts               — voice activity detection wrapper (optional)
 ├── src/locks.ts             — file-based locks for finalization and active recording
@@ -79,7 +79,7 @@ npm run build && node --test dist/import.test.js     # Single test file
 
 whisper-cli flags: `--suppress-nst --entropy-thold 2.4 --logprob-thold -1.0 --no-speech-thold 0.6 --no-prints --prompt "..."`
 
-**Metal (P2):** `detectWhisperCompute` runs `whisper-cli --help` once (cached per binary) and emits `--metal` only when the build advertises it. The common brew `ggml` build has **no** runtime metal flag and auto-loads Metal via backend auto-detection, so the probe fails open and no flag is added — Metal is still active. `meet doctor` reports the live device (e.g. `compute: Metal — Apple M2 Pro`). Gated by `whisperMetal` (default `true`).
+**Metal (P2):** `detectWhisperCompute` runs `whisper-cli --help` once (cached per binary) and parses its stderr backend-init log so `meet doctor` can report the active device (e.g. `compute: Metal — Apple M2 Pro`). whisper.cpp exposes **no** positive `--metal` flag — GPU is on by default and the only knobs are `-ng`/`--no-gpu` (disable) and `-dev N`/`--device N` (select) — so this is device visibility only; **no flag is ever emitted** and transcription args are unchanged. (`-ngl`/`--ngl` are llama.cpp flags, never whisper.cpp — do not wire them to `--metal` emission, that turns fail-open into fail-closed.)
 
 **Process priority (P3):** whisper-cli + AudioAnalysis spawns are wrapped with `taskpolicy -c utility` so the Swift audio capture (which keeps default priority) never starves during a live recording. Applies to live + batch passes alike (the live path stays *un-gated* per P1 — QoS only yields CPU under contention, it never stalls production). Fail-opens to no wrapping when `taskpolicy` is absent. Gated by `lowerProcessPriority` (default `true`). See `process-priority.ts`.
 
@@ -189,10 +189,10 @@ All locks use `isPidAlive()` (via `process.kill(pid, 0)`) to detect dead process
 ### Transcription
 
 - Binary: `whisper-cli` (from `brew install whisper-cpp`, NOT `whisper`)
-- Live invocation: `whisper-cli -m ggml-small.bin -l ru -f <wav> --no-timestamps -otxt -of <base> --suppress-nst ...` (optionally `--metal` if the cached `--help` probe advertises it; wrapped in `taskpolicy -c utility` per P3)
-- Import invocation: `whisper-cli -m ggml-medium.bin -l ru -f <wav> -oj -of <base> -sow --max-len 300 ...` (same `--metal` probe; foreground user batch, no QoS wrapping)
+- Live invocation: `whisper-cli -m ggml-small.bin -l ru -f <wav> --no-timestamps -otxt -of <base> --suppress-nst ...` (wrapped in `taskpolicy -c utility` per P3; no `--metal` — whisper.cpp has no such flag, GPU is on by default)
+- Import invocation: `whisper-cli -m ggml-medium.bin -l ru -f <wav> -oj -of <base> -sow --max-len 300 ...` (foreground user batch, no QoS wrapping)
 - Models: `ggml-small.bin` (466MB, live), `ggml-medium.bin` (~1.5GB, final pass)
-- `whisper-cli --help` writes the option list AND backend-init log to **stderr** (stdout is empty) — `detectWhisperCompute` parses stderr to detect Metal + GPU name
+- `whisper-cli --help` writes the option list AND backend-init log to **stderr** (stdout is empty) — `detectWhisperCompute` parses stderr to report the active device in `meet doctor`
 
 ## Reference
 

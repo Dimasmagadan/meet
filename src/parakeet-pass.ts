@@ -9,9 +9,7 @@ import { applyQoS } from "./process-priority.js";
 
 export async function transcribeWithParakeet(config: Config, wavPath: string): Promise<string> {
   const bin = resolveAnalysisBin(config);
-  // P3: diarize/parakeet CoreML passes are batch-only and must yield to any
-  // live recording's capture; wrap with taskpolicy -c utility (fail-open).
-  const { command, args } = await applyQoS(bin, ["transcribe", "--input", wavPath, "--language", config.language], config);
+  const { command, args } = applyQoS(bin, ["transcribe", "--input", wavPath, "--language", config.language], config);
   const stdout = await new Promise<string>((resolve, reject) => {
     execFile(
       command,

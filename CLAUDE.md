@@ -67,6 +67,15 @@ meet start "Title"
 - `transcribeChunk()` — runs whisper-cli on a single WAV
 - `cleanText()` — filters noise tokens and hallucinations
 
+**src/process-priority.ts** — QoS for model spawns (P3)
+- `applyQoS(command, args, config)` — wraps whisper-cli / AudioAnalysis spawns as `taskpolicy -c utility <bin> <args>` so the Swift audio capture (default priority) never starves during a live recording
+- Sync (both inputs are sync: `config.lowerProcessPriority` + `existsSync('/usr/sbin/taskpolicy')`); fail-opens to no wrapping when taskpolicy is absent
+- Applied at the shared `transcribeChunk` spawn (covers live + final), `parakeet-pass.ts`, `diarization.ts`. Complementary to P1's pressure gate — the live path stays un-gated; QoS only yields CPU under contention, never stalls
+
+**src/compute-device.ts** — whisper compute-device probe (P2, doctor-only)
+- `detectWhisperCompute(bin)` — runs `whisper-cli --help` once (cached per binary), parses stderr for the backend-init log (`loaded MTL backend`, `GPU name:`) so `meet doctor` can report the active device (e.g. `compute: Metal — Apple M2 Pro`)
+- whisper.cpp exposes no positive `--metal` flag (GPU is on by default; only `-ng`/`--no-gpu` and `-dev N` exist), so this reports the device only — there is no flag to emit
+
 **src/assembler.ts** — Transcript assembly
 - `appendEntry()` — incremental append during recording
 - `rewriteMarkdown()` — final sort and dedup during finalization
@@ -288,6 +297,7 @@ Key settings:
 - `vocabularyPath` — custom whisper-prompt vocabulary list (default: `./vocabulary.json`)
 - `vocabularyReload` — mtime hot-reload of the vocabulary file (default: `true`)
 - `opencodeIndexPass` — run `runOpencodeIndex()` after `meet start` recordings finalize, writing `index.md` (default: `false` — opt-in since it needs the optional `opencode` CLI and adds up to 180s to finalize)
+- `lowerProcessPriority` — spawn whisper-cli / AudioAnalysis under `taskpolicy -c utility` so the Swift capture keeps priority during recording (default: `true`; fail-opens when taskpolicy is absent)
 
 **Tags**: Define tags in `tags.md` at project root (used by interactive picker)
 

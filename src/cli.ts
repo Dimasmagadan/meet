@@ -410,14 +410,14 @@ async function runDoctor(mode: "mic" | "full") {
 
   // P2: report whisper's active compute device. The probe runs `whisper-cli
   // --help`, whose backend-init log tells us whether Metal loaded (free — no
-  // transcription). `--metal` is only emitted when the build advertises it;
-  // the common brew build auto-loads Metal with no runtime flag.
+  // transcription). whisper.cpp exposes no positive `--metal` flag (GPU is on
+  // by default; only `-ng`/`--no-gpu` and `-dev N` exist), so we report the
+  // device only — there is no flag to emit or surface.
   const whisperBin = resolveWhisperBin(config);
   const compute = await detectWhisperCompute(whisperBin);
   if (compute.metalActive) {
     const dev = compute.gpuName ? ` — ${compute.gpuName}` : "";
-    const flag = compute.metalFlagSupported ? "emitted" : "not supported, auto-loaded";
-    console.log(chalk.green(`compute: Metal${dev}`) + chalk.gray(` (--metal flag: ${flag})`));
+    console.log(chalk.green(`compute: Metal${dev}`));
   } else if (compute.backendLines.length > 0) {
     console.log(chalk.yellow("compute: CPU (no Metal backend loaded)"));
   } else {

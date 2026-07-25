@@ -52,10 +52,10 @@ describe("buildQoSArgs", () => {
 });
 
 describe("applyQoS", () => {
-  it("delegates to buildQoSArgs using the config flag + real taskpolicy presence", async () => {
+  it("delegates to buildQoSArgs using the config flag + real taskpolicy presence", () => {
     _resetQoSCache();
     const available = isTaskpolicyAvailable();
-    const r = await applyQoS("whisper-cli", ["-m", "x"], { lowerProcessPriority: true });
+    const r = applyQoS("whisper-cli", ["-m", "x"], { lowerProcessPriority: true });
     assert.strictEqual(r.applied, available);
     if (available) {
       assert.strictEqual(r.command, "/usr/sbin/taskpolicy");
@@ -64,8 +64,8 @@ describe("applyQoS", () => {
     }
   });
 
-  it("does not wrap when lowerProcessPriority is false even if taskpolicy exists", async () => {
-    const r = await applyQoS("whisper-cli", ["-m", "x"], { lowerProcessPriority: false });
+  it("does not wrap when lowerProcessPriority is false even if taskpolicy exists", () => {
+    const r = applyQoS("whisper-cli", ["-m", "x"], { lowerProcessPriority: false });
     assert.strictEqual(r.applied, false);
     assert.strictEqual(r.command, "whisper-cli");
     assert.deepStrictEqual(r.args, ["-m", "x"]);

@@ -1,8 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseChunkFilename, cleanText, buildWhisperArgs } from "./transcriber.js";
-import { DEFAULT_CONFIG } from "./types.js";
-import type { Config } from "./types.js";
+import { parseChunkFilename, cleanText } from "./transcriber.js";
 
 describe("parseChunkFilename", () => {
   it("parses mic-001.wav", () => {
@@ -116,38 +114,5 @@ describe("cleanText", () => {
 
   it("returns empty for whitespace only", () => {
     assert.strictEqual(cleanText("   "), "");
-  });
-});
-
-describe("buildWhisperArgs", () => {
-  const baseConfig: Config = { ...DEFAULT_CONFIG };
-
-  const baseOpts = {
-    modelPath: "/models/small.bin",
-    inputPath: "/tmp/mic-001.wav",
-    outputBase: "/tmp/mic-001",
-    format: "txt" as const,
-    pass: "live" as const,
-  };
-
-  it("omits --metal by default (addMetalFlag not set)", () => {
-    const args = buildWhisperArgs(baseConfig, baseOpts);
-    assert.ok(!args.includes("--metal"), `expected no --metal, got ${args.join(" ")}`);
-  });
-
-  it("omits --metal when addMetalFlag is false", () => {
-    const args = buildWhisperArgs(baseConfig, { ...baseOpts, addMetalFlag: false });
-    assert.ok(!args.includes("--metal"));
-  });
-
-  it("emits --metal when addMetalFlag is true (P2)", () => {
-    const args = buildWhisperArgs(baseConfig, { ...baseOpts, addMetalFlag: true });
-    assert.ok(args.includes("--metal"), `expected --metal in ${args.join(" ")}`);
-  });
-
-  it("preserves the rest of the whisper invocation when --metal is added", () => {
-    const without = buildWhisperArgs(baseConfig, baseOpts);
-    const withMetal = buildWhisperArgs(baseConfig, { ...baseOpts, addMetalFlag: true });
-    assert.deepStrictEqual(withMetal, [...without, "--metal"]);
   });
 });

@@ -4,9 +4,10 @@ import { parseWhisperHelp, detectWhisperCompute, _resetComputeCache, type Whispe
 
 // Captured `whisper-cli --help` stderr from the brew `ggml` 0.13.1 build on an
 // Apple M2 Pro. This build writes the option list AND the backend-init log to
-// stderr (stdout is empty) and advertises NO `--metal`/`-ngl` runtime flag —
-// Metal is auto-loaded via backend auto-detection. This fixture pins that
-// Swift/brew → Node contract without spawning the binary in CI.
+// stderr (stdout is empty). whisper.cpp exposes no positive `--metal` flag —
+// GPU is on by default, knobs are `-ng`/`--no-gpu` and `-dev N`. So this probe
+// reports the active device only; there is no flag to detect or emit. This
+// fixture pins the brew/host → Node contract without spawning the binary in CI.
 const REAL_HELP_STDERR = `load_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.13.1/libexec/libggml-blas.so
 ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
 ggml_metal_library_init: using embedded metal library
@@ -20,17 +21,13 @@ supported audio formats: flac, mp3, ogg, wav
 
 options:
   -h,        --help                 [default] show this help message and exit
-  -t N,      --threads N            [4      ] number of threads to use during computation
   -m FNAME,  --model FNAME          [       ] model path
   -f FNAME,  --file FNAME           [       ] input WAV file path
-  -otxt,     --output-txt           [false  ] output result in a text file
-  -oj,       --output-json          [false  ] output result in a JSON file
-  -of FNAME, --output-file FNAME    [       ] output file path (without file extension)
-  -np,       --no-prints            [false  ] do not print anything other than the results
+  -ng,       --no-gpu               [false  ] disable GPU
+  -dev N,    --device N             [0      ] GPU device ID (default: 0)
 `;
 
 const EMPTY: WhisperComputeInfo = {
-  metalFlagSupported: false,
   metalActive: false,
   gpuName: null,
   backendLines: [],
@@ -40,33 +37,10 @@ describe("parseWhisperHelp", () => {
   it("detects Metal active and parses GPU name from a real brew build's help stderr", () => {
     const info = parseWhisperHelp(REAL_HELP_STDERR);
     assert.strictEqual(info.metalActive, true);
-    assert.strictEqual(info.metalFlagSupported, false, "this build advertises no --metal flag");
     assert.strictEqual(info.gpuName, "Apple M2 Pro");
     assert.strictEqual(info.backendLines.length, 3);
     assert.ok(info.backendLines.some((l) => /loaded MTL backend/.test(l)));
     assert.ok(info.backendLines.some((l) => /loaded CPU backend/.test(l)));
-  });
-
-  it("detects a --metal flag when the build advertises it", () => {
-    const help = `options:
-  --metal            [true] use Metal GPU acceleration
-  -m FNAME --model FNAME
-`;
-    const info = parseWhisperHelp(help);
-    assert.strictEqual(info.metalFlagSupported, true);
-    assert.strictEqual(info.metalActive, false);
-  });
-
-  it("detects the older -ngl / --ngl GPU-layer flag alias", () => {
-    assert.strictEqual(parseWhisperHelp("  -ngl N  number of GPU layers").metalFlagSupported, true);
-    assert.strictEqual(parseWhisperHelp("  --ngl N  number of GPU layers").metalFlagSupported, true);
-  });
-
-  it("does NOT treat --no-metal (disable form) as flag support", () => {
-    const help = `options:
-  --no-metal         [false] disable Metal GPU acceleration
-`;
-    assert.strictEqual(parseWhisperHelp(help).metalFlagSupported, false);
   });
 
   it("falls back to the raw GPU-name string when no parens are present", () => {

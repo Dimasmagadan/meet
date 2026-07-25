@@ -3,23 +3,21 @@ import type { Config } from "./types.js";
 
 // macOS QoS clamp applied to whisper-cli / AudioAnalysis spawns so the Swift
 // audio capture (which keeps default priority) never starves during a live
-// recording. `utility` is the background-utility class — deprioritized under
-// contention, full-speed otherwise, so it never stalls the live path (unlike a
-// pressure gate). This complements P1: the live path stays un-gated, it just
-// yields CPU to capture when they compete.
+// recording. `utility` yields CPU under contention but never stalls, so the
+// live path stays effectively un-gated (complementary to P1's pressure gate,
+// which deliberately excludes the live path). See AGENTS.md for the full
+// rationale. Fail-open: no wrapping when taskpolicy is absent.
 const TASKPOLICY_BIN = "/usr/sbin/taskpolicy";
 const TASKPOLICY_QOS = "utility";
 
 export interface QoSResult {
   command: string;
   args: string[];
-  // true when we actually wrapped with taskpolicy (used by `meet doctor`).
   applied: boolean;
 }
 
-// Pure builder — unit-tested without touching the filesystem. Decides whether
-// to wrap `command args...` as `taskpolicy -c utility command args...`.
-// `enabled` = config switch, `available` = taskpolicy binary exists.
+// Pure builder — unit-tested without touching the filesystem. `enabled` =
+// config switch, `available` = taskpolicy binary exists.
 export function buildQoSArgs(
   command: string,
   args: string[],
@@ -31,8 +29,7 @@ export function buildQoSArgs(
   return {
     command: TASKPOLICY_BIN,
     // taskpolicy stops option parsing at the first non-option argument, so the
-    // wrapped binary path (even if absolute) and its `-m`/`-f`/… args are
-    // forwarded verbatim as the program + pargs.
+    // wrapped binary path and its `-m`/`--input`/… args are forwarded verbatim.
     args: ["-c", TASKPOLICY_QOS, command, ...args],
     applied: true,
   };
@@ -45,9 +42,6 @@ export function _resetQoSCache(): void {
   availableCache = null;
 }
 
-// Synchronous existence check (taskpolicy ships at a fixed path on macOS). We
-// avoid spawning a probe process because the spawn path itself is synchronous
-// in the execFile callback; this keeps `applyQoS` cheap and non-blocking.
 export function isTaskpolicyAvailable(): boolean {
   if (availableCache === null) {
     availableCache = existsSync(TASKPOLICY_BIN);
@@ -55,15 +49,14 @@ export function isTaskpolicyAvailable(): boolean {
   return availableCache;
 }
 
-// Wraps a spawn target with `taskpolicy -c utility` when the config enables it
-// and taskpolicy is present. Fail-open: returns the input unchanged otherwise.
-// Async only so future implementations can probe via execFile if needed; the
-// current check is synchronous (existsSync) and resolves immediately.
-export async function applyQoS(
+// Synchronous: both inputs (config flag + existsSync) are sync, so wrapping
+// this in a Promise would just add an await for nothing across three hot
+// spawn sites.
+export function applyQoS(
   command: string,
   args: string[],
   config: Pick<Config, "lowerProcessPriority">,
-): Promise<QoSResult> {
+): QoSResult {
   return buildQoSArgs(command, args, {
     enabled: config.lowerProcessPriority,
     available: isTaskpolicyAvailable(),
