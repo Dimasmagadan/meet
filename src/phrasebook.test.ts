@@ -11,7 +11,7 @@ function makeTmpDir(): string {
   return dir;
 }
 
-function writePhrasebook(path: string, rules: Array<{ from: string; to: string; caseInsensitive?: boolean; wordBoundary?: boolean }>) {
+function writePhrasebook(path: string, rules: Array<{ from: string; to: string; caseInsensitive?: boolean; wordBoundary?: boolean; regex?: boolean }>) {
   writeFileSync(path, JSON.stringify({ replacements: rules }), "utf-8");
 }
 
@@ -110,5 +110,93 @@ describe("Phrasebook", () => {
     const pb = Phrasebook.load(path);
     rmSync(path);
     assert.strictEqual(pb.maybeReload(), false);
+  });
+
+  it("regex rule applies raw pattern", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [{ from: "colou?r", to: "COLOR", regex: true }]);
+    const pb = Phrasebook.load(path);
+    assert.strictEqual(pb.apply("the colour and color"), "the COLOR and COLOR");
+  });
+
+  it("regex rule resolves $1/$2 backrefs", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [{ from: "(foo)\\s+(bar)", to: "$2 $1", regex: true }]);
+    const pb = Phrasebook.load(path);
+    assert.strictEqual(pb.apply("foo bar here"), "bar foo here");
+  });
+
+  it("regex rule honors caseInsensitive", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [{ from: "hello", to: "HI", regex: true, caseInsensitive: true }]);
+    const pb = Phrasebook.load(path);
+    assert.strictEqual(pb.apply("HELLO hello HeLLo"), "HI HI HI");
+  });
+
+  it("regex rule ignores wordBoundary (incompatible with raw pattern)", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [{ from: "foo.*bar", to: "X", regex: true, wordBoundary: true }]);
+    const pb = Phrasebook.load(path);
+    assert.strictEqual(pb.apply("start foobarbaz end"), "start Xbaz end");
+  });
+
+  it("regex rule with invalid pattern is skipped", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [
+      { from: "(unclosed", to: "BAD", regex: true },
+      { from: "ok", to: "OK", regex: true },
+    ]);
+    const pb = Phrasebook.load(path);
+    assert.strictEqual(pb.ruleCount, 1);
+    assert.strictEqual(pb.apply("ok here"), "OK here");
+  });
+
+  it("regex rule with pattern length >= 500 chars is skipped (ReDoS floor)", () => {
+    const path = join(tmpDir, "p.json");
+    const huge = "a" + "a*".repeat(300);
+    writePhrasebook(path, [{ from: huge, to: "X", regex: true }]);
+    const pb = Phrasebook.load(path);
+    assert.strictEqual(pb.ruleCount, 0);
+    assert.strictEqual(pb.apply("aaa"), "aaa");
+  });
+
+  it("literal rules still work alongside regex rules", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [
+      { from: "join", to: "JOIN", wordBoundary: true },
+      { from: "(\\d+)-(\\d+)", to: "$2/$1", regex: true },
+    ]);
+    const pb = Phrasebook.load(path);
+    assert.strictEqual(pb.apply("join 12-34"), "JOIN 34/12");
+  });
+
+  it("Bitrix URL rule: номер задачи 1234 → full URL", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [
+      {
+        from: "(номер\\s+задачи(?:\\s+в\\s+битриксе)?[^0-9А-Яа-яЁё]{0,8})(\\d{2,})",
+        to: "$1https://sam.optimacros.com/workgroups/group/64/tasks/task/view/$2/",
+        regex: true,
+        caseInsensitive: true,
+      },
+    ]);
+    const pb = Phrasebook.load(path);
+    const expected = "посмотри номер задачи https://sam.optimacros.com/workgroups/group/64/tasks/task/view/1234/ пожалуйста";
+    assert.strictEqual(pb.apply("посмотри номер задачи 1234 пожалуйста"), expected);
+  });
+
+  it("Bitrix URL rule: номер задачи в битриксе 1234 → full URL", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [
+      {
+        from: "(номер\\s+задачи(?:\\s+в\\s+битриксе)?[^0-9А-Яа-яЁё]{0,8})(\\d{2,})",
+        to: "$1https://sam.optimacros.com/workgroups/group/64/tasks/task/view/$2/",
+        regex: true,
+        caseInsensitive: true,
+      },
+    ]);
+    const pb = Phrasebook.load(path);
+    const out = pb.apply("номер задачи в битриксе 5678 готов");
+    assert.match(out, /^номер задачи в битриксе https:\/\/sam\.optimacros\.com.+5678\/ готов$/);
   });
 });

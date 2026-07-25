@@ -10,7 +10,10 @@ export interface PhrasebookRuleInput {
   to: string;
   caseInsensitive?: boolean;
   wordBoundary?: boolean;
+  regex?: boolean;
 }
+
+const MAX_RAW_REGEX_LEN = 500;
 
 interface PhrasebookFile {
   replacements?: PhrasebookRuleInput[];
@@ -58,7 +61,13 @@ export class Phrasebook {
       if (!src || dst === undefined) continue;
 
       const flags = entry.caseInsensitive ? "gi" : "g";
-      const source = entry.wordBoundary ? `\\b${escapeRegex(src)}\\b` : escapeRegex(src);
+      let source: string;
+      if (entry.regex) {
+        if (src.length >= MAX_RAW_REGEX_LEN) continue;
+        source = src;
+      } else {
+        source = entry.wordBoundary ? `\\b${escapeRegex(src)}\\b` : escapeRegex(src);
+      }
       try {
         rules.push({ pattern: new RegExp(source, flags), to: dst });
       } catch {
