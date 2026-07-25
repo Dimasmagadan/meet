@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { writeAtomic } from "./storage.js";
 import { escapeRegex } from "./regex-utils.js";
+import { loadRegistry, saveRegistry } from "./speaker-registry.js";
 
 export interface RenameFileCount {
   file: string;            // basename: "transcript.md", "transcript.parakeet.md", "index.md"
@@ -13,6 +14,12 @@ export interface RenameFileCount {
 
 export interface RenameResult {
   files: RenameFileCount[];
+  registryUpdated?: boolean;   // true when the name was propagated to the cross-session registry
+}
+
+export interface RenameOptions {
+  speakerRegistryEnabled?: boolean;
+  registryPath?: string;
 }
 
 interface SpeakersRecord {
@@ -20,6 +27,7 @@ interface SpeakersRecord {
   segments?: Array<{ speaker: string }>;
   entryAssignments?: Array<{ speaker: string | null }>;
   speakerNames?: Record<string, string>;
+  speakerRegistry?: Record<string, { globalSpeakerId: string; matchedName: string | null }>;
 }
 
 function speakerSortKey(label: string): number {
@@ -36,6 +44,7 @@ export async function renameSpeaker(
   meetingDir: string,
   speakerId: string,
   newName: string,
+  options?: RenameOptions,
 ): Promise<RenameResult> {
   const speakersPath = join(meetingDir, "speakers.json");
   if (!existsSync(speakersPath)) {
@@ -103,5 +112,26 @@ export async function renameSpeaker(
   speakerNames[speakerId] = newName;
   await writeAtomic(speakersPath, JSON.stringify({ ...record, speakerNames }, null, 2));
 
-  return { files: counts };
+  // Propagate the name into the cross-session registry so future meetings
+  // auto-apply it. Only when the registry is enabled AND this meeting's
+  // speakers.json carries a globalSpeakerId for the canonical id. Fails open.
+  let registryUpdated = false;
+  if (options?.speakerRegistryEnabled && options.registryPath) {
+    const globalSpeakerId = record.speakerRegistry?.[speakerId]?.globalSpeakerId;
+    if (globalSpeakerId) {
+      try {
+        const registry = loadRegistry(options.registryPath);
+        const entry = registry.speakers.find((s) => s.id === globalSpeakerId);
+        if (entry) {
+          entry.name = newName;
+          await saveRegistry(registry, options.registryPath);
+          registryUpdated = true;
+        }
+      } catch {
+        // Registry update is best-effort; the local rename already succeeded.
+      }
+    }
+  }
+
+  return { files: counts, registryUpdated };
 }

@@ -1,7 +1,7 @@
 # SDD Spec: Speaker Recognition, AI Perf, Codebase & Task Linking
 
 **Date:** 2026-07-24
-**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-spike resolved 2026-07-24 (cheap path holds). Next: **S1**.
+**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-Spike resolved 2026-07-24 (cheap path holds). **S1 shipped** (Node side, 428/428 tests pass). Next: **L1**.
 **Owner:** Dmitrii Diakonov
 
 ---
@@ -331,10 +331,10 @@ No changes touch the `AudioCapture` recording path (mic/system capture) — all 
 ## 6. Implementation order (one PR per step, each independently mergeable)
 
 | PR | Scope | Risk | Verify |
-|---|---|---|---|
+|---|---|---|---|---|
 | ✅ **P1+P4** — shipped `a25046e` | `whenNotOverloaded` gates on **batch passes only** (final/diarize/parakeet), per-pass wall-clock budget, + `pgrep AudioAnalysis` + tests | Low | ✅ `tsc --noEmit` clean, **397/397 tests pass**; acceptance checks (injected overloaded sensor) assert batch backs off AND live path is un-gated. ⚠️ design deviation: `overloaded` kept threshold-based (see P4 note) |
 | ✅ **S1-spike** — resolved 2026-07-24 | 30-min Swift spike: are per-speaker embeddings enumerable post-diarization for ~0 cost? | — | ✅ **Cheap path holds.** `manager.speakerManager.getAllSpeakers()` (public) + `Speaker.currentEmbedding` (256-d) read for ~0 cost; `DiarizeCommand.swift` emits `embeddings` field; `swift build -c release` clean. S1 stays in order — no reorder. |
-| **S1** | ~~diarize JSON embeddings~~ ✅ (shipped in S1-spike) + registry (backend-stamped, backend-scoped match) + finalize match/register + `meet rename` registry write + `meet speakers list/forget` + matches.log + tests | Med | Node side only remains; registry round-trip test; rename-then-finalize auto-applies name; acceptance checks cover the diarize-JSON seam + backend-flip quarantine |
+| ✅ **S1 — shipped** (this PR) | registry (backend-stamped, backend-scoped match) + finalize match/register + `meet rename` registry write + `meet speakers list/forget` + matches.log + tests | Med | ✅ **428/428 tests pass** (`tsc` clean); 3 new source files + 5 existing extended; registry round-trip test; rename-then-finalize auto-applies name; acceptance checks cover the diarize-JSON seam + backend-flip quarantine |
 | **L1** | `git-context.ts` + `meet link` + `--repo` + meta.md/dashboard | Low | lint/build/test; start from a repo, confirm sha/branch in meta.md |
 | **P2+P3** | Metal flags + `taskpolicy` QoS + doctor device/CoreML lines | Med | measure wall-time before/after on a sample WAV |
 | **L2** | phrasebook `regex` mode + Bitrix URL rule + tests | Low | lint/build/test; sample mention → full URL |

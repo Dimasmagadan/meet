@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { concatSysChunks, assignSpeakers, type DiarSegment, type ChunkOffset } from "./diarization.js";
+import { concatSysChunks, assignSpeakers, parseDiarizeOutput, buildSpeakerLabelMap, type DiarSegment, type ChunkOffset } from "./diarization.js";
 import { makeSineWav, makeSilentWav, readPcmSamples } from "./audio-metrics.js";
 import type { TranscriptEntry } from "./types.js";
 
@@ -146,5 +146,60 @@ describe("assignSpeakers", () => {
     const segments: DiarSegment[] = [{ start: 0, end: 15, speaker: "1" }];
     const result = assignSpeakers(entries, segments, offsets);
     assert.strictEqual(result[0].speaker, undefined);
+  });
+});
+
+// Pins the Swift->Node diarize JSON contract: DiarizeCommand.swift emits a
+// `segments` array plus an additive `embeddings` map keyed by raw speaker id.
+// The parser must accept both, and stay backward-compatible with payloads that
+// lack `embeddings` (older Swift builds). This is the acceptance seam guard for
+// S1 — it runs without the Swift binary.
+describe("parseDiarizeOutput (Swift->Node contract)", () => {
+  it("parses segments + embeddings from a captured payload", () => {
+    const payload = JSON.stringify({
+      segments: [
+        { start: 0, end: 5, speaker: "1" },
+        { start: 5, end: 10, speaker: "2" },
+      ],
+      speakerCount: 2,
+      durationMs: 10000,
+      embeddings: {
+        "1": Array.from({ length: 256 }, (_, i) => i * 0.01),
+        "2": Array.from({ length: 256 }, (_, i) => 1 - i * 0.01),
+      },
+    });
+    const result = parseDiarizeOutput(payload);
+    assert.equal(result.segments.length, 2);
+    assert.equal(result.segments[0].speaker, "1");
+    assert.equal(Object.keys(result.embeddings).length, 2);
+    assert.equal(result.embeddings["1"].length, 256);
+    assert.equal(result.embeddings["2"].length, 256);
+  });
+
+  it("is backward-compatible: payload without embeddings yields empty map", () => {
+    const payload = JSON.stringify({ segments: [{ start: 0, end: 5, speaker: "1" }] });
+    const result = parseDiarizeOutput(payload);
+    assert.equal(result.segments.length, 1);
+    assert.deepEqual(result.embeddings, {});
+  });
+
+  it("is robust to missing segments (empty array, never undefined)", () => {
+    const result = parseDiarizeOutput(JSON.stringify({ embeddings: { "1": [0.1] } }));
+    assert.deepEqual(result.segments, []);
+    assert.equal(result.embeddings["1"].length, 1);
+  });
+});
+
+// Embeddings arrive keyed by raw diarizer id ("1","2"); the relabel map produced
+// from the raw segments is what lets finalize join them to canonical "Speaker N".
+describe("buildSpeakerLabelMap", () => {
+  it("maps raw ids to Speaker N by first appearance in time", () => {
+    const segments: DiarSegment[] = [
+      { start: 0, end: 5, speaker: "2" },
+      { start: 5, end: 10, speaker: "1" },
+    ];
+    const map = buildSpeakerLabelMap(segments);
+    assert.equal(map.get("2"), "Speaker 1");
+    assert.equal(map.get("1"), "Speaker 2");
   });
 });

@@ -10,12 +10,13 @@ import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcript
 import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock, readGlobalFinalPassLock } from "./locks.js";
 import { analyzeWavFile } from "./audio-metrics.js";
 import { readEntryRecords } from "./entries-store.js";
-import { concatSysChunks, runDiarizer, assignSpeakers, relabelSegments, cleanupSysConcat, type DiarSegment } from "./diarization.js";
+import { concatSysChunks, runDiarizer, assignSpeakers, relabelSegments, cleanupSysConcat, buildSpeakerLabelMap, type DiarSegment } from "./diarization.js";
 import { computeTalkTime } from "./talk-time.js";
 import { runParakeetPass } from "./parakeet-pass.js";
 import { appendPostFinalizeNote } from "./summary.js";
 import { runOpencodeIndex } from "./opencode.js";
 import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
+import { loadRegistry, saveRegistry, applyRegistryToSpeakers, appendMatchesLog, matchesLogPath } from "./speaker-registry.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
 
@@ -217,13 +218,22 @@ export async function runDiarizationStep(
       if (config.gateHeavyPasses) {
         await whenNotOverloaded(makeDeadline(config.gateBudgetMs), sensor);
       }
-      const rawSegments = await runDiarizer(config, wavPath);
+      const { segments: rawSegments, embeddings: rawEmbeddings } = await runDiarizer(config, wavPath);
       const segments = relabelSegments(rawSegments);
       const diarizedEntries = assignSpeakers(entries, segments, offsets, config.diarizationMinOverlap);
       const speakerIds = new Set(segments.map((s) => s.speaker));
 
       speakersRecord.diarization = { ok: true, speakerCount: speakerIds.size, binaryMs: Date.now() - startedAt };
+      // Canonical segments stay in "Speaker N" form so `meet rename` can still
+      // validate the requested id; display-name overrides land in entry labels +
+      // speakerNames instead.
       speakersRecord.segments = segments;
+
+      // Cross-session registry: match/register voices against prior meetings.
+      // On a match with a known name, rewrites entry.speaker to that name so the
+      // transcript + parakeet A/B both display it. Fails open (warns, never blocks).
+      await applySpeakerRegistry(session, config, rawSegments, rawEmbeddings, diarizedEntries, speakersRecord, warn);
+
       speakersRecord.entryAssignments = diarizedEntries
         .filter((e) => e.source === "sys")
         .map((e) => ({ chunkIndex: e.chunkIndex, speaker: e.speaker ?? null }));
@@ -237,6 +247,67 @@ export async function runDiarizationStep(
     warn(`Diarization failed: ${message}, keeping Others labels`);
     speakersRecord.diarization = { ok: false, error: message };
     return { entries, segments: [], speakersRecord };
+  }
+}
+
+// Matches/registers each diarized speaker's embedding against the cross-session
+// registry (S1). When a matched voice already has a name, rewrites the matching
+// entries' speaker label to that name (transcript + parakeet both display it).
+// Persists globalSpeakerId/matchedName per canonical "Speaker N" into
+// speakers.json so `meet rename` can later patch the registry entry. No-op when
+// the registry is disabled or no embeddings were emitted. Fails open.
+async function applySpeakerRegistry(
+  session: Session,
+  config: Config,
+  rawSegments: DiarSegment[],
+  rawEmbeddings: Record<string, number[]>,
+  diarizedEntries: TranscriptEntry[],
+  speakersRecord: Record<string, unknown>,
+  warn: (msg: string) => void,
+): Promise<void> {
+  if (!config.speakerRegistryEnabled) return;
+  if (Object.keys(rawEmbeddings).length === 0) return;
+
+  const rawToLabel = buildSpeakerLabelMap(rawSegments);
+  const embeddingsByLabel = new Map<string, number[]>();
+  for (const [rawId, emb] of Object.entries(rawEmbeddings)) {
+    const label = rawToLabel.get(rawId);
+    if (label && Array.isArray(emb) && emb.length > 0) embeddingsByLabel.set(label, emb);
+  }
+  if (embeddingsByLabel.size === 0) return;
+
+  try {
+    const registry = loadRegistry(config.speakerRegistryPath);
+    const { labelOverrides, speakerMeta, matches } = applyRegistryToSpeakers(
+      embeddingsByLabel,
+      session.id,
+      registry,
+      config.speakerMatchThreshold,
+      "diarizer-manager",
+    );
+    await saveRegistry(registry, config.speakerRegistryPath);
+    await appendMatchesLog(matchesLogPath(config.speakerRegistryPath), matches).catch(() => {});
+
+    if (labelOverrides.size > 0) {
+      for (let i = 0; i < diarizedEntries.length; i++) {
+        const e = diarizedEntries[i];
+        if (e.source === "sys" && e.speaker && labelOverrides.has(e.speaker)) {
+          diarizedEntries[i] = { ...e, speaker: labelOverrides.get(e.speaker)! };
+        }
+      }
+      const speakerNames: Record<string, string> = {};
+      for (const [label, name] of labelOverrides) speakerNames[label] = name;
+      speakersRecord.speakerNames = speakerNames;
+    }
+
+    const speakerRegistry: Record<string, { globalSpeakerId: string; matchedName: string | null }> = {};
+    for (const [label, meta] of speakerMeta) {
+      speakerRegistry[label] = { globalSpeakerId: meta.globalSpeakerId, matchedName: meta.matchedName };
+    }
+    speakersRecord.speakerRegistry = speakerRegistry;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    warn(`Speaker registry update failed: ${message}`);
   }
 }
 

@@ -102,6 +102,9 @@ export interface Config {
   opencodeIndexPass: boolean;
   gateHeavyPasses: boolean;
   gateBudgetMs: number;
+  speakerRegistryEnabled: boolean;
+  speakerMatchThreshold: number;
+  speakerRegistryPath: string;
 }
 
 export interface TranscribeOptions {
@@ -205,4 +208,7 @@ export const DEFAULT_CONFIG: Config = {
   opencodeIndexPass: false,
   gateHeavyPasses: true,
   gateBudgetMs: 120_000,
+  speakerRegistryEnabled: false,
+  speakerMatchThreshold: 0.75,
+  speakerRegistryPath: "~/.meet/speakers/registry.json",
 };

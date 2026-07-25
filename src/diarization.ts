@@ -15,6 +15,14 @@ export interface DiarSegment {
   speaker: string;
 }
 
+export interface DiarizeResult {
+  segments: DiarSegment[];
+  // Raw speaker id ("1", "2", ...) -> 256-d L2-normalized WeSpeaker embedding.
+  // Emitted by DiarizeCommand.swift for segment-backed speakers only; absent
+  // (empty) on older Swift builds, so always optional here.
+  embeddings: Record<string, number[]>;
+}
+
 export interface ChunkOffset {
   start: number;
   end: number;
@@ -103,7 +111,7 @@ async function patchHeader(filePath: string, header: Buffer): Promise<void> {
   }
 }
 
-export async function runDiarizer(config: Config, wavPath: string): Promise<DiarSegment[]> {
+export async function runDiarizer(config: Config, wavPath: string): Promise<DiarizeResult> {
   const bin = resolveAnalysisBin(config);
   const stdout = await new Promise<string>((resolve, reject) => {
     execFile(bin, ["diarize", "--input", wavPath], { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -115,8 +123,19 @@ export async function runDiarizer(config: Config, wavPath: string): Promise<Diar
     });
   });
 
-  const parsed = JSON.parse(stdout) as { segments: DiarSegment[] };
-  return parsed.segments;
+  return parseDiarizeOutput(stdout);
+}
+
+// Parses the AudioAnalysis `diarize` JSON stdout. Pure — unit-tested against a
+// captured payload to pin the Swift->Node contract (segments + embeddings)
+// without running the Swift binary. Backward-compatible: a payload without
+// `embeddings` (older Swift builds) yields an empty embeddings map.
+export function parseDiarizeOutput(stdout: string): DiarizeResult {
+  const parsed = JSON.parse(stdout) as { segments?: DiarSegment[]; embeddings?: Record<string, number[]> };
+  return {
+    segments: Array.isArray(parsed.segments) ? parsed.segments : [],
+    embeddings: parsed.embeddings ?? {},
+  };
 }
 
 export async function cleanupSysConcat(sessionDir: string): Promise<void> {
@@ -124,8 +143,9 @@ export async function cleanupSysConcat(sessionDir: string): Promise<void> {
 }
 
 // Renumbers raw diarizer speaker IDs ("1", "2", ...) to "Speaker 1", "Speaker 2",
-// ... by first appearance in time across all segments.
-function buildSpeakerLabelMap(segments: DiarSegment[]): Map<string, string> {
+// ... by first appearance in time across all segments. Exported so the registry
+// can map raw embedding keys to their relabeled canonical "Speaker N" labels.
+export function buildSpeakerLabelMap(segments: DiarSegment[]): Map<string, string> {
   const sorted = [...segments].sort((a, b) => a.start - b.start);
   const map = new Map<string, string>();
   for (const seg of sorted) {

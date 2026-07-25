@@ -1,7 +1,8 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { renameSpeaker } from "./speaker-rename.js";
-import { writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
+import { loadRegistry, saveRegistry, applyRegistryToSpeakers, type SpeakerRegistry } from "./speaker-registry.js";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -16,6 +17,7 @@ interface SpeakersRecord {
   segments?: Array<{ speaker: string }>;
   entryAssignments?: Array<{ speaker: string | null }>;
   speakerNames?: Record<string, string>;
+  speakerRegistry?: Record<string, { globalSpeakerId: string; matchedName: string | null }>;
 }
 
 function writeSpeakers(dir: string, record: SpeakersRecord) {
@@ -226,5 +228,88 @@ describe("renameSpeaker", () => {
     const res = await renameSpeaker(tmpDir, "Speaker 2", "Макс");
     const totalBody = res.files.reduce((n, f) => n + f.bodyMatches, 0);
     assert.ok(totalBody > 0);
+  });
+
+  describe("registry propagation", () => {
+    let regDir: string;
+
+    beforeEach(() => {
+      regDir = makeTmpDir();
+    });
+
+    afterEach(() => {
+      try { rmSync(regDir, { recursive: true, force: true }); } catch {}
+    });
+
+    it("writes the name into the matched registry entry when registry is enabled", async () => {
+      const regPath = join(regDir, "registry.json");
+      const emb = Array.from({ length: 256 }, (_, i) => i * 0.001);
+      // Seed a registry with one unnamed voice, and a meeting whose speakers.json
+      // points Speaker 1 at that registry id (as finalize would have written).
+      const registry: SpeakerRegistry = {
+        version: 1,
+        speakers: [{
+          id: "voice-1", name: null, embedding: emb, backend: "diarizer-manager",
+          createdAt: "2026-07-24T00:00:00.000Z", sourceMeetingId: "meet-a", matchCount: 1,
+        }],
+      };
+      const reg = loadRegistry(regPath);
+      reg.speakers = registry.speakers;
+      await saveRegistry(reg, regPath);
+
+      writeSpeakers(tmpDir, {
+        diarization: { ok: true },
+        segments: [{ speaker: "Speaker 1" }],
+        entryAssignments: [{ speaker: "Speaker 1" }],
+        speakerRegistry: { "Speaker 1": { globalSpeakerId: "voice-1", matchedName: null } },
+      });
+      writeFileSync(join(tmpDir, "transcript.md"), TRANSCRIPT, "utf-8");
+
+      const res = await renameSpeaker(tmpDir, "Speaker 1", "Женя", {
+        speakerRegistryEnabled: true,
+        registryPath: regPath,
+      });
+      assert.equal(res.registryUpdated, true);
+
+      const after = loadRegistry(regPath);
+      assert.equal(after.speakers[0].name, "Женя");
+    });
+
+    it("a subsequent finalize auto-applies the registry name", () => {
+      // After the rename above persisted name="Женя", a new meeting with the same
+      // voice embedding should auto-label via applyRegistryToSpeakers.
+      const emb = Array.from({ length: 256 }, (_, i) => i * 0.001);
+      const registry: SpeakerRegistry = {
+        version: 1,
+        speakers: [{
+          id: "voice-1", name: "Женя", embedding: emb, backend: "diarizer-manager",
+          createdAt: "2026-07-24T00:00:00.000Z", sourceMeetingId: "meet-a", matchCount: 1,
+        }],
+      };
+      const res = applyRegistryToSpeakers(
+        new Map([["Speaker 1", emb]]),
+        "meet-b",
+        registry,
+        0.75,
+        "diarizer-manager",
+      );
+      assert.equal(res.labelOverrides.get("Speaker 1"), "Женя");
+      assert.equal(res.speakerMeta.get("Speaker 1")!.matchedName, "Женя");
+    });
+
+    it("does not touch the registry when disabled (default, backward-compatible)", async () => {
+      const regPath = join(regDir, "registry.json");
+      writeSpeakers(tmpDir, {
+        diarization: { ok: true },
+        segments: [{ speaker: "Speaker 1" }],
+        entryAssignments: [{ speaker: "Speaker 1" }],
+        speakerRegistry: { "Speaker 1": { globalSpeakerId: "voice-1", matchedName: null } },
+      });
+      writeFileSync(join(tmpDir, "transcript.md"), TRANSCRIPT, "utf-8");
+
+      const res = await renameSpeaker(tmpDir, "Speaker 1", "Женя");
+      assert.equal(res.registryUpdated, false);
+      assert.equal(existsSync(regPath), false);
+    });
   });
 });

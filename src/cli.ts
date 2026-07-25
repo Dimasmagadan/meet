@@ -8,8 +8,9 @@ import { showStatus } from "./status.js";
 import { isActiveRecording, readActiveRecordingLock } from "./locks.js";
 import { transcribeImport, type ImportOptions } from "./import.js";
 import { renameSpeaker } from "./speaker-rename.js";
+import { loadRegistry, saveRegistry, forgetSpeaker, matchesLogPath } from "./speaker-registry.js";
 import { spawn, execSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
@@ -88,6 +89,21 @@ export function createProgram(): Command {
     .argument("<newName>", "New display name")
     .action(async (meetingDir: string, speakerId: string, newName: string) => {
       await runRename(meetingDir, speakerId, newName);
+    });
+
+  const speakers = program.command("speakers").description("Manage the cross-session speaker registry");
+  speakers
+    .command("list")
+    .description("List registry entries and recent borderline matches")
+    .action(async () => {
+      await runSpeakersList();
+    });
+  speakers
+    .command("forget")
+    .description("Drop a registry speaker so its voice re-registers fresh")
+    .argument("<globalId>", "Registry speaker id (from `meet speakers list`)")
+    .action(async (globalId: string) => {
+      await runSpeakersForget(globalId);
     });
 
   program
@@ -390,6 +406,14 @@ async function runDoctor(mode: "mic" | "full") {
     console.log(chalk.yellow("summary: disabled"));
   }
 
+  if (config.speakerRegistryEnabled) {
+    const registry = loadRegistry(config.speakerRegistryPath);
+    const active = registry.speakers.filter((s) => !s.quarantined).length;
+    console.log(chalk.green(`speaker registry: enabled (${active} active, ${registry.speakers.length} total) @ ${expandPath(config.speakerRegistryPath)}, match threshold ${config.speakerMatchThreshold}`));
+  } else {
+    console.log(chalk.yellow("speaker registry: disabled (set speakerRegistryEnabled: true in ~/.meet/config.json)"));
+  }
+
   const sessionDir = await mkdtemp(join(tmpdir(), "meet-doctor-"));
   const captureBin = getCaptureBinPath(config);
   const chunkDurationSeconds = 5;
@@ -504,8 +528,12 @@ async function spawnBackgroundFinalizer(sessionDir: string) {
 
 async function runRename(meetingDir: string, speakerId: string, newName: string) {
   const dir = expandPath(meetingDir);
+  const config = loadConfig();
   try {
-    const result = await renameSpeaker(dir, speakerId, newName);
+    const result = await renameSpeaker(dir, speakerId, newName, {
+      speakerRegistryEnabled: config.speakerRegistryEnabled,
+      registryPath: config.speakerRegistryPath,
+    });
     const summary = result.files
       .map((f) => {
         const bits: string[] = [];
@@ -521,10 +549,66 @@ async function runRename(meetingDir: string, speakerId: string, newName: string)
     if (totalBody === 0) {
       console.log(chalk.yellow(`  (no transcript entries found for ${speakerId} — they may not have spoken)`));
     }
+
+    if (result.registryUpdated) {
+      console.log(chalk.gray(`  cross-session registry updated: future meetings will auto-label this voice "${newName}"`));
+    }
   } catch (err) {
     console.log(chalk.red(err instanceof Error ? err.message : String(err)));
     process.exit(1);
   }
+}
+
+async function runSpeakersList() {
+  const config = loadConfig();
+  if (!config.speakerRegistryEnabled) {
+    console.log(chalk.yellow("Speaker registry is disabled. Set speakerRegistryEnabled: true in ~/.meet/config.json"));
+    return;
+  }
+
+  const registry = loadRegistry(config.speakerRegistryPath);
+  const speakers = [...registry.speakers].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+  if (speakers.length === 0) {
+    console.log(chalk.gray(`No registry speakers yet (${expandPath(config.speakerRegistryPath)}).`));
+    return;
+  }
+
+  console.log(chalk.cyan(`${speakers.length} speaker(s) in registry:\n`));
+  for (const s of speakers) {
+    const name = s.name ? chalk.green(s.name) : chalk.gray("(unnamed)");
+    const flagged = s.quarantined ? chalk.yellow(" [quarantined]") : "";
+    console.log(`  ${chalk.bold(s.id)}  ${name}${flagged}`);
+    console.log(chalk.gray(`    matches: ${s.matchCount} | backend: ${s.backend} | first: ${s.sourceMeetingId} | ${s.createdAt}`));
+  }
+
+  const logPath = matchesLogPath(config.speakerRegistryPath);
+  if (existsSync(logPath)) {
+    try {
+      const raw = await readFile(logPath, "utf-8");
+      const lines = raw.split("\n").filter(Boolean).slice(-10);
+      if (lines.length > 0) {
+        console.log(chalk.cyan("\nRecent matches.log:"));
+        for (const line of lines) console.log(chalk.gray(`  ${line}`));
+      }
+    } catch {}
+  }
+}
+
+async function runSpeakersForget(globalId: string) {
+  const config = loadConfig();
+  if (!config.speakerRegistryEnabled) {
+    console.log(chalk.yellow("Speaker registry is disabled."));
+    process.exit(1);
+  }
+
+  const registry = loadRegistry(config.speakerRegistryPath);
+  if (!forgetSpeaker(registry, globalId)) {
+    console.log(chalk.red(`No registry speaker with id ${globalId}`));
+    process.exit(1);
+  }
+  await saveRegistry(registry, config.speakerRegistryPath);
+  console.log(chalk.green(`Forgot ${globalId}; its voice will re-register fresh in the next meeting.`));
 }
 
 async function listMeetings() {

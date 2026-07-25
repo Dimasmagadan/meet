@@ -20,7 +20,8 @@ meet start "Title"
 ├── src/storage.ts           — loadConfig, getOutputDir/getOutputPath, atomic writes, stale detection
 ├── src/finalize.ts          — background/foreground session finalization with progress tracking
 ├── src/final-pass.ts        — high-quality retranscription pass, echo/duplicate filtering
-├── src/diarization.ts       — speaker diarization (final pass only): concatSysChunks, runDiarizer (AudioAnalysis diarize), assignSpeakers → "Speaker N" labels
+├── src/diarization.ts       — speaker diarization (final pass only): concatSysChunks, runDiarizer (AudioAnalysis diarize), assignSpeakers → "Speaker N" labels; parseDiarizeOutput threads per-speaker embeddings
+├── src/speaker-registry.ts  — cross-session speaker registry (S1): cosine match (backend-scoped, threshold 0.75), register/forget/quarantine, matches.log; opt-in via speakerRegistryEnabled (biometric)
 ├── src/talk-time.ts         — per-speaker talk-time stats, renders the "## Talk Time" transcript footer
 ├── src/parakeet-pass.ts     — optional Parakeet-TDT A/B pass (AudioAnalysis transcribe) → transcript.parakeet.md, ab-report.json
 ├── src/speaker-rename.ts    — meet rename: patches a diarized "Speaker N" label to a real name across a finalized meeting's transcript*.md/index.md/speakers.json
