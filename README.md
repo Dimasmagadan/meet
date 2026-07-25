@@ -236,10 +236,34 @@ Create `phrasebook.json` in the project root to define custom text replacements 
 {
   "replacements": [
     { "from": "Т9 глюк", "to": "исправленная фраза" },
-    { "from": "API", "to": "API", "caseInsensitive": true }
+    { "from": "API", "to": "API", "caseInsensitive": true },
+    { "from": "join", "to": "JOIN", "wordBoundary": true },
+    {
+      "from": "(номер\\s+задачи[^0-9А-Яа-яЁё]{0,8})(\\d{2,})",
+      "to": "$1https://example.com/task/$2/",
+      "regex": true,
+      "caseInsensitive": true
+    }
   ]
 }
 ```
+
+Per-rule keys:
+
+| Key | Default | Effect |
+|---|---|---|
+| `from`, `to` | — | Required. Plain substring find/replace. |
+| `caseInsensitive` | `false` | Case-insensitive match. |
+| `wordBoundary` | `false` | Literal mode only: wraps the pattern in `\b…\b` so `"join"` doesn't match `"joining"`. |
+| `regex` | `false` | Treat `from` as a raw JS regex (no escaping, no word-boundary wrap). `to` supports `$1`–`$9` backrefs. `wordBoundary` is ignored when this is set. |
+
+**`regex: true` hazards — read before enabling.**
+
+- **ReDoS / catastrophic backtracking.** A pattern like `(a+)+b` (6 chars) on a 30-char input can hang Node for **10+ seconds**. `apply()` runs inside the sequential whisper queue during live recording, so a backtracking pattern doesn't slow the pipeline — it **stalls** it, and every subsequent chunk backs up behind it. Node has no regex timeout. There is **no protection beyond a 500-char sanity cap** on the pattern source; structure is what matters, not length. Keep patterns linear (avoid nested quantifiers, overlapping alternation). If you're unsure, test the regex in a plain `node -e` first.
+- **Empty-match patterns are rejected at load.** `a*`, `foo|`, `(?:)` match the empty string and would otherwise fire between every character of every chunk (`"bcd"` → `"XbXcXdX"`). Such rules are silently dropped.
+- **Invalid regex is silently dropped** (matches the phrasebook's no-warnings-on-bad-config convention). Check `ruleCount` if a rule isn't firing.
+
+Hot-reloads on file change; missing/invalid file disables the feature with no warnings.
 
 ### Vocabulary
 

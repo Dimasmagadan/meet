@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { Phrasebook } from "./phrasebook.js";
+import { Phrasebook, RAW_REGEX_SANITY_CAP } from "./phrasebook.js";
 import { writeFileSync, mkdirSync, rmSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -151,13 +151,38 @@ describe("Phrasebook", () => {
     assert.strictEqual(pb.apply("ok here"), "OK here");
   });
 
-  it("regex rule with pattern length >= 500 chars is skipped (ReDoS floor)", () => {
+  it("regex rule with pattern at sanity cap boundary", () => {
     const path = join(tmpDir, "p.json");
-    const huge = "a" + "a*".repeat(300);
-    writePhrasebook(path, [{ from: huge, to: "X", regex: true }]);
+    const ok = "a".repeat(RAW_REGEX_SANITY_CAP - 1);
+    const tooLong = "a".repeat(RAW_REGEX_SANITY_CAP);
+    writePhrasebook(path, [
+      { from: ok, to: "OK", regex: true },
+      { from: tooLong, to: "SKIP", regex: true },
+    ]);
+    const pb = Phrasebook.load(path);
+    assert.strictEqual(pb.ruleCount, 1);
+    assert.strictEqual(pb.apply(ok), "OK");
+    assert.strictEqual(pb.apply(tooLong), "OKa");
+  });
+
+  it("regex rule that matches empty string is skipped (would mangle every chunk)", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [
+      { from: "a*", to: "X", regex: true },
+      { from: "ok", to: "OK", regex: true },
+    ]);
+    const pb = Phrasebook.load(path);
+    assert.strictEqual(pb.ruleCount, 1);
+    assert.strictEqual(pb.apply("bcd"), "bcd");
+    assert.strictEqual(pb.apply("ok"), "OK");
+  });
+
+  it("regex rule with alternation containing empty branch is skipped", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [{ from: "foo|", to: "X", regex: true }]);
     const pb = Phrasebook.load(path);
     assert.strictEqual(pb.ruleCount, 0);
-    assert.strictEqual(pb.apply("aaa"), "aaa");
+    assert.strictEqual(pb.apply("anything"), "anything");
   });
 
   it("literal rules still work alongside regex rules", () => {

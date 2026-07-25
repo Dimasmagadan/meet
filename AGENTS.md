@@ -90,7 +90,7 @@ whisper-cli flags: `--suppress-nst --entropy-thold 2.4 --logprob-thold -1.0 --no
 
 Prompt defaults to: `"Разговор на русском языке. Консультация, обсуждение, вопросы и ответы."` (configurable in config)
 
-Phrasebook (`phrasebook.json` in the project root) applies custom regex replacements to all transcript output.
+Phrasebook (`phrasebook.json` in the project root) applies custom replacements to all transcript output. Per-rule keys: `from`/`to` (required), `caseInsensitive`, `wordBoundary` (literal mode only — wraps in `\b\b`), `regex` (raw JS regex, supports `$1`–`$9` backrefs, makes `wordBoundary` a no-op). `regex: true` has two compile-time guards: a 500-char sanity cap on pattern source (NOT a ReDoS mitigation — catastrophic backtracking is structural, e.g. `(a+)+b` hangs on 30 chars; Node has no regex timeout and `apply()` runs in the sequential live queue, so a backtracking pattern stalls transcription), and empty-match rejection (`a*`/`foo|` would otherwise insert `to` between every char). Invalid regex is silently skipped (no-warnings convention).
 
 Vocabulary (`vocabulary.json` in the project root) folds rare names/terms into the same `--prompt` string (see `vocabulary.ts`) — a soft decoder bias, not a hard override.
 

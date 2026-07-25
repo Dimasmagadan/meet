@@ -13,7 +13,7 @@ export interface PhrasebookRuleInput {
   regex?: boolean;
 }
 
-const MAX_RAW_REGEX_LEN = 500;
+export const RAW_REGEX_SANITY_CAP = 500;
 
 interface PhrasebookFile {
   replacements?: PhrasebookRuleInput[];
@@ -63,13 +63,15 @@ export class Phrasebook {
       const flags = entry.caseInsensitive ? "gi" : "g";
       let source: string;
       if (entry.regex) {
-        if (src.length >= MAX_RAW_REGEX_LEN) continue;
+        if (src.length >= RAW_REGEX_SANITY_CAP) continue;
         source = src;
       } else {
         source = entry.wordBoundary ? `\\b${escapeRegex(src)}\\b` : escapeRegex(src);
       }
       try {
-        rules.push({ pattern: new RegExp(source, flags), to: dst });
+        const pattern = new RegExp(source, flags);
+        if (entry.regex && new RegExp(source).test("")) continue;
+        rules.push({ pattern, to: dst });
       } catch {
         continue;
       }
