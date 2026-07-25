@@ -8,6 +8,7 @@ import type { Session, Config, TranscriptEntry } from "./types.js";
 import { loadConfig, expandPath, getOutputDir, getOutputPath, getSessionsDir, resolveWhisperBin } from "./storage.js";
 import { cleanText, buildWhisperArgs } from "./transcriber.js";
 import { getPhrasebook } from "./phrasebook.js";
+import { detectWhisperCompute } from "./compute-device.js";
 import { assembleMarkdown } from "./assembler.js";
 import { runTagPicker, writeMetaFile } from "./tags.js";
 import { runOpencodeIndex } from "./opencode.js";
@@ -268,12 +269,18 @@ async function runWhisper(
 ): Promise<ImportSegment[]> {
   const outputBase = join(sessionDir, "result");
 
+  // P2: keep import parity with the live/final path — emit `--metal` only when
+  // the build advertises it (cached probe). Foreground user batch, so no QoS
+  // wrapping (capture-starvation isn't a concern outside a live recording).
+  const compute = await detectWhisperCompute(whisperPath);
+
   const args = buildWhisperArgs(config, {
     modelPath,
     inputPath: wavPath,
     outputBase,
     format: "json",
     pass: "live",
+    addMetalFlag: config.whisperMetal && compute.metalFlagSupported,
   });
 
   return new Promise((resolve, reject) => {

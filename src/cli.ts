@@ -10,6 +10,8 @@ import { transcribeImport, type ImportOptions } from "./import.js";
 import { renameSpeaker } from "./speaker-rename.js";
 import { loadRegistry, saveRegistry, forgetSpeaker, matchesLogPath } from "./speaker-registry.js";
 import { detectGitContext, linkRepoToMeeting } from "./git-context.js";
+import { detectWhisperCompute } from "./compute-device.js";
+import { isTaskpolicyAvailable } from "./process-priority.js";
 import { spawn, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -404,6 +406,32 @@ async function runDoctor(mode: "mic" | "full") {
       : chalk.yellow("  models cache: not found (run meet setup to download, ~1 GB)"));
   } else {
     console.log(chalk.yellow("AudioAnalysis: not built (speaker diarization and Parakeet A/B pass disabled)"));
+  }
+
+  // P2: report whisper's active compute device. The probe runs `whisper-cli
+  // --help`, whose backend-init log tells us whether Metal loaded (free — no
+  // transcription). `--metal` is only emitted when the build advertises it;
+  // the common brew build auto-loads Metal with no runtime flag.
+  const whisperBin = resolveWhisperBin(config);
+  const compute = await detectWhisperCompute(whisperBin);
+  if (compute.metalActive) {
+    const dev = compute.gpuName ? ` — ${compute.gpuName}` : "";
+    const flag = compute.metalFlagSupported ? "emitted" : "not supported, auto-loaded";
+    console.log(chalk.green(`compute: Metal${dev}`) + chalk.gray(` (--metal flag: ${flag})`));
+  } else if (compute.backendLines.length > 0) {
+    console.log(chalk.yellow("compute: CPU (no Metal backend loaded)"));
+  } else {
+    console.log(chalk.yellow("compute: unknown (whisper-cli --help unavailable)"));
+  }
+
+  // P3: confirm whether batch/live model spawns are QoS-lowered so the Swift
+  // capture keeps priority during recording.
+  const qosAvailable = isTaskpolicyAvailable();
+  if (config.lowerProcessPriority && qosAvailable) {
+    console.log(chalk.green("process priority: taskpolicy -c utility (whisper/AudioAnalysis lowered; capture keeps priority)"));
+  } else {
+    const why = !qosAvailable ? "taskpolicy unavailable" : "disabled (lowerProcessPriority: false)";
+    console.log(chalk.yellow(`process priority: off (${why})`));
   }
 
   if (config.attentionAlerts) {

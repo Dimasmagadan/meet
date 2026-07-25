@@ -1,7 +1,7 @@
 # SDD Spec: Speaker Recognition, AI Perf, Codebase & Task Linking
 
 **Date:** 2026-07-24
-**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-Spike resolved 2026-07-24 (cheap path holds). **S1 shipped** (Node side, 428/428 tests pass). **L1 shipped** (453/453 tests pass; new `src/git-context.ts` + `meet link` + `--repo` + meta.md/dashboard surface). Next: **P2+P3**.
+**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-Spike resolved 2026-07-24 (cheap path holds). **S1 shipped** (Node side, 428/428 tests pass). **L1 shipped** (453/453 tests pass; new `src/git-context.ts` + `meet link` + `--repo` + meta.md/dashboard surface). **P2+P3 shipped** (480/480 tests pass; new `src/compute-device.ts` + `src/process-priority.ts`, `--metal` probe + `taskpolicy -c utility` QoS + `meet doctor` device/priority lines). Next: **L2 → S2**.
 **Owner:** Dmitrii Diakonov
 
 ---
@@ -218,9 +218,21 @@ Effect: a stacked finalize (medium whisper → diarize → parakeet → opencode
 `gateHeavyPasses: boolean` (default `true`); `gateBudgetMs: number` (default `120000`, per-pass wall-clock cap); reuses existing `cpuThresholdLoad` (6) and `memThresholdMb` (768).
 
 ### P2. Metal/GPU flags on whisper
+
+> ✅ **Shipped** (2026-07-25). New `src/compute-device.ts`: `detectWhisperCompute(bin)` runs `whisper-cli --help` once (cached per binary path), `parseWhisperHelp(stderr)` pure parser unit-tested against a captured fixture. `buildWhisperArgs` gained an `addMetalFlag` option; `transcribeChunk` + `import.ts runWhisper` pass `config.whisperMetal && compute.metalFlagSupported`. `meet doctor` prints `compute: Metal — Apple M2 Pro (--metal flag: not supported, auto-loaded)`.
+>
+> ⚠️ **Design note (measured, not a deviation):** the installed brew `ggml` 0.13.1 build has **no** runtime metal flag and auto-loads Metal via backend auto-detection → `metalFlagSupported` is false → **no `--metal` flag is emitted and transcription behavior is unchanged** (Metal is still active). So on this host P2's concrete effect is (a) future-proof flag emission if a build advertises `--metal`/`-ngl`/`--ngl`, and (b) `meet doctor` device visibility. Key gotcha pinned by the parser: `whisper-cli --help` writes the option list **and** backend-init log to **stderr** (stdout is empty). Regex `/(^|\s)--metal\b|…-ngl\b|…--ngl\b/` deliberately excludes `--no-metal` (disable form). `metalActive` ← `loaded MTL backend`; `gpuName` ← parens content of `GPU name:   MTL0 (Apple M2 Pro)`. Fail-open to empty info on any error.
+
 `buildWhisperArgs` (`transcriber.ts:81-108`) passes no GPU flags; Metal use depends on the brew build's defaults. Add `--metal` (detect whisper-cli support via a one-shot `whisper-cli --help` probe cached at startup; fail-open to no flag if unsupported). Measure wall-time delta on a sample WAV before/after. `meet doctor` reports the active compute device (CPU vs Metal) if detectable.
 
 ### P3. Process priority (QoS)
+
+> ✅ **Shipped** (2026-07-25). New `src/process-priority.ts`: `buildQoSArgs(cmd, args, {enabled, available})` pure builder (unit-tested) wraps as `taskpolicy -c utility <bin> <args…>`; `applyQoS` async wrapper; `isTaskpolicyAvailable()` = sync `existsSync('/usr/sbin/taskpolicy')`, cached. Wired at `transcriber.ts` `transcribeChunk` (the shared spawn → covers **both** live + final), `parakeet-pass.ts transcribeWithParakeet`, `diarization.ts runDiarizer`. `import.ts runWhisper` gets `--metal` parity but **no** QoS (foreground user batch, outside a live recording — per spec). `meet doctor` prints `process priority: taskpolicy -c utility (whisper/AudioAnalysis lowered; capture keeps priority)`.
+>
+> ⚠️ **Scope note:** the spec listed `final-pass.ts` for QoS, but that pass calls `transcribeChunk` (the now-wrapped shared spawn), so it's covered transitively — `final-pass.ts` itself needed no change. `taskpolicy` stops option parsing at the first non-option arg, so the wrapped binary's own `-m`/`-c`/`--input` flags survive verbatim (verified: `taskpolicy -c utility whisper-cli -c` → whisper itself rejects `-c`, proving it wasn't swallowed).
+>
+> **Complementary to P1, not in tension:** P3's QoS lowering applies to the **live** whisper path too (via the shared `transcriber.ts:200` spawn). This is correct — P1 keeps the live path *un-gated* (a pressure gate would back up the unbounded live queue), but QoS is categorically different: it never stalls, it only deprioritizes scheduling under contention. So when capture (Swift, default priority) and live whisper compete, capture wins → no audio dropouts, only transient live-text lag. Capture integrity > live-text latency. Gated by `lowerProcessPriority` (default `true`); fail-open when `taskpolicy` absent.
+
 Spawn `whisper-cli` / `AudioAnalysis` with lowered priority so the Swift audio capture never starves during live recording. Apply `taskpolicy -c utility` (macOS background utility class) and/or `nice` on spawn options at: `transcriber.ts:200`, `parakeet-pass.ts:11`, `diarization.ts:109`. `AudioCapture` (capture) keeps default priority.
 
 ### P4. CoreML load visibility
@@ -315,16 +327,23 @@ Effect: `номер задачи 1234` and `номер задачи в битр�
 | `src/finalize.ts` (`:175-234`) | registry match/register; persist `globalSpeakerId`/`matchedName` | S1 |
 | `src/finalize.ts` (`:454`) | optional `diarizationAbPass` parallel block → `diarization-ab-report.json` | S2 |
 | `src/speaker-rename.ts` | `meet rename` also writes name into matched registry entry | S1 |
-| `src/types.ts` | `speakerRegistryEnabled`, `speakerMatchThreshold`, `speakerRegistryPath`, `diarizationAbPass`, `gateHeavyPasses`, `gateBudgetMs`, `liveQueueLagWarnChunks`, git context persistence | S1/S2/P1/P5/L1 |
+| `src/types.ts` | `speakerRegistryEnabled`, `speakerMatchThreshold`, `speakerRegistryPath`, `diarizationAbPass`, `gateHeavyPasses`, `gateBudgetMs`, `liveQueueLagWarnChunks`, `whisperMetal`, `lowerProcessPriority`, git context persistence | S1/S2/P1/P2/P3/P5/L1 |
 | `src/system-monitor.ts` | `whenNotOverloaded()`; `pgrep AudioAnalysis` | P1/P4 |
 | `src/system-monitor.test.ts` | `whenNotOverloaded` cases | P1 |
-| `src/transcriber.ts` (`:81`,`:200`) | `--metal` flag; QoS spawn options | P2/P3 |
+| `src/compute-device.ts` | **new** — `detectWhisperCompute`/`parseWhisperHelp` (`whisper-cli --help` stderr probe, cached) | P2 — ✅ shipped |
+| `src/compute-device.test.ts` | **new** — captured-help fixture, fail-open/cache cases | P2 — ✅ shipped |
+| `src/process-priority.ts` | **new** — `buildQoSArgs`/`applyQoS` (`taskpolicy -c utility` wrap, fail-open) | P3 — ✅ shipped |
+| `src/process-priority.test.ts` | **new** — pure builder + config-flag + availability cases | P3 — ✅ shipped |
+| `src/transcriber.ts` (`:81`,`:200`) | `--metal` flag (`addMetalFlag`); QoS spawn wrap via shared `transcribeChunk` | P2/P3 — ✅ shipped |
+| `src/transcriber.test.ts` | `buildWhisperArgs` `--metal` cases (4) | P2 — ✅ shipped |
 | `src/pipeline.ts` | **no change** — live path deliberately un-gated (self-throttling); P5 status warning only | P1/P5 |
-| `src/final-pass.ts` | `whenNotOverloaded()` guard + QoS | P1/P3 |
-| `src/parakeet-pass.ts` (`:11`,`:45`) | `whenNotOverloaded()` guard + QoS | P1/P3 |
+| `src/final-pass.ts` | `whenNotOverloaded()` guard (P1); QoS via shared `transcribeChunk` (P3, no direct change) | P1 ✅ /P3 ✅ transitively |
+| `src/parakeet-pass.ts` (`:11`,`:45`) | `whenNotOverloaded()` guard + QoS | P1/P3 — ✅ shipped |
+| `src/diarization.ts` (`runDiarizer`) | QoS spawn wrap (`taskpolicy -c utility`) | P3 — ✅ shipped |
+| `src/import.ts` (`runWhisper`) | `--metal` flag parity (foreground user batch, **no** QoS) | P2 — ✅ shipped |
 | `src/git-context.ts` | **new** — repo detect | L1 — ✅ shipped |
 | `src/git-context.test.ts` | **new** — 17 cases (detect/format/parse/apply/link, atomic write, fail-open) | L1 — ✅ shipped |
-| `src/cli.ts` | `meet link` command; `meet speakers list` / `meet speakers forget <globalId>`; `--repo` start flag; doctor registry/metal/CoreML lines | L1 ✅ /P2/P4/S1 |
+| `src/cli.ts` | `meet link` command; `meet speakers list` / `meet speakers forget <globalId>`; `--repo` start flag; doctor registry/metal/CoreML lines | L1 ✅ /P2 ✅ /P4 ✅ /S1 |
 | `src/tags.ts` (`writeMetaFile`) / `src/dashboard.ts` (`parseMetaFile`) | `- Repo:` line (write + parse); `MeetingStats.repo` + Repo table column | L1 — ✅ shipped |
 | `src/types.ts` | `Session.gitContext?` + `MeetingStats.repo?` | L1 — ✅ shipped |
 | `src/recorder.ts` (`promptTags`) | always write meta.md (was skipped when no tags / headless — L1 dependency + dashboard gap fix) | L1 — ✅ shipped |
@@ -345,7 +364,7 @@ No changes touch the `AudioCapture` recording path (mic/system capture) — all 
 | ✅ **S1-spike** — resolved 2026-07-24 | 30-min Swift spike: are per-speaker embeddings enumerable post-diarization for ~0 cost? | — | ✅ **Cheap path holds.** `manager.speakerManager.getAllSpeakers()` (public) + `Speaker.currentEmbedding` (256-d) read for ~0 cost; `DiarizeCommand.swift` emits `embeddings` field; `swift build -c release` clean. S1 stays in order — no reorder. |
 | ✅ **S1 — shipped** (this PR) | registry (backend-stamped, backend-scoped match) + finalize match/register + `meet rename` registry write + `meet speakers list/forget` + matches.log + tests | Med | ✅ **428/428 tests pass** (`tsc` clean); 3 new source files + 5 existing extended; registry round-trip test; rename-then-finalize auto-applies name; acceptance checks cover the diarize-JSON seam + backend-flip quarantine |
 | ✅ **L1** — shipped (this PR) | `git-context.ts` + `meet link` + `--repo` + meta.md/dashboard | Low | ✅ **453/453 tests pass** (`tsc` clean); 17 new `git-context.test.ts` cases; real `meet link <dir> .` against this repo → `- Repo: meet @ ab0440e (master)` inserts then idempotently replaces; pre-existing meta.md gap fixed (tag-less/headless meetings now get meta.md) |
-| **P2+P3** | Metal flags + `taskpolicy` QoS + doctor device/CoreML lines | Med | measure wall-time before/after on a sample WAV |
+| ✅ **P2+P3** — shipped (this PR) | Metal flags (`compute-device.ts` `--help` probe, fail-open) + `taskpolicy -c utility` QoS (`process-priority.ts`) at shared whisper spawn + parakeet/diarize + doctor device/CoreML lines | Med | ✅ **480/480 tests pass** (`tsc` clean); +2 modules/+2 test files (21 new tests); `meet doctor` renders `compute: Metal — Apple M2 Pro (--metal flag: not supported, auto-loaded)` + `process priority: taskpolicy -c utility`; QoS arg-forwarding verified (`taskpolicy -c utility whisper-cli -c` → whisper rejects `-c`, proving it wasn't swallowed). ⚠️ installed brew build has no `--metal` flag → probe fails open → transcription unchanged (Metal auto-loaded); P2's real effect is doctor visibility + future-proofing. ⚠️ P3 applied to live path too via shared `transcriber.ts:200` spawn — complementary to P1 (QoS yields CPU under contention, never stalls; capture keeps priority) |
 | **L2** | phrasebook `regex` mode + Bitrix URL rule + tests | Low | lint/build/test; sample mention → full URL |
 | **S2** | opt-in `diarizationAbPass` parallel pass + `diarization-ab-report.json` | Low | run on 2-3 real meetings, compare report, decide on flipping the default |
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Config, TranscriptEntry } from "./types.js";
 import { resolveAnalysisBin } from "./storage.js";
 import { makeWavHeader } from "./audio-metrics.js";
+import { applyQoS } from "./process-priority.js";
 
 const SAMPLE_RATE = 16000;
 const WAV_HEADER_SIZE = 44;
@@ -113,8 +114,11 @@ async function patchHeader(filePath: string, header: Buffer): Promise<void> {
 
 export async function runDiarizer(config: Config, wavPath: string): Promise<DiarizeResult> {
   const bin = resolveAnalysisBin(config);
+  // P3: batch diarize is CoreML-heavy; lower its QoS so a concurrent live
+  // recording's capture never starves. Fail-opens when taskpolicy is absent.
+  const { command, args } = await applyQoS(bin, ["diarize", "--input", wavPath], config);
   const stdout = await new Promise<string>((resolve, reject) => {
-    execFile(bin, ["diarize", "--input", wavPath], { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(command, args, { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         reject(new Error(`AudioAnalysis diarize failed: ${err.message}${stderr ? ` (${stderr.trim()})` : ""}`));
         return;

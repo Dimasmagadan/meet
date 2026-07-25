@@ -107,6 +107,14 @@ export interface Config {
   speakerRegistryEnabled: boolean;
   speakerMatchThreshold: number;
   speakerRegistryPath: string;
+  // P2: emit `--metal` on whisper-cli when the binary advertises it (probed via
+  // `--help`). Most brew builds auto-load Metal with no runtime flag, so the
+  // probe simply fails open and no flag is added — behavior unchanged.
+  whisperMetal: boolean;
+  // P3: spawn whisper-cli / AudioAnalysis under `taskpolicy -c utility` so the
+  // Swift audio capture (which keeps default priority) never starves during a
+  // live recording. Fail-opens to no wrapping when taskpolicy is unavailable.
+  lowerProcessPriority: boolean;
 }
 
 export interface TranscribeOptions {
@@ -214,4 +222,6 @@ export const DEFAULT_CONFIG: Config = {
   speakerRegistryEnabled: false,
   speakerMatchThreshold: 0.75,
   speakerRegistryPath: "~/.meet/speakers/registry.json",
+  whisperMetal: true,
+  lowerProcessPriority: true,
 };

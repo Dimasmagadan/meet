@@ -6,6 +6,8 @@ import { detectSpeech } from "./vad.js";
 import { getPhrasebook } from "./phrasebook.js";
 import { getVocabulary } from "./vocabulary.js";
 import { resolveWhisperBin, resolveModelPath } from "./storage.js";
+import { detectWhisperCompute } from "./compute-device.js";
+import { applyQoS } from "./process-priority.js";
 
 export interface TranscribeResult {
   chunkIndex: number;
@@ -76,6 +78,10 @@ export interface WhisperArgsOptions {
   format: "txt" | "json";
   pass: "live" | "final";
   noTimestamps?: boolean;
+  // P2: emit `--metal` — only set when config.whisperMetal is on AND the
+  // probed build advertises a metal flag. Most brew builds auto-load Metal
+  // with no runtime flag, so this stays false and no flag is added.
+  addMetalFlag?: boolean;
 }
 
 export function buildWhisperArgs(config: Config, opts: WhisperArgsOptions): string[] {
@@ -96,6 +102,9 @@ export function buildWhisperArgs(config: Config, opts: WhisperArgsOptions): stri
     "--prompt", config.prompt + getVocabulary(config).toPromptSuffix(config.prompt),
   ];
 
+  if (opts.addMetalFlag) {
+    args.push("--metal");
+  }
   if (opts.noTimestamps) {
     args.push("--no-timestamps");
   }
@@ -185,6 +194,12 @@ export async function transcribeChunk(
 
   const isFinal = options?.pass === "final";
 
+  const bin = resolveWhisperBin(config);
+  // P2: probe once (cached per binary) — only emit `--metal` when this build
+  // actually advertises it. The common brew build auto-loads Metal with no
+  // runtime flag, so metalFlagSupported is false and the flag is omitted.
+  const compute = await detectWhisperCompute(bin);
+
   const args = buildWhisperArgs(config, {
     modelPath,
     inputPath: transcribePath,
@@ -192,12 +207,20 @@ export async function transcribeChunk(
     format: "txt",
     pass: options?.pass ?? "live",
     noTimestamps: !isFinal,
+    addMetalFlag: config.whisperMetal && compute.metalFlagSupported,
   });
+
+  // P3: lower whisper-cli's QoS so the Swift audio capture (default priority)
+  // never starves during live recording. Applies to both live + final passes
+  // since they share this spawn site; fail-opens to no wrapping when
+  // taskpolicy is unavailable. Live path stays un-gated (P1) — QoS yields CPU
+  // under contention but never stalls production.
+  const { command, args: spawnArgs } = await applyQoS(bin, args, config);
 
   const timeout = isFinal ? 300_000 : 120_000;
 
   return new Promise((resolve, reject) => {
-    execFile(resolveWhisperBin(config), args, { timeout, maxBuffer: 1024 * 1024 }, async (err) => {
+    execFile(command, spawnArgs, { timeout, maxBuffer: 1024 * 1024 }, async (err) => {
       if (normalizedTmp) {
         await unlink(transcribePath).catch(() => {});
       }

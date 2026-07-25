@@ -5,13 +5,17 @@ import { chunkToTimestamp } from "./assembler.js";
 import { resolveAnalysisBin } from "./storage.js";
 import { getPhrasebook } from "./phrasebook.js";
 import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
+import { applyQoS } from "./process-priority.js";
 
 export async function transcribeWithParakeet(config: Config, wavPath: string): Promise<string> {
   const bin = resolveAnalysisBin(config);
+  // P3: diarize/parakeet CoreML passes are batch-only and must yield to any
+  // live recording's capture; wrap with taskpolicy -c utility (fail-open).
+  const { command, args } = await applyQoS(bin, ["transcribe", "--input", wavPath, "--language", config.language], config);
   const stdout = await new Promise<string>((resolve, reject) => {
     execFile(
-      bin,
-      ["transcribe", "--input", wavPath, "--language", config.language],
+      command,
+      args,
       { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout, stderr) => {
         if (err) {
