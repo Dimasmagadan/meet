@@ -14,7 +14,7 @@ import { spawn, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { nanoid } from "nanoid";
 import type { Session, Config } from "./types.js";
 import { analyzeWavFile } from "./audio-metrics.js";
@@ -213,9 +213,15 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   const header = makeHeader(title, startedAt.toISOString());
   await writeFile(outputFile, header, "utf-8");
 
-  // Local-only git context: --repo <path> overrides cwd. Fail-open silently —
-  // recording is never gated on this. Detached HEAD keeps headSha, drops branch.
-  const gitContext = detectGitContext(resolve(repoOverride ?? process.cwd()));
+  // Local-only git context: --repo <path> overrides cwd. Fail-open silently for
+  // the default cwd (recording is never gated), but warn when an explicit --repo
+  // doesn't resolve to a repo so typos aren't swallowed. Detached HEAD keeps
+  // headSha, drops branch.
+  const repoCwd = expandPath(repoOverride ?? process.cwd());
+  const gitContext = detectGitContext(repoCwd);
+  if (repoOverride && !gitContext) {
+    console.log(chalk.yellow(`--repo: not a git repository: ${repoOverride}`));
+  }
 
   const session: Session = {
     id,

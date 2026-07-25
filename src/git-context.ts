@@ -1,8 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { writeAtomic } from "./storage.js";
 
 // Local-only repo context captured at `meet start` and attachable post-hoc via

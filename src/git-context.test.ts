@@ -12,6 +12,8 @@ import {
   type GitRunner,
   type GitContext,
 } from "./git-context.js";
+import { writeMetaFile } from "./tags.js";
+import type { Session } from "./types.js";
 
 describe("detectGitContext", () => {
   it("returns repo context with branch", () => {
@@ -219,6 +221,101 @@ describe("linkRepoToMeeting", () => {
       await linkRepoToMeeting(dir, "/r", runner);
       const leftover = readdirSync(dir).filter((f) => f.endsWith(".tmp"));
       assert.deepEqual(leftover, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("parseRepoLine on a full multi-line meta.md", () => {
+  it("finds the Repo line among other metadata lines (m-flag behavior)", () => {
+    const meta = [
+      "# Standup — 25.07.2026 14:30",
+      "",
+      "- Date: 25.07.2026 14:30",
+      "- Mode: full",
+      "- Tags: work, planning",
+      "- Repo: meet @ abc1234 (master)",
+      "",
+      "Some notes here.",
+      "",
+    ].join("\n");
+    const parsed = parseRepoLine(meta);
+    assert.deepEqual(parsed, { repoName: "meet", headSha: "abc1234", branch: "master" });
+  });
+
+  it("finds a detached-HEAD line", () => {
+    const meta = "# T\n\n- Mode: full\n- Repo: monorepo @ deadbee (detached)\n";
+    const parsed = parseRepoLine(meta);
+    assert.deepEqual(parsed, { repoName: "monorepo", headSha: "deadbee", branch: null });
+  });
+
+  it("returns null when meta.md has no Repo line", () => {
+    const meta = "# T\n\n- Mode: full\n- Tags: a\n";
+    assert.equal(parseRepoLine(meta), null);
+  });
+});
+
+describe("writeMetaFile integration", () => {
+  function makeSession(meetingDir: string, gitContext?: GitContext | null): Session {
+    const outputFile = join(meetingDir, "transcript.md");
+    return {
+      id: "test",
+      title: "Test Meeting",
+      mode: "full",
+      startedAt: new Date("2026-07-25T14:30:00.000Z").toISOString(),
+      chunkDurationSeconds: 15,
+      sessionDir: meetingDir,
+      outputFile,
+      capturePid: null,
+      status: "recording",
+      processedChunks: [],
+      lastError: null,
+      autoStopReason: null,
+      latestProcessedOffsetSeconds: 0,
+      lastMeaningfulTextAtOffsetSeconds: null,
+      hasMeaningfulText: false,
+      tags: [],
+      gitContext: gitContext ?? null,
+    };
+  }
+
+  it("emits the Repo line when session.gitContext is set", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-meta-"));
+    try {
+      const ctx: GitContext = { repoPath: "/r", repoName: "meet", branch: "master", headSha: "abc1234" };
+      await writeMetaFile(makeSession(dir, ctx), []);
+      const raw = readFileSync(join(dir, "meta.md"), "utf-8");
+      assert.match(raw, /- Repo: meet @ abc1234 \(master\)/);
+      // round-trips through parseRepoLine
+      assert.deepEqual(parseRepoLine(raw), { repoName: "meet", headSha: "abc1234", branch: "master" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("always writes meta.md even with empty tags (promptTags always-write contract)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-meta-"));
+    try {
+      const ctx: GitContext = { repoPath: "/r", repoName: "meet", branch: "main", headSha: "abc1234" };
+      await writeMetaFile(makeSession(dir, ctx), []);
+      const raw = readFileSync(join(dir, "meta.md"), "utf-8");
+      // meta.md exists and contains the repo line — this is the path that was
+      // previously skipped when promptTags early-returned on empty tags.
+      assert.ok(raw.length > 0);
+      assert.match(raw, /- Repo: meet @ abc1234 \(main\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the Repo line when session.gitContext is null", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-meta-"));
+    try {
+      await writeMetaFile(makeSession(dir, null), ["work"]);
+      const raw = readFileSync(join(dir, "meta.md"), "utf-8");
+      assert.doesNotMatch(raw, /- Repo:/);
+      assert.match(raw, /- Tags: work/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -373,6 +373,7 @@ export class Recorder {
     try {
       await this.stopRecording();
       await this.summaryScheduler?.flush();
+      await this.promptTags();
       this.spawnBackgroundFinalizer();
       console.log(chalk.green(`Finalizer running in background (meet status to check)`));
     } catch (err) {
