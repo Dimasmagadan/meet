@@ -269,23 +269,31 @@ export class Recorder {
   }
 
   private async promptTags(): Promise<void> {
-    if (this.opts.headless || !process.stdin.isTTY) return;
-    try {
-      const tags = await runTagPicker(this.session, { note: "Final transcription running in background…" });
-      if (tags.length > 0) {
-        this.session.tags = tags;
-        await writeAtomic(
-          join(this.session.sessionDir, "session.json"),
-          JSON.stringify(this.session, null, 2),
-        );
-        await writeMetaFile(this.session, tags);
-        console.log(chalk.green(`Tags: ${tags.join(", ")}`));
-      } else {
-        console.log(chalk.gray("(no tags added)"));
+    let tags: string[] = [];
+    if (!this.opts.headless && process.stdin.isTTY) {
+      try {
+        tags = await runTagPicker(this.session, { note: "Final transcription running in background…" });
+      } catch {
+        process.stdout.write(chalk.gray("(tag picker skipped)\n"));
       }
-    } catch {
-      process.stdout.write(chalk.gray("(tag picker skipped)\n"));
     }
+
+    if (tags.length > 0) {
+      this.session.tags = tags;
+      await writeAtomic(
+        join(this.session.sessionDir, "session.json"),
+        JSON.stringify(this.session, null, 2),
+      );
+      console.log(chalk.green(`Tags: ${tags.join(", ")}`));
+    } else if (!this.opts.headless && process.stdin.isTTY) {
+      console.log(chalk.gray("(no tags added)"));
+    }
+
+    // Always persist meta.md so the dashboard sees this meeting and any
+    // captured git context (L1) lands as a "- Repo:" line. Previously this
+    // was skipped when no tags were picked or in headless mode, leaving
+    // tag-less meetings invisible to `meet dashboard`.
+    await writeMetaFile(this.session, tags);
   }
 
   private spawnBackgroundFinalizer(): void {

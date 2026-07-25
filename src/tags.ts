@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import chalk from "chalk";
 import { writeAtomic } from "./storage.js";
+import { formatRepoLine, type GitContext } from "./git-context.js";
 import type { Session } from "./types.js";
 
 const TAGS_FILE = resolve(import.meta.dirname, "..", "tags.md");
@@ -55,6 +56,10 @@ export async function writeMetaFile(session: Session, tags: string[], options?: 
     `- Mode: ${session.mode}`,
     `- Tags: ${tags.join(", ")}`,
   ];
+
+  if (session.gitContext) {
+    lines.push(formatRepoLine(session.gitContext as GitContext));
+  }
 
   if (options?.note) {
     lines.push("", options.note);

@@ -9,11 +9,12 @@ import { isActiveRecording, readActiveRecordingLock, acquireGlobalFinalPassLock,
 import { transcribeImport, type ImportOptions } from "./import.js";
 import { renameSpeaker } from "./speaker-rename.js";
 import { loadRegistry, saveRegistry, forgetSpeaker, matchesLogPath } from "./speaker-registry.js";
+import { detectGitContext, linkRepoToMeeting } from "./git-context.js";
 import { spawn, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import type { Session, Config } from "./types.js";
 import { analyzeWavFile } from "./audio-metrics.js";
@@ -40,9 +41,10 @@ export function createProgram(): Command {
     .option("--voice-processing", "Enable VoiceProcessing IO echo cancellation (default: off)")
     .option("--headless", "Run without terminal interaction (for menu bar app / automation)")
     .option("--no-summary", "Disable live extractive summary during recording")
-    .action(async (title: string, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean }) => {
+    .option("--repo <path>", "Attach git repo context from <path> (default: current working directory)")
+    .action(async (title: string, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string }) => {
       const mode = opts.mic ? "mic" as const : "full" as const;
-      await startSessionLoop(title, mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing, opts.headless, opts.summary);
+      await startSessionLoop(title, mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing, opts.headless, opts.summary, opts.repo);
     });
 
   program
@@ -89,6 +91,15 @@ export function createProgram(): Command {
     .argument("<newName>", "New display name")
     .action(async (meetingDir: string, speakerId: string, newName: string) => {
       await runRename(meetingDir, speakerId, newName);
+    });
+
+  program
+    .command("link")
+    .description("Attach or replace git repo context in a finalized meeting's meta.md")
+    .argument("<meetingDir>", "Meeting output directory path")
+    .argument("<repoPath>", "Path inside the git repo to attach (re-detects from here)")
+    .action(async (meetingDir: string, repoPath: string) => {
+      await runLink(meetingDir, repoPath);
     });
 
   const speakers = program.command("speakers").description("Manage the cross-session speaker registry");
@@ -142,11 +153,11 @@ export function createProgram(): Command {
   return program;
 }
 
-async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean) {
+async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string) {
   let title = initialTitle;
 
   while (true) {
-    const result = await startSession(title, mode, silenceTimeout, maxDurationMinutes, noTextTimeoutMinutes, voiceProcessing, headless, summary);
+    const result = await startSession(title, mode, silenceTimeout, maxDurationMinutes, noTextTimeoutMinutes, voiceProcessing, headless, summary, repoOverride);
     if (!result.startNextMeeting) {
       break;
     }
@@ -155,7 +166,7 @@ async function startSessionLoop(initialTitle: string, mode: "full" | "mic", sile
   }
 }
 
-async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean): Promise<{ startNextMeeting: boolean }> {
+async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string): Promise<{ startNextMeeting: boolean }> {
   const summaryEnabled = summary === false ? false : true;
   const config = loadConfig({ ...(summaryEnabled ? {} : { summaryEnabled: false }) });
 
@@ -202,6 +213,10 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   const header = makeHeader(title, startedAt.toISOString());
   await writeFile(outputFile, header, "utf-8");
 
+  // Local-only git context: --repo <path> overrides cwd. Fail-open silently —
+  // recording is never gated on this. Detached HEAD keeps headSha, drops branch.
+  const gitContext = detectGitContext(resolve(repoOverride ?? process.cwd()));
+
   const session: Session = {
     id,
     title,
@@ -219,9 +234,15 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     lastMeaningfulTextAtOffsetSeconds: null,
     hasMeaningfulText: false,
     tags: [],
+    gitContext,
   };
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
+
+  if (gitContext) {
+    const where = gitContext.branch ?? "detached";
+    console.log(chalk.gray(`Repo: ${gitContext.repoName} @ ${gitContext.headSha} (${where})`));
+  }
 
   console.log(
     chalk.gray("Press ") +
@@ -553,6 +574,19 @@ async function runRename(meetingDir: string, speakerId: string, newName: string)
     if (result.registryUpdated) {
       console.log(chalk.gray(`  cross-session registry updated: future meetings will auto-label this voice "${newName}"`));
     }
+  } catch (err) {
+    console.log(chalk.red(err instanceof Error ? err.message : String(err)));
+    process.exit(1);
+  }
+}
+
+async function runLink(meetingDir: string, repoPath: string) {
+  const dir = expandPath(meetingDir);
+  const repo = expandPath(repoPath);
+  try {
+    const result = await linkRepoToMeeting(dir, repo);
+    console.log(chalk.green(`${result.replaced ? "updated" : "linked"} repo in ${result.metaPath}`));
+    console.log(chalk.gray(`  ${result.repoLine}`));
   } catch (err) {
     console.log(chalk.red(err instanceof Error ? err.message : String(err)));
     process.exit(1);

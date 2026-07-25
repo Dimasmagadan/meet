@@ -9,7 +9,7 @@ macOS (Apple Silicon) CLI. Records mic + system audio, transcribes locally with 
 ```
 meet start "Title"
 ├── src/main.ts              — entry, dispatches CLI commands
-├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, status, rename
+├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, status, rename, link, speakers
 ├── src/recorder.ts          — session orchestration: spawns Swift capture, wires Pipeline, handles stdin hotkeys
 ├── src/types.ts             — shared types: Session, Chunk, Config, TranscriptEntry
 ├── src/pipeline.ts          — chokidar watches *.wav, sequential whisper queue, dedup, durable state
@@ -25,6 +25,7 @@ meet start "Title"
 ├── src/talk-time.ts         — per-speaker talk-time stats, renders the "## Talk Time" transcript footer
 ├── src/parakeet-pass.ts     — optional Parakeet-TDT A/B pass (AudioAnalysis transcribe) → transcript.parakeet.md, ab-report.json
 ├── src/speaker-rename.ts    — meet rename: patches a diarized "Speaker N" label to a real name across a finalized meeting's transcript*.md/index.md/speakers.json
+├── src/git-context.ts       — local-only git repo detect (`detectGitContext`) + `meet link` rewriter; captured at `meet start` (--repo/cwd), persisted as a `- Repo:` line in meta.md
 ├── src/vocabulary.ts        — hot-reloadable custom whisper vocabulary (./vocabulary.json), folded into --prompt for live and final passes
 ├── src/regex-utils.ts       — shared escapeRegex(), used by phrasebook.ts/attention.ts/speaker-rename.ts
 ├── src/tags.ts              — interactive tag picker with custom tag support
@@ -151,6 +152,7 @@ Finalization can run in background (detached process) or foreground.
 - Chunk naming: `mic-001.wav`, `sys-001.wav` (zero-padded 3 digits)
 - Speaker labels: mic → "Me"; system audio is diarized on the final pass into "Speaker 1", "Speaker 2", ... (falls back to "Others" when diarization is disabled/unavailable/below `diarizationMinOverlap`) — see `diarization.ts`
 - `meet rename <meetingDir> <speakerId> <newName>` renames a diarized label to a real name after finalization (session dir is already gone by then, so it patches the output dir directly) — see `speaker-rename.ts`
+- Git repo context: `meet start` captures it from `--repo <path>` (default: cwd) and persists a `- Repo: <name> @ <short sha> (<branch>)` line in `meta.md` + `session.json`. Fail-open silently when not in a repo. `meet link <meetingDir> <repoPath>` re-attaches/replaces it post-hoc. `meet dashboard` surfaces a `Repo` column. No network, pure local — see `git-context.ts`
 - Live attention alerts: sys-channel text checked against `triggers.json` in the project root; on match, macOS notification + terminal recap banner (see `specs/SPEC_ATTENTION_2026-07-17.md`)
 - Custom whisper vocabulary: hot-reloadable `vocabulary.json` folded into whisper's `--prompt` (see `vocabulary.ts`)
 - Transcription queue: sequential (one whisper-cli instance at a time)

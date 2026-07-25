@@ -4,8 +4,9 @@ import { join } from "node:path";
 import chalk from "chalk";
 import type { MeetingStats } from "./types.js";
 import { expandPath, loadConfig } from "./storage.js";
+import { parseRepoLine, type ParsedRepoLine } from "./git-context.js";
 
-function parseMetaFile(metaPath: string): { title: string; date: Date; mode: string; tags: string[] } | null {
+function parseMetaFile(metaPath: string): { title: string; date: Date; mode: string; tags: string[]; repo: ParsedRepoLine | null } | null {
   try {
     const raw = readFileSync(metaPath, "utf-8");
     const titleMatch = raw.match(/^# (.+)$/m);
@@ -18,12 +19,14 @@ function parseMetaFile(metaPath: string): { title: string; date: Date; mode: str
     const [, day, month, year, hour, minute] = dateMatch;
     const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
     const tags = tagsMatch?.[1]?.split(",").map(t => t.trim()).filter(Boolean) ?? [];
+    const repo = parseRepoLine(raw);
 
     return {
       title: titleMatch[1],
       date,
       mode: modeMatch?.[1] ?? "unknown",
       tags,
+      repo,
     };
   } catch {
     return null;
@@ -133,6 +136,7 @@ export function collectMeetings(): MeetingStats[] {
       date: meta.date,
       mode: meta.mode,
       tags: meta.tags,
+      repo: meta.repo,
       durationSeconds,
       wordCount,
       talkTime,
@@ -211,7 +215,8 @@ function generateHTML(meetings: MeetingStats[]): string {
     const timeStr = m.date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
     const tags = m.tags.map(t => `<span class="tag">${t}</span>`).join(" ");
     const speakers = m.talkTime ? String(m.talkTime.speakerCount || 1) : "—";
-    return `<tr><td>${dateStr} ${timeStr}</td><td>${m.title}</td><td>${dur}</td><td>${m.wordCount}</td><td>${speakers}</td><td>${tags}</td></tr>`;
+    const repo = m.repo ? `${m.repo.repoName}@${m.repo.headSha}` : "—";
+    return `<tr><td>${dateStr} ${timeStr}</td><td>${m.title}</td><td>${dur}</td><td>${m.wordCount}</td><td>${speakers}</td><td>${repo}</td><td>${tags}</td></tr>`;
   }).join("\n");
 
   const allTags = [...tagCounts.keys()].sort();
@@ -321,7 +326,7 @@ function generateHTML(meetings: MeetingStats[]): string {
 </div>
 <div class="chart-box">
   <table id="meetingsTable">
-    <thead><tr><th>Date</th><th>Title</th><th>Duration</th><th>Words</th><th>Speakers</th><th>Tags</th></tr></thead>
+    <thead><tr><th>Date</th><th>Title</th><th>Duration</th><th>Words</th><th>Speakers</th><th>Repo</th><th>Tags</th></tr></thead>
     <tbody>
     ${tableRows}
     </tbody>

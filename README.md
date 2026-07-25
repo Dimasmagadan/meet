@@ -76,6 +76,7 @@ meet list                       List past meetings
 meet finalize <sessionDir>      Finalize a stopped recording session
 meet status                     Show active recording/finalization jobs
 meet rename <dir> <id> <name>   Rename a diarized speaker label in a finalized meeting
+meet link <dir> <repoPath>      Attach/replace git repo context in a finalized meeting's meta.md
 ```
 
 ### `start` options
@@ -88,6 +89,7 @@ meet rename <dir> <id> <name>   Rename a diarized speaker label in a finalized m
 | `--no-text-timeout <min>` | Auto-stop after N processed minutes without transcript | 10 |
 | `--voice-processing` | Enable VoiceProcessing IO echo cancellation | off |
 | `--no-summary` | Disable live extractive summary draft during recording | off |
+| `--repo <path>` | Attach git repo context from `<path>` (persisted as a `- Repo:` line in `meta.md`) | cwd |
 
 ### Keyboard controls during recording
 

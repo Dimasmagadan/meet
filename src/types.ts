@@ -1,6 +1,7 @@
 import { DEFAULT_TRIGGERS_PATH } from "./triggers.js";
 import { DEFAULT_PHRASEBOOK_PATH } from "./phrasebook.js";
 import { DEFAULT_VOCABULARY_PATH } from "./vocabulary.js";
+import type { GitContext } from "./git-context.js";
 
 export type CaptureMode = "full" | "mic";
 
@@ -39,6 +40,7 @@ export interface Session {
   lastMeaningfulTextAtOffsetSeconds: number | null;
   hasMeaningfulText: boolean;
   tags?: string[];
+  gitContext?: GitContext | null; // captured at `meet start` (--repo or cwd); persisted into meta.md as a "- Repo:" line
   finalize?: FinalizeProgress;
 }
 
@@ -117,6 +119,7 @@ export interface MeetingStats {
   date: Date;
   mode: string;
   tags: string[];
+  repo?: { repoName: string; headSha: string; branch: string | null } | null;
   durationSeconds: number | null;
   wordCount: number;
   talkTime?: { me: number; others: number; speakerCount: number };

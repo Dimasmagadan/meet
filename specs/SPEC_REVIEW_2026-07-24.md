@@ -1,7 +1,7 @@
 # SDD Spec: Speaker Recognition, AI Perf, Codebase & Task Linking
 
 **Date:** 2026-07-24
-**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-Spike resolved 2026-07-24 (cheap path holds). **S1 shipped** (Node side, 428/428 tests pass). Next: **L1**.
+**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-Spike resolved 2026-07-24 (cheap path holds). **S1 shipped** (Node side, 428/428 tests pass). **L1 shipped** (453/453 tests pass; new `src/git-context.ts` + `meet link` + `--repo` + meta.md/dashboard surface). Next: **P2+P3**.
 **Owner:** Dmitrii Diakonov
 
 ---
@@ -322,9 +322,12 @@ Effect: `номер задачи 1234` and `номер задачи в битр�
 | `src/pipeline.ts` | **no change** — live path deliberately un-gated (self-throttling); P5 status warning only | P1/P5 |
 | `src/final-pass.ts` | `whenNotOverloaded()` guard + QoS | P1/P3 |
 | `src/parakeet-pass.ts` (`:11`,`:45`) | `whenNotOverloaded()` guard + QoS | P1/P3 |
-| `src/git-context.ts` | **new** — repo detect | L1 |
-| `src/cli.ts` | `meet link` command; `meet speakers list` / `meet speakers forget <globalId>`; `--repo` start flag; doctor registry/metal/CoreML lines | L1/P2/P4/S1 |
-| `src/tags.ts` (`writeMetaFile`) / `src/dashboard.ts` (`parseMetaFile`) | `- Repo:` line | L1 |
+| `src/git-context.ts` | **new** — repo detect | L1 — ✅ shipped |
+| `src/git-context.test.ts` | **new** — 17 cases (detect/format/parse/apply/link, atomic write, fail-open) | L1 — ✅ shipped |
+| `src/cli.ts` | `meet link` command; `meet speakers list` / `meet speakers forget <globalId>`; `--repo` start flag; doctor registry/metal/CoreML lines | L1 ✅ /P2/P4/S1 |
+| `src/tags.ts` (`writeMetaFile`) / `src/dashboard.ts` (`parseMetaFile`) | `- Repo:` line (write + parse); `MeetingStats.repo` + Repo table column | L1 — ✅ shipped |
+| `src/types.ts` | `Session.gitContext?` + `MeetingStats.repo?` | L1 — ✅ shipped |
+| `src/recorder.ts` (`promptTags`) | always write meta.md (was skipped when no tags / headless — L1 dependency + dashboard gap fix) | L1 — ✅ shipped |
 | `src/phrasebook.ts` (`:8`,`:54`) | `regex?: boolean` raw-regex + backref mode | L2 |
 | `src/phrasebook.test.ts` | regex-mode cases | L2 |
 | `phrasebook.json` | seed Bitrix URL rule | L2 |
@@ -341,7 +344,7 @@ No changes touch the `AudioCapture` recording path (mic/system capture) — all 
 | ✅ **P1+P4** — shipped `a25046e` | `whenNotOverloaded` gates on **batch passes only** (final/diarize/parakeet), per-pass wall-clock budget, + `pgrep AudioAnalysis` + tests | Low | ✅ `tsc --noEmit` clean, **397/397 tests pass**; acceptance checks (injected overloaded sensor) assert batch backs off AND live path is un-gated. ⚠️ design deviation: `overloaded` kept threshold-based (see P4 note) |
 | ✅ **S1-spike** — resolved 2026-07-24 | 30-min Swift spike: are per-speaker embeddings enumerable post-diarization for ~0 cost? | — | ✅ **Cheap path holds.** `manager.speakerManager.getAllSpeakers()` (public) + `Speaker.currentEmbedding` (256-d) read for ~0 cost; `DiarizeCommand.swift` emits `embeddings` field; `swift build -c release` clean. S1 stays in order — no reorder. |
 | ✅ **S1 — shipped** (this PR) | registry (backend-stamped, backend-scoped match) + finalize match/register + `meet rename` registry write + `meet speakers list/forget` + matches.log + tests | Med | ✅ **428/428 tests pass** (`tsc` clean); 3 new source files + 5 existing extended; registry round-trip test; rename-then-finalize auto-applies name; acceptance checks cover the diarize-JSON seam + backend-flip quarantine |
-| **L1** | `git-context.ts` + `meet link` + `--repo` + meta.md/dashboard | Low | lint/build/test; start from a repo, confirm sha/branch in meta.md |
+| ✅ **L1** — shipped (this PR) | `git-context.ts` + `meet link` + `--repo` + meta.md/dashboard | Low | ✅ **453/453 tests pass** (`tsc` clean); 17 new `git-context.test.ts` cases; real `meet link <dir> .` against this repo → `- Repo: meet @ ab0440e (master)` inserts then idempotently replaces; pre-existing meta.md gap fixed (tag-less/headless meetings now get meta.md) |
 | **P2+P3** | Metal flags + `taskpolicy` QoS + doctor device/CoreML lines | Med | measure wall-time before/after on a sample WAV |
 | **L2** | phrasebook `regex` mode + Bitrix URL rule + tests | Low | lint/build/test; sample mention → full URL |
 | **S2** | opt-in `diarizationAbPass` parallel pass + `diarization-ab-report.json` | Low | run on 2-3 real meetings, compare report, decide on flipping the default |
