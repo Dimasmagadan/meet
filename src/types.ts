@@ -83,6 +83,10 @@ export interface Config {
   vadTimeoutMs: number;
   diarizationEnabled: boolean;
   diarizationMinOverlap: number;
+  // S2: opt-in parallel offline-VBx diarization pass for A/B comparison
+  // against the primary online pipeline. Writes diarization-ab-report.json;
+  // never touches transcript.md.
+  diarizationAbPass: boolean;
   analysisBin: string;
   parakeetComparePass: boolean;
   attentionAlerts: boolean;
@@ -194,6 +198,7 @@ export const DEFAULT_CONFIG: Config = {
   vadTimeoutMs: 30_000,
   diarizationEnabled: true,
   diarizationMinOverlap: 0.3,
+  diarizationAbPass: false,
   analysisBin: "",
   parakeetComparePass: true,
   attentionAlerts: true,

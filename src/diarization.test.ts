@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { concatSysChunks, assignSpeakers, parseDiarizeOutput, buildSpeakerLabelMap, type DiarSegment, type ChunkOffset } from "./diarization.js";
+import { concatSysChunks, assignSpeakers, parseDiarizeOutput, buildSpeakerLabelMap, buildEmbeddingsByLabel, type DiarSegment, type ChunkOffset } from "./diarization.js";
 import { makeSineWav, makeSilentWav, readPcmSamples } from "./audio-metrics.js";
 import type { TranscriptEntry } from "./types.js";
 
@@ -201,5 +201,26 @@ describe("buildSpeakerLabelMap", () => {
     const map = buildSpeakerLabelMap(segments);
     assert.equal(map.get("2"), "Speaker 1");
     assert.equal(map.get("1"), "Speaker 2");
+  });
+});
+
+describe("buildEmbeddingsByLabel", () => {
+  it("keys embeddings by canonical Speaker N label", () => {
+    const segments: DiarSegment[] = [
+      { start: 0, end: 5, speaker: "2" },
+      { start: 5, end: 10, speaker: "1" },
+    ];
+    const embeddings = { "1": [0.1, 0.2], "2": [0.3, 0.4] };
+    const byLabel = buildEmbeddingsByLabel(segments, embeddings);
+    assert.deepEqual(byLabel.get("Speaker 1"), [0.3, 0.4]);
+    assert.deepEqual(byLabel.get("Speaker 2"), [0.1, 0.2]);
+  });
+
+  it("drops raw ids absent from segments (phantom identities) and empty vectors", () => {
+    const segments: DiarSegment[] = [{ start: 0, end: 5, speaker: "1" }];
+    const embeddings = { "1": [0.1], "3": [0.2], "4": [] };
+    const byLabel = buildEmbeddingsByLabel(segments, embeddings);
+    assert.equal(byLabel.size, 1);
+    assert.deepEqual(byLabel.get("Speaker 1"), [0.1]);
   });
 });

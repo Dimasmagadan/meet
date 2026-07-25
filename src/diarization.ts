@@ -112,9 +112,10 @@ async function patchHeader(filePath: string, header: Buffer): Promise<void> {
   }
 }
 
-export async function runDiarizer(config: Config, wavPath: string): Promise<DiarizeResult> {
+export async function runDiarizer(config: Config, wavPath: string, opts?: { offline?: boolean }): Promise<DiarizeResult> {
   const bin = resolveAnalysisBin(config);
-  const { command, args } = applyQoS(bin, ["diarize", "--input", wavPath], config);
+  const flags = opts?.offline ? ["--offline"] : [];
+  const { command, args } = applyQoS(bin, ["diarize", "--input", wavPath, ...flags], config);
   const stdout = await new Promise<string>((resolve, reject) => {
     execFile(command, args, { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
@@ -156,6 +157,23 @@ export function buildSpeakerLabelMap(segments: DiarSegment[]): Map<string, strin
     }
   }
   return map;
+}
+
+// Maps raw diarizer embeddings ("1" -> vector) to their renumbered canonical
+// "Speaker N" labels, dropping raw ids that never made it into a segment
+// (see the phantom-identity note in DiarizeCommand.swift) or carry an empty
+// vector. Shared by the registry match step (S1) and the A/B pass (S2).
+export function buildEmbeddingsByLabel(
+  segments: DiarSegment[],
+  embeddings: Record<string, number[]>,
+): Map<string, number[]> {
+  const rawToLabel = buildSpeakerLabelMap(segments);
+  const byLabel = new Map<string, number[]>();
+  for (const [rawId, emb] of Object.entries(embeddings)) {
+    const label = rawToLabel.get(rawId);
+    if (label && Array.isArray(emb) && emb.length > 0) byLabel.set(label, emb);
+  }
+  return byLabel;
 }
 
 // Replaces raw diarizer speaker IDs with their renumbered "Speaker N" labels.

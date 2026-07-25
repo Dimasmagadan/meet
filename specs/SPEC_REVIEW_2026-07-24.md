@@ -1,7 +1,7 @@
 # SDD Spec: Speaker Recognition, AI Perf, Codebase & Task Linking
 
 **Date:** 2026-07-24
-**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-Spike resolved 2026-07-24 (cheap path holds). **S1 shipped** (Node side, 428/428 tests pass). **L1 shipped** (453/453 tests pass; new `src/git-context.ts` + `meet link` + `--repo` + meta.md/dashboard surface). **P2+P3 shipped** (473/473 tests pass; new `src/compute-device.ts` + `src/process-priority.ts`; P2 rescoped to doctor device-visibility only — whisper.cpp has no `--metal` flag, see note; `taskpolicy -c utility` QoS at the shared whisper + parakeet/diarize spawns). Next: **L2 → S2**.
+**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-Spike resolved 2026-07-24 (cheap path holds). **S1 shipped** (Node side, 428/428 tests pass). **L1 shipped** (453/453 tests pass; new `src/git-context.ts` + `meet link` + `--repo` + meta.md/dashboard surface). **P2+P3 shipped** (473/473 tests pass; new `src/compute-device.ts` + `src/process-priority.ts`; P2 rescoped to doctor device-visibility only — whisper.cpp has no `--metal` flag, see note; `taskpolicy -c utility` QoS at the shared whisper + parakeet/diarize spawns). **L2 shipped** (commits `81e0b1e` + `be5aee0`, 2026-07-24 — raw-regex phrasebook mode + seeded Bitrix URL rule). **S2 shipped** (this PR, 499/499 tests pass; `DiarizeCommand.swift --offline` flag + new `src/diarization-ab.ts`). All six workstream steps are now shipped.
 **Owner:** Dmitrii Diakonov
 
 ---
@@ -160,6 +160,12 @@ Embeddings only (no raw audio), local disk only, opt-in. Documented in README + 
 
 ### S2. Diarizer A/B (opt-in, measured, decide later)
 
+> ✅ **Shipped** (this PR, 499/499 tests pass, `tsc` clean). Implemented as an `--offline` flag on the existing `diarize` subcommand rather than a new one: `DiarizeCommand.swift` branches between `DiarizerManager` (online, unchanged default) and `OfflineDiarizerManager` (VBx clustering) but emits the same JSON shape from both — `DiarizationResult.speakerDatabase` (a field already on the shared struct, previously only populated by offline pipelines) is now also populated for the online path from `speakerManager.getAllSpeakers()`, so the Node-side JSON contract (`segments`/`embeddings`) needed zero changes. `swift build -c release` clean; confirms the spec's disk claim — `OfflineDiarizerManager.process()` lazily loads via `prepareModels()` from the same on-disk `speaker-diarization` cache DiarizerModels already populated (`plda-parameters.json`/`xvector-transform.json` were already present, confirming ~0 disk delta).
+>
+> New `src/diarization-ab.ts`: `runDiarizationAbPass()` re-diarizes the still-on-disk `sys-concat.wav` with `--offline` while the primary result is in hand (called from inside `runDiarizationStep`'s try block in `finalize.ts`, before the existing `finally` cleanup deletes the wav — no second concat needed). `buildDiarizationAbReport()` is a pure, unit-tested comparison: since the two pipelines produce independent "Speaker N" numberings, labels are aligned by summed time-overlap via greedy max-weight matching (not by label string) before computing the four report fields the spec asked for (speaker counts, agreement %, swaps, talk-time diff) plus embedding cosine per matched pair (reusing S1's `cosineSimilarity`). Wrapped in try/catch fail-open in a new `runDiarizationAbStep()` helper in `finalize.ts`; writes `diarization-ab-report.json`, never touches `transcript.md`. Shares P1's `whenNotOverloaded`/`gateBudgetMs` gate rather than a new knob (S2 is additive/opt-in, not worth its own budget).
+>
+> ⚠️ **Scope note:** no new CLI flag or `meet doctor` line — config-only (`diarizationAbPass`, default `false`), matching the existing `parakeetComparePass` precedent (also config-only, no CLI surface).
+
 #### Problem
 FluidAudio's own docs mark the legacy `DiarizerManager` as the *worst* option ("most computationally heavy online diarizer; performs poorly"). `OfflineDiarizerManager` (VBx) is "the best offline-quality option" for batch, is batch-optimized for finalize-only use, and exposes per-speaker embeddings directly via `speakerDatabase`. The VBx models (`pyannote_segmentation` + `wespeaker_v2` + `plda-parameters` + `xvector-transform`) are **already on disk** — the switch is a clustering-algorithm change, not a download.
 
@@ -286,6 +292,8 @@ Post-hoc attach/replace repo context in an existing meeting (mirrors the `meet r
 
 ### L2. Phrasebook regex mode → Bitrix task-number → full URL
 
+> ✅ **Shipped** (commits `81e0b1e`, `be5aee0`, 2026-07-24). `phrasebook.ts` gained `regex?: boolean` on `PhrasebookRuleInput`; raw-regex rules skip `escapeRegex`/`wordBoundary` and support `$1`-`$9` backrefs natively via `String.prototype.replace`. Review round added: an empty-match guard (a rule whose pattern can match `""` — e.g. `a*` or `foo|` — is skipped, since it would otherwise mangle every chunk) and the `RAW_REGEX_SANITY_CAP` (500 chars) is now an honestly-named export rather than an implied ReDoS timeout. `phrasebook.json` seeded with the Bitrix rule exactly as specified below.
+
 #### Problem
 `phrasebook.ts:61` escapes every `from` with `escapeRegex`, so regex patterns and capture-group backrefs are impossible. The desired transform — `номер задачи 1234` → `номер задачи https://sam.optimacros.com/workgroups/group/64/tasks/task/view/1234/` — needs a capturing regex.
 
@@ -327,7 +335,7 @@ Effect: `номер задачи 1234` and `номер задачи в битр�
 | `src/speaker-registry.test.ts` | **new** | S1 |
 | `src/diarization.ts` | parse `embeddings` from diarize output; thread through | S1 |
 | `src/finalize.ts` (`:175-234`) | registry match/register; persist `globalSpeakerId`/`matchedName` | S1 |
-| `src/finalize.ts` (`:454`) | optional `diarizationAbPass` parallel block → `diarization-ab-report.json` | S2 |
+| `src/finalize.ts` (`runDiarizationStep`/`runDiarizationAbStep`) | optional `diarizationAbPass` parallel block → `diarization-ab-report.json` | S2 — ✅ shipped |
 | `src/speaker-rename.ts` | `meet rename` also writes name into matched registry entry | S1 |
 | `src/types.ts` | `speakerRegistryEnabled`, `speakerMatchThreshold`, `speakerRegistryPath`, `diarizationAbPass`, `gateHeavyPasses`, `gateBudgetMs`, `liveQueueLagWarnChunks`, `lowerProcessPriority`, git context persistence | S1/S2/P1/P3/P5/L1 |
 | `src/system-monitor.ts` | `whenNotOverloaded()`; `pgrep AudioAnalysis` | P1/P4 |
@@ -348,9 +356,13 @@ Effect: `номер задачи 1234` and `номер задачи в битр�
 | `src/tags.ts` (`writeMetaFile`) / `src/dashboard.ts` (`parseMetaFile`) | `- Repo:` line (write + parse); `MeetingStats.repo` + Repo table column | L1 — ✅ shipped |
 | `src/types.ts` | `Session.gitContext?` + `MeetingStats.repo?` | L1 — ✅ shipped |
 | `src/recorder.ts` (`promptTags`) | always write meta.md (was skipped when no tags / headless — L1 dependency + dashboard gap fix) | L1 — ✅ shipped |
-| `src/phrasebook.ts` (`:8`,`:54`) | `regex?: boolean` raw-regex + backref mode | L2 |
-| `src/phrasebook.test.ts` | regex-mode cases | L2 |
-| `phrasebook.json` | seed Bitrix URL rule | L2 |
+| `src/phrasebook.ts` (`:8`,`:54`) | `regex?: boolean` raw-regex + backref mode | L2 — ✅ shipped |
+| `src/phrasebook.test.ts` | regex-mode cases | L2 — ✅ shipped |
+| `phrasebook.json` | seed Bitrix URL rule | L2 — ✅ shipped |
+| `native/AudioCapture/Sources/AudioAnalysis/DiarizeCommand.swift` | `--offline` flag → `OfflineDiarizerManager` (VBx), same JSON shape as the online path | S2 — ✅ shipped |
+| `src/diarization.ts` (`runDiarizer`) | `{ offline?: boolean }` option → `--offline` arg; new `buildEmbeddingsByLabel()` shared helper | S2 — ✅ shipped |
+| `src/diarization-ab.ts` | **new** — `runDiarizationAbPass`/`buildDiarizationAbReport` (greedy overlap label matching, agreement/swaps/talk-time-diff/embedding-cosine) | S2 — ✅ shipped |
+| `src/diarization-ab.test.ts` | **new** — 8 cases (perfect agreement, swapped numbering, speaker-count mismatch, local swap, talk-time diff, cosine, empty input) | S2 — ✅ shipped |
 | `README.md` / `AGENTS.md` | document new features | all |
 
 No changes touch the `AudioCapture` recording path (mic/system capture) — all three workstreams operate on finalize-time data, transcript text, or process scheduling. S1 is the only Swift change, and it is additive (one extra JSON field).
@@ -366,7 +378,7 @@ No changes touch the `AudioCapture` recording path (mic/system capture) — all 
 | ✅ **S1 — shipped** (this PR) | registry (backend-stamped, backend-scoped match) + finalize match/register + `meet rename` registry write + `meet speakers list/forget` + matches.log + tests | Med | ✅ **428/428 tests pass** (`tsc` clean); 3 new source files + 5 existing extended; registry round-trip test; rename-then-finalize auto-applies name; acceptance checks cover the diarize-JSON seam + backend-flip quarantine |
 | ✅ **L1** — shipped (this PR) | `git-context.ts` + `meet link` + `--repo` + meta.md/dashboard | Low | ✅ **453/453 tests pass** (`tsc` clean); 17 new `git-context.test.ts` cases; real `meet link <dir> .` against this repo → `- Repo: meet @ ab0440e (master)` inserts then idempotently replaces; pre-existing meta.md gap fixed (tag-less/headless meetings now get meta.md) |
 | ✅ **P2+P3** — shipped (this PR, rescoped in review) | P2 = doctor device-visibility (`compute-device.ts` parses `whisper-cli --help` stderr; **no `--metal` flag** — whisper.cpp uses negative `-ng`/`--no-gpu` + `-dev N` only, so the proposed flag-emission was dead code and removed). P3 = `taskpolicy -c utility` QoS (`process-priority.ts`, sync `applyQoS`) at shared whisper spawn + parakeet/diarize + doctor priority line | Med | ✅ **473/473 tests pass** (`tsc` clean); +2 modules/+2 test files; `meet doctor` renders `compute: Metal — Apple M2 Pro` + `process priority: taskpolicy -c utility`; QoS arg-forwarding verified. 🔴 review caught: `-ngl`-alias detection would have emitted `--metal` and failed every chunk (fail-open → fail-closed) — removed. Review also dropped: `metalFlagSupported`/`addMetalFlag`/`whisperMetal` config/transcriber+import call sites/4 tests (dead code); `applyQoS` reverted from `async`→sync; nested try/catch flattened. ⚠️ P3 applies to live path too via shared `transcriber.ts:200` spawn — complementary to P1 (QoS yields CPU under contention, never stalls; capture keeps priority) |
-| **L2** | phrasebook `regex` mode + Bitrix URL rule + tests | Low | lint/build/test; sample mention → full URL |
-| **S2** | opt-in `diarizationAbPass` parallel pass + `diarization-ab-report.json` | Low | run on 2-3 real meetings, compare report, decide on flipping the default |
+| ✅ **L2** — shipped (commits `81e0b1e`, `be5aee0`) | phrasebook `regex` mode + Bitrix URL rule + tests | Low | ✅ lint/build/test clean; empty-match ReDoS guard added in review; sample mention → full URL (`src/phrasebook.test.ts`) |
+| ✅ **S2** — shipped (this PR) | opt-in `diarizationAbPass` parallel pass + `diarization-ab-report.json` | Low | ✅ **499/499 tests pass** (`tsc` clean); `swift build -c release` clean; 10 new tests (`diarization-ab.test.ts` + 2 in `diarization.test.ts`) pin the pure comparison logic. Real-meeting A/B comparison (run on 2-3 real meetings, decide on flipping the default) is manual follow-up, not part of this PR |
 
 Front-loads the no-risk wins (P1+P4, then S1, then L1), gives a real measured A/B for the diarizer (S2, your explicit concern), and keeps Bitrix as the tiny text transform you described (L2). Each PR is independently mergeable.

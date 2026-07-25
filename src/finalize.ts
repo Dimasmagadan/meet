@@ -10,7 +10,8 @@ import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcript
 import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock, readGlobalFinalPassLock } from "./locks.js";
 import { analyzeWavFile } from "./audio-metrics.js";
 import { readEntryRecords } from "./entries-store.js";
-import { concatSysChunks, runDiarizer, assignSpeakers, relabelSegments, cleanupSysConcat, buildSpeakerLabelMap, type DiarSegment } from "./diarization.js";
+import { concatSysChunks, runDiarizer, assignSpeakers, relabelSegments, cleanupSysConcat, buildSpeakerLabelMap, buildEmbeddingsByLabel, type DiarSegment } from "./diarization.js";
+import { runDiarizationAbPass } from "./diarization-ab.js";
 import { computeTalkTime } from "./talk-time.js";
 import type { TalkTimeStats } from "./talk-time.js";
 
@@ -263,6 +264,10 @@ export async function runDiarizationStep(
         .filter((e) => e.source === "sys")
         .map((e) => ({ chunkIndex: e.chunkIndex, speaker: e.speaker ?? null }));
 
+      if (config.diarizationAbPass) {
+        await runDiarizationAbStep(session, config, wavPath, segments, rawSegments, rawEmbeddings, warn, log, sensor);
+      }
+
       return { entries: diarizedEntries, segments, speakersRecord, labelOverrides };
     } finally {
       await cleanupSysConcat(session.sessionDir);
@@ -338,6 +343,34 @@ async function applySpeakerRegistry(
     const message = err instanceof Error ? err.message : String(err);
     warn(`Speaker registry update failed: ${message}`);
     return new Map();
+  }
+}
+
+// Re-diarizes sys-concat.wav with the offline VBx pipeline for a measured A/B
+// against the primary online result, writing diarization-ab-report.json (S2).
+// Runs while sys-concat.wav is still on disk (caller cleans it up right after
+// this returns). Fails open: any error just skips the report — the primary
+// diarization already landed in speakersRecord and is unaffected.
+async function runDiarizationAbStep(
+  session: Session,
+  config: Config,
+  wavPath: string,
+  primarySegments: DiarSegment[],
+  rawPrimarySegments: DiarSegment[],
+  rawPrimaryEmbeddings: Record<string, number[]>,
+  warn: (msg: string) => void,
+  log: (msg: string) => void,
+  sensor?: PressureSensor,
+): Promise<void> {
+  try {
+    log("Diarization A/B pass...");
+    const primaryEmbeddingsByLabel = buildEmbeddingsByLabel(rawPrimarySegments, rawPrimaryEmbeddings);
+    const report = await runDiarizationAbPass(config, wavPath, primarySegments, primaryEmbeddingsByLabel, sensor);
+    const outputDir = dirname(session.outputFile);
+    await writeAtomic(join(outputDir, "diarization-ab-report.json"), JSON.stringify(report, null, 2)).catch(() => {});
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    warn(`Diarization A/B pass failed: ${message}, primary diarization unaffected`);
   }
 }
 

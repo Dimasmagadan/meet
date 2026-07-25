@@ -181,6 +181,10 @@ This patches every `transcript*.md` (body + Talk Time footer) and `index.md` in 
 
 When `AudioAnalysis` is built and `parakeetComparePass: true` (default), finalize also re-transcribes the same audio with Parakeet-TDT, writing `transcript.parakeet.md` and `ab-report.json` next to `transcript.md` for manual quality comparison. Reuses the same diarized speaker labels; has no Talk Time footer.
 
+### Diarizer A/B pass
+
+With `diarizationAbPass: true` (default `false`, opt-in), finalize re-diarizes `sys-concat.wav` with FluidAudio's offline VBx pipeline (`OfflineDiarizerManager`) alongside the primary online pipeline, and writes `diarization-ab-report.json` next to `transcript.md`: speaker counts for both pipelines, a label mapping (aligned by time overlap, not by name), an overlap-weighted agreement %, a swap count for local disagreements, per-speaker talk-time deltas, and embedding cosine similarity per matched speaker. It never modifies `transcript.md` — compare the two pipelines manually across a few real meetings before deciding whether to prefer the offline pipeline.
+
 ### Transcript format (file import)
 
 ```markdown
@@ -210,6 +214,7 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `vocabularyReload` | `true` | Hot-reload the vocabulary file on change |
 | `diarizationEnabled` | `true` | Speaker diarization on the final pass |
 | `diarizationMinOverlap` | `0.3` | Below this chunk-overlap ratio, a sys entry stays "Others" |
+| `diarizationAbPass` | `false` | Run an opt-in offline-VBx diarizer A/B pass after the primary diarization, writing `diarization-ab-report.json` |
 | `analysisBin` | resolved like `captureBin` | Path to the `AudioAnalysis` binary |
 | `parakeetComparePass` | `true` | Run the Parakeet A/B pass after finalize |
 | `opencodeIndexPass` | `false` | Generate `index.md` (Summary/Decisions/Action Items) after `meet start` recordings finalize |

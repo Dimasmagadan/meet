@@ -11,6 +11,9 @@ struct DiarizeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Minimum active frames for valid speech detection")
     var minActiveFrames: Float = 10.0
 
+    @Flag(name: .long, help: "Use the offline VBx pipeline (batch-optimized) instead of the online pipeline (S2 A/B)")
+    var offline: Bool = false
+
     func run() async throws {
         let startedAt = Date()
 
@@ -21,19 +24,9 @@ struct DiarizeCommand: AsyncParsableCommand {
             JSONOutput.fail("failed to read input WAV: \(error)")
         }
 
-        let config = DiarizerConfig(minActiveFramesCount: minActiveFrames)
-        let manager = DiarizerManager(config: config)
-
-        do {
-            let models = try await DiarizerModels.downloadIfNeeded()
-            manager.initialize(models: models)
-        } catch {
-            JSONOutput.fail("failed to load diarizer models: \(error)")
-        }
-
         let result: DiarizationResult
         do {
-            result = try manager.performCompleteDiarization(samples, sampleRate: 16000)
+            result = offline ? try await runOffline(samples: samples) : try await runOnline(samples: samples)
         } catch {
             JSONOutput.fail("diarization failed: \(error)")
         }
@@ -49,18 +42,18 @@ struct DiarizeCommand: AsyncParsableCommand {
             ]
         }
 
-        // Surface the diarizer's already-computed per-speaker embeddings (256-d,
-        // L2-normalized WeSpeaker) for cross-session speaker recognition. Keyed by
-        // the same raw speaker id that appears in each segment's `speaker` field.
-        // No extra inference: read from the manager's populated speaker database.
-        // Filter to segment-derived ids: assignSpeaker registers a DB entry on total
-        // speech duration, but createSegmentIfValid drops each run below
-        // minSpeechDuration — so fragmented backchannel can sit in the DB with zero
-        // segments. Keeping them would seed phantom identities into the registry.
-        let embeddingsJSON = manager.speakerManager.getAllSpeakers()
+        // Both pipelines return DiarizationResult; `speakerDatabase` is where each
+        // one's per-speaker embeddings (256-d) land — populated below for the
+        // online path (from speakerManager) and natively by OfflineDiarizerManager
+        // for the offline path. Filtered to segment-derived ids: assignSpeaker
+        // registers a DB entry on total speech duration, but createSegmentIfValid
+        // drops each run below minSpeechDuration — so fragmented backchannel can
+        // sit in the DB with zero segments. Keeping them would seed phantom
+        // identities into the registry.
+        let embeddingsJSON = (result.speakerDatabase ?? [:])
             .filter { speakerIds.contains($0.key) }
             .reduce(into: [String: [Double]]()) { acc, entry in
-                acc[entry.key] = entry.value.currentEmbedding.map { Double($0) }
+                acc[entry.key] = entry.value.map { Double($0) }
             }
 
         JSONOutput.emit([
@@ -69,5 +62,24 @@ struct DiarizeCommand: AsyncParsableCommand {
             "durationMs": durationMs,
             "embeddings": embeddingsJSON,
         ])
+    }
+
+    private func runOnline(samples: [Float]) async throws -> DiarizationResult {
+        let config = DiarizerConfig(minActiveFramesCount: minActiveFrames)
+        let manager = DiarizerManager(config: config)
+        let models = try await DiarizerModels.downloadIfNeeded()
+        manager.initialize(models: models)
+        let result = try manager.performCompleteDiarization(samples, sampleRate: 16000)
+        let embeddings = manager.speakerManager.getAllSpeakers()
+            .reduce(into: [String: [Float]]()) { acc, entry in acc[entry.key] = entry.value.currentEmbedding }
+        return DiarizationResult(segments: result.segments, speakerDatabase: embeddings)
+    }
+
+    // OfflineDiarizerManager (VBx clustering, community-1 models) — S2 A/B pass.
+    // Same 13 MB model repo as the online pipeline (already on disk); `.process`
+    // lazily loads/downloads via `prepareModels()` if not yet initialized.
+    private func runOffline(samples: [Float]) async throws -> DiarizationResult {
+        let manager = OfflineDiarizerManager()
+        return try await manager.process(audio: samples)
     }
 }

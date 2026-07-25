@@ -94,6 +94,11 @@ meet start "Title"
 - `runDiarizer()` — spawns `AudioAnalysis diarize`, parses JSON segments
 - `assignSpeakers()` — majority time-overlap assignment of segments to sys entries; renumbers to "Speaker 1", "Speaker 2", ...
 
+**src/diarization-ab.ts** — Opt-in offline-VBx diarizer A/B pass (S2, `diarizationAbPass`, default `false`)
+- `runDiarizationAbPass()` — re-diarizes `sys-concat.wav` via `AudioAnalysis diarize --offline` (FluidAudio `OfflineDiarizerManager`, VBx clustering) while the primary online result is already in hand
+- `buildDiarizationAbReport()` — pure comparison: aligns the two pipelines' independent "Speaker N" numberings by time overlap (greedy max-weight matching), then reports speaker counts, overlap-weighted agreement %, local-disagreement ("swap") count, per-speaker talk-time deltas, and embedding cosine similarity per matched speaker
+- Writes `diarization-ab-report.json` next to `transcript.md`; never modifies the transcript. Fails open (warns, doesn't block finalize)
+
 **src/talk-time.ts** — Per-speaker talk-time stats (F2)
 - `computeTalkTime()` — Me from mic chunk-counting, Speaker N from diarization segment durations (or Others by sys chunk-counting when diarization is unavailable)
 - `formatTalkTimeSection()` — renders the `## Talk Time` transcript footer
@@ -159,7 +164,7 @@ meet start "Title"
 **native/AudioCapture/Sources/AudioAnalysis/** — Swift CLI (speaker diarization + Parakeet ASR, FluidAudio)
 - Second executable target in the same SPM package; separate from `AudioCapture` so the capture binary's size/permissions stay untouched
 - `main.swift` — ArgumentParser root with `diarize`, `transcribe`, `models` subcommands
-- `DiarizeCommand.swift` — `DiarizerModels`/`DiarizerManager` → JSON segments on stdout
+- `DiarizeCommand.swift` — `DiarizerModels`/`DiarizerManager` → JSON segments on stdout; `--offline` flag switches to `OfflineDiarizerManager` (VBx clustering, same on-disk model repo) for the S2 A/B pass — same JSON shape (`speakerDatabase` on `DiarizationResult` is the shared embeddings source for both paths)
 - `TranscribeCommand.swift` — `UnifiedAsrManager` (Parakeet-TDT-0.6B) → JSON `{text, durationMs}`
 - `ModelsCommand.swift` — `--ensure` downloads/verifies both model sets for `meet setup`
 - `WavIO.swift` — reads our own 16kHz mono 16-bit PCM WAVs into Float32 samples
@@ -286,6 +291,7 @@ Key settings:
 - `silenceGate` — skip silent chunks (default: `true`)
 - `diarizationEnabled` — speaker diarization on the final pass (default: `true`)
 - `diarizationMinOverlap` — below this chunk-overlap ratio a sys entry stays "Others" (default: `0.3`)
+- `diarizationAbPass` — opt-in offline-VBx diarizer A/B pass, writes `diarization-ab-report.json` (default: `false`)
 - `analysisBin` — path to the `AudioAnalysis` binary (default: resolved like `captureBin`)
 - `parakeetComparePass` — run the Parakeet A/B pass after finalize (default: `true`)
 - `attentionAlerts` — master switch for live trigger-word alerts (default: `true`)
