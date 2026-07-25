@@ -420,6 +420,7 @@ async function runDoctor(mode: "mic" | "full") {
     console.log(chalk.green(`compute: Metal${dev}`));
   } else if (compute.backendLines.length > 0) {
     console.log(chalk.yellow("compute: CPU (no Metal backend loaded)"));
+    for (const l of compute.backendLines) console.log(chalk.gray(`  ${l.trim()}`));
   } else {
     console.log(chalk.yellow("compute: unknown (whisper-cli --help unavailable)"));
   }

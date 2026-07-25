@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseChunkFilename, cleanText } from "./transcriber.js";
+import { writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { parseChunkFilename, cleanText, buildWhisperArgs } from "./transcriber.js";
+import { DEFAULT_CONFIG } from "./types.js";
 
 describe("parseChunkFilename", () => {
   it("parses mic-001.wav", () => {
@@ -114,5 +118,112 @@ describe("cleanText", () => {
 
   it("returns empty for whitespace only", () => {
     assert.strictEqual(cleanText("   "), "");
+  });
+});
+
+describe("buildWhisperArgs", () => {
+  // Point vocab at a non-existent path so the prompt suffix is deterministic
+  // (the repo-root vocabulary.json is empty today, but these tests must not
+  // depend on that).
+  const baseConfig = { ...DEFAULT_CONFIG, vocabularyPath: "/nonexistent-vocab-test.json" };
+
+  it("builds the live invocation (txt, noTimestamps, live thresholds)", () => {
+    const args = buildWhisperArgs(baseConfig, {
+      modelPath: "/m/small.bin",
+      inputPath: "/s/mic-001.wav",
+      outputBase: "/s/out",
+      format: "txt",
+      pass: "live",
+      noTimestamps: true,
+    });
+    assert.deepStrictEqual(args, [
+      "-m", "/m/small.bin",
+      "-l", "ru",
+      "-f", "/s/mic-001.wav",
+      "-otxt",
+      "-of", "/s/out",
+      "--suppress-nst",
+      "-sow",
+      "--max-len", "300",
+      "--entropy-thold", "2.4",
+      "--logprob-thold", "-1",
+      "--no-speech-thold", "0.6",
+      "--no-prints",
+      "--prompt", DEFAULT_CONFIG.prompt,
+      "--no-timestamps",
+    ]);
+  });
+
+  it("builds the final invocation (json, final thresholds, beam-search)", () => {
+    const args = buildWhisperArgs(baseConfig, {
+      modelPath: "/m/medium.bin",
+      inputPath: "/s/sys-001.wav",
+      outputBase: "/s/out",
+      format: "json",
+      pass: "final",
+    });
+    assert.deepStrictEqual(args, [
+      "-m", "/m/medium.bin",
+      "-l", "ru",
+      "-f", "/s/sys-001.wav",
+      "-oj",
+      "-of", "/s/out",
+      "--suppress-nst",
+      "-sow",
+      "--max-len", "300",
+      "--entropy-thold", "1.5",
+      "--logprob-thold", "-1.5",
+      "--no-speech-thold", "0.7",
+      "--no-prints",
+      "--prompt", DEFAULT_CONFIG.prompt,
+      "--beam-size", "5",
+      "--best-of", "3",
+    ]);
+  });
+
+  it("omits --no-timestamps when not requested", () => {
+    const args = buildWhisperArgs(baseConfig, {
+      modelPath: "/m/small.bin",
+      inputPath: "/s/mic-001.wav",
+      outputBase: "/s/out",
+      format: "txt",
+      pass: "live",
+    });
+    assert.ok(!args.includes("--no-timestamps"));
+  });
+
+  it("omits beam-search flags when finalBeamSize/finalBestOf are 0", () => {
+    const cfg = { ...baseConfig, finalBeamSize: 0, finalBestOf: 0 };
+    const args = buildWhisperArgs(cfg, {
+      modelPath: "/m/medium.bin",
+      inputPath: "/s/sys-001.wav",
+      outputBase: "/s/out",
+      format: "json",
+      pass: "final",
+    });
+    assert.ok(!args.includes("--beam-size"));
+    assert.ok(!args.includes("--best-of"));
+  });
+
+  it("appends the vocabulary suffix to --prompt when terms exist", () => {
+    const vocabPath = resolve(tmpdir(), `meet-vocab-${process.pid}-${Date.now()}.json`);
+    writeFileSync(vocabPath, JSON.stringify({ terms: ["alpha", "beta"] }));
+    try {
+      // Unique path bypasses the module-level vocab cache (keyed by path).
+      const cfg = { ...baseConfig, vocabularyPath: vocabPath };
+      const args = buildWhisperArgs(cfg, {
+        modelPath: "/m/small.bin",
+        inputPath: "/s/mic-001.wav",
+        outputBase: "/s/out",
+        format: "txt",
+        pass: "live",
+        noTimestamps: true,
+      });
+      const prompt = args[args.indexOf("--prompt") + 1];
+      assert.ok(prompt.startsWith(DEFAULT_CONFIG.prompt), `got: ${prompt}`);
+      assert.ok(prompt.includes(". Термины: alpha, beta"), `got: ${prompt}`);
+    } finally {
+      rmSync(vocabPath, { force: true });
+    }
   });
 });

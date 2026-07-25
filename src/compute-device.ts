@@ -11,8 +11,8 @@ export interface WhisperComputeInfo {
   // Parsed GPU name line, e.g. "Apple M2 Pro" (extracted from the parens in
   // `GPU name:   MTL0 (Apple M2 Pro)`). null when no Metal device line exists.
   gpuName: string | null;
-  // Raw `load_backend:` lines, kept so `meet doctor` can show exactly which
-  // backends initialized (BLAS / MTL / CPU).
+  // Raw `load_backend:` lines. `meet doctor` prints these under the
+  // "CPU (no Metal)" line so you can see exactly what initialized (BLAS / CPU).
   backendLines: string[];
 }
 
@@ -45,8 +45,7 @@ export function parseWhisperHelp(stderr: string): WhisperComputeInfo {
       // Real line looks like `GPU name:   MTL0 (Apple M2 Pro)` — prefer the
       // human-readable chip inside the parens when present.
       const paren = raw.match(/\(([^)]+)\)/);
-      gpuName = paren ? paren[1].trim() : raw;
-      if (gpuName.length === 0) gpuName = raw || null;
+      gpuName = paren?.[1].trim() || raw || null;
       break;
     }
   }
