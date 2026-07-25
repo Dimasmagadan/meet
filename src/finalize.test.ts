@@ -3,10 +3,11 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildBaseResults, runDiarizationStep } from "./finalize.js";
+import { buildBaseResults, runDiarizationStep, applyLabelOverridesToTalkTime } from "./finalize.js";
 import { appendPostFinalizeNote } from "./summary.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import type { EntryRecord, TranscriptEntry, Session, Config } from "./types.js";
+import type { TalkTimeStats } from "./talk-time.js";
 
 test("buildBaseResults", async (t) => {
   await t.test("stored entries.jsonl text is used when nothing else has it", () => {
@@ -207,5 +208,45 @@ test("appendPostFinalizeNote", async (t) => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+test("applyLabelOverridesToTalkTime", (t) => {
+  const base: TalkTimeStats = {
+    totalSeconds: 120,
+    speakers: [
+      { label: "Me", seconds: 30, percent: 25 },
+      { label: "Speaker 1", seconds: 60, percent: 50 },
+      { label: "Speaker 2", seconds: 30, percent: 25 },
+    ],
+  };
+
+  t.test("no-op when overrides map is empty (returns same stats)", () => {
+    const out = applyLabelOverridesToTalkTime(base, new Map());
+    assert.equal(out, base);
+  });
+
+  t.test("rewrites matched labels and leaves the rest untouched", () => {
+    // Reproduces the desync fixed in this PR: the body shows "Женя" (entry label
+    // overridden by the registry), but computeTalkTime reads canonical "Speaker 1"
+    // off the segments. The footer must mirror the body.
+    const out = applyLabelOverridesToTalkTime(
+      base,
+      new Map([["Speaker 1", "Женя"]]),
+    );
+    assert.deepEqual(
+      out.speakers.map((s) => s.label),
+      ["Me", "Женя", "Speaker 2"],
+    );
+    // Numeric columns unchanged.
+    assert.equal(out.speakers[1].seconds, 60);
+    assert.equal(out.speakers[1].percent, 50);
+    assert.equal(out.totalSeconds, 120);
+  });
+
+  t.test("does not mutate the input stats", () => {
+    const overrides = new Map([["Speaker 1", "Женя"]]);
+    applyLabelOverridesToTalkTime(base, overrides);
+    assert.equal(base.speakers[1].label, "Speaker 1");
   });
 });

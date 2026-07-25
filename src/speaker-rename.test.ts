@@ -311,5 +311,57 @@ describe("renameSpeaker", () => {
       assert.equal(res.registryUpdated, false);
       assert.equal(existsSync(regPath), false);
     });
+
+    it("reverse-resolves a display-name id to canonical before touching registry/speakerNames", async () => {
+      // After a registry auto-label, finalize writes speakerNames {"Speaker 1": "Женя"}
+      // and entryAssignments carries the display name "Женя". The user sees "Женя"
+      // in the body and types `meet rename <dir> Женя Evgeny`. Without reverse-
+      // resolution: speakerRegistry["Женя"] is undefined (keyed canonical) so the
+      // registry is silently skipped, and speakerNames gains a bogus "Женя" key.
+      const regPath = join(regDir, "registry.json");
+      const emb = Array.from({ length: 256 }, (_, i) => i * 0.001);
+      const registry: SpeakerRegistry = {
+        version: 1,
+        speakers: [{
+          id: "voice-1", name: "Женя", embedding: emb, backend: "diarizer-manager",
+          createdAt: "2026-07-24T00:00:00.000Z", sourceMeetingId: "meet-a", matchCount: 1,
+        }],
+      };
+      const reg = loadRegistry(regPath);
+      reg.speakers = registry.speakers;
+      await saveRegistry(reg, regPath);
+
+      // Body shows the auto-applied name; footer must too (Fix #1 ships with #3).
+      const transcriptWithOverride = TRANSCRIPT
+        .replace("**[00:00:15] Speaker 1:**", "**[00:00:15] Женя:**")
+        .replace("- Speaker 1: 0m 30s (33%)", "- Женя: 0m 30s (33%)");
+      writeFileSync(join(tmpDir, "transcript.md"), transcriptWithOverride, "utf-8");
+      writeSpeakers(tmpDir, {
+        diarization: { ok: true },
+        segments: [{ speaker: "Speaker 1" }, { speaker: "Speaker 2" }],
+        entryAssignments: [{ speaker: "Женя" }, { speaker: "Speaker 2" }],
+        speakerNames: { "Speaker 1": "Женя" },
+        speakerRegistry: { "Speaker 1": { globalSpeakerId: "voice-1", matchedName: "Женя" } },
+      });
+
+      const res = await renameSpeaker(tmpDir, "Женя", "Evgeny", {
+        speakerRegistryEnabled: true,
+        registryPath: regPath,
+      });
+
+      // Registry entry updated (keyed by canonical id, looked up via reverse-resolve).
+      assert.equal(res.registryUpdated, true);
+      const after = loadRegistry(regPath);
+      assert.equal(after.speakers[0].name, "Evgeny");
+
+      // Body + footer both patched from the resolved current label.
+      const out = readFileSync(join(tmpDir, "transcript.md"), "utf-8");
+      assert.match(out, /\*\*\[00:00:15\] Evgeny:\*\*/);
+      assert.match(out, /^- Evgeny: 0m 30s \(33%\)$/m);
+
+      // speakerNames keyed by canonical id only — no bogus "Женя" key.
+      const rec = JSON.parse(readFileSync(join(tmpDir, "speakers.json"), "utf-8")) as SpeakersRecord;
+      assert.deepEqual(rec.speakerNames, { "Speaker 1": "Evgeny" });
+    });
   });
 });

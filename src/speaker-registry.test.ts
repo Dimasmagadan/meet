@@ -202,6 +202,54 @@ describe("applyRegistryToSpeakers", () => {
     assert.notEqual(res.speakerMeta.get("Speaker 1")!.globalSpeakerId, oldId);
     assert.equal(registry.speakers.length, 2);
   });
+
+  it("does not collapse two same-run speakers that both match one named entry", () => {
+    // Realistic failure mode: two diarized speakers happen to clear threshold
+    // against the same pre-existing named entry. Without the claimed-set guard,
+    // both inherit "Alex" and the same globalSpeakerId, collapsing two voices
+    // diarization had asserted were distinct. Map iteration is insertion order,
+    // so "Speaker 1" processes first.
+    const registry = emptyRegistry();
+    const existing = normalize(vec(1));
+    registry.speakers.push({
+      id: "existing", name: "Alex", embedding: existing, backend: "diarizer-manager",
+      createdAt: "2026-01-01T00:00:00.000Z", sourceMeetingId: "m0", matchCount: 0,
+    });
+    const emb1 = normalize(vec(1).map((x) => x + 0.001));   // cos ≈ 1.0 with existing
+    const emb2 = normalize(vec(1).map((x) => x + 0.002));   // cos ≈ 1.0 with existing
+    const embs = new Map([["Speaker 1", emb1], ["Speaker 2", emb2]]);
+
+    const res = applyRegistryToSpeakers(embs, "meet-a", registry, 0.75, "diarizer-manager");
+
+    assert.equal(res.labelOverrides.size, 1);
+    assert.equal(res.labelOverrides.get("Speaker 1"), "Alex");
+    assert.equal(res.speakerMeta.get("Speaker 1")!.globalSpeakerId, "existing");
+    // Speaker 2 must NOT have matched the same identity — registers fresh.
+    assert.equal(res.speakerMeta.get("Speaker 2")!.fresh, true);
+    assert.notEqual(res.speakerMeta.get("Speaker 2")!.globalSpeakerId, "existing");
+    assert.equal(registry.speakers.length, 2);
+  });
+
+  it("does not match a speaker against a fresh same-run registration", () => {
+    // Empty registry, two near-identical embeddings (cos > threshold). Without
+    // the guard, Speaker 2 would match Speaker 1's just-registered entry. The
+    // guard prevents same-run matches even on registrations, not just on
+    // matches against pre-existing entries.
+    const registry = emptyRegistry();
+    const emb1 = normalize(vec(1));
+    const emb2 = normalize(vec(1).map((x) => x + 0.001));   // cos ≈ 1.0 with emb1
+    const embs = new Map([["Speaker 1", emb1], ["Speaker 2", emb2]]);
+
+    const res = applyRegistryToSpeakers(embs, "meet-a", registry, 0.75, "diarizer-manager");
+
+    assert.equal(res.speakerMeta.get("Speaker 1")!.fresh, true);
+    assert.equal(res.speakerMeta.get("Speaker 2")!.fresh, true);
+    assert.notEqual(
+      res.speakerMeta.get("Speaker 1")!.globalSpeakerId,
+      res.speakerMeta.get("Speaker 2")!.globalSpeakerId,
+    );
+    assert.equal(registry.speakers.length, 2);
+  });
 });
 
 describe("forgetSpeaker", () => {
@@ -267,6 +315,29 @@ describe("registry persistence", () => {
     await saveRegistry(reg, path);
     const loaded = loadRegistry(path);
     assert.equal(loaded.speakers.length, 1);
+  });
+
+  it("loadRegistry drops entries with non-array/empty embeddings or missing id/backend", () => {
+    // A hand-edited or partially-corrupt registry: validate per-entry at load
+    // so cosineSimilarity never sees a null embedding and `meet speakers list`
+    // keeps working. The good row survives; every malformed row is dropped.
+    const path = join(dir, "registry.json");
+    const raw = {
+      version: 1,
+      speakers: [
+        { id: "good", name: null, embedding: [0.1, 0.2], backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
+        { id: "null-emb", name: null, embedding: null, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
+        { id: "missing-emb", name: null, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
+        { name: null, embedding: [0.1], backend: "diarizer-manager" },
+        { id: "empty-emb", name: null, embedding: [], backend: "diarizer-manager" },
+        { id: "no-backend", name: null, embedding: [0.1] },
+      ],
+    };
+    writeFileSync(path, JSON.stringify(raw), "utf-8");
+
+    const loaded = loadRegistry(path);
+    assert.equal(loaded.speakers.length, 1);
+    assert.equal(loaded.speakers[0].id, "good");
   });
 });
 

@@ -46,16 +46,27 @@ export function emptyRegistry(): SpeakerRegistry {
 
 // Missing/corrupt file -> empty registry (fail-open); finalize then registers
 // every voice fresh. The registry is additive biometric state, never blocking.
+// Per-entry validation drops hand-edited rows with non-array embeddings or a
+// missing id — those would throw inside cosineSimilarity or break lookups; the
+// finalize try/catch would absorb the throw, but filtering at load is cheaper
+// and keeps `meet speakers list` working against a partially-corrupt file.
 export function loadRegistry(path: string): SpeakerRegistry {
   const expanded = expandPath(path);
   try {
     if (!existsSync(expanded)) return emptyRegistry();
     const raw = readFileSync(expanded, "utf-8");
     const parsed = JSON.parse(raw) as Partial<SpeakerRegistry>;
-    if (parsed && parsed.version === 1 && Array.isArray(parsed.speakers)) {
-      return { version: 1, speakers: parsed.speakers };
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.speakers)) {
+      return emptyRegistry();
     }
-    return emptyRegistry();
+    const speakers = parsed.speakers.filter(
+      (s): s is RegistrySpeaker =>
+        !!s
+        && typeof s.id === "string" && s.id.length > 0
+        && Array.isArray(s.embedding) && s.embedding.length > 0
+        && typeof s.backend === "string",
+    );
+    return { version: 1, speakers };
   } catch {
     return emptyRegistry();
   }
@@ -83,17 +94,22 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
 // Returns the nearest same-backend, non-quarantined entry whose cosine is >=
 // threshold, else null. Backend-scoped per the S1<->S2 coupling rationale.
+// `excludeIds` skips entries already consumed in the same run (see
+// `applyRegistryToSpeakers`) — diarization asserts each "Speaker N" is a
+// distinct person, so a same-run match would collapse two voices into one.
 export function matchSpeaker(
   emb: number[],
   registry: SpeakerRegistry,
   threshold: number,
   backend: SpeakerBackend,
+  excludeIds?: Set<string>,
 ): { speaker: RegistrySpeaker; score: number } | null {
   let best: RegistrySpeaker | null = null;
   let bestScore = -Infinity;
   for (const s of registry.speakers) {
     if (s.quarantined) continue;
     if (s.backend !== backend) continue;
+    if (excludeIds && excludeIds.has(s.id)) continue;
     const score = cosineSimilarity(emb, s.embedding);
     if (score > bestScore) {
       bestScore = score;
@@ -141,9 +157,16 @@ export function applyRegistryToSpeakers(
   const matches: string[] = [];
   const iso = now().toISOString();
 
+  // Ids consumed this run — matches and fresh registrations both go in. Prevents
+  // Speaker 2 from matching Speaker 1's just-registered entry, or two labels
+  // both clearing threshold against one pre-existing entry (diarization already
+  // asserts these are different people, so a same-run collision is wrong).
+  const claimedThisRun = new Set<string>();
+
   for (const [label, emb] of embeddingsByLabel) {
-    const m = matchSpeaker(emb, registry, threshold, backend);
+    const m = matchSpeaker(emb, registry, threshold, backend, claimedThisRun);
     if (m) {
+      claimedThisRun.add(m.speaker.id);
       m.speaker.matchCount += 1;
       if (m.speaker.name) labelOverrides.set(label, m.speaker.name);
       speakerMeta.set(label, {
@@ -157,12 +180,16 @@ export function applyRegistryToSpeakers(
       );
     } else {
       // Audit the nearest prior score even on a miss (0 when registry empty).
+      // Same-run registrations are not "prior" — exclude them so the audit
+      // reflects only pre-existing entries.
       let nearest = 0;
       for (const s of registry.speakers) {
         if (s.quarantined || s.backend !== backend) continue;
+        if (claimedThisRun.has(s.id)) continue;
         nearest = Math.max(nearest, cosineSimilarity(emb, s.embedding));
       }
       const created = registerSpeaker(emb, meetingId, registry, backend, now);
+      claimedThisRun.add(created.id);
       speakerMeta.set(label, {
         globalSpeakerId: created.id,
         matchedName: null,

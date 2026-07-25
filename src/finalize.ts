@@ -12,6 +12,26 @@ import { analyzeWavFile } from "./audio-metrics.js";
 import { readEntryRecords } from "./entries-store.js";
 import { concatSysChunks, runDiarizer, assignSpeakers, relabelSegments, cleanupSysConcat, buildSpeakerLabelMap, type DiarSegment } from "./diarization.js";
 import { computeTalkTime } from "./talk-time.js";
+import type { TalkTimeStats } from "./talk-time.js";
+
+// Re-applies the registry's display-name overrides to the Talk Time footer
+// rows. `computeTalkTime` reads canonical "Speaker N" labels off the segments
+// (which deliberately stay canonical for `meet rename` validation), but the
+// body's entry labels were overridden by `applySpeakerRegistry`. Without this,
+// the footer sticks on "Speaker 1" while the body says "Женя" — and rename
+// can't repair it because speakerNames maps canonical→name, so the rename
+// regex looks for a label the file never had.
+export function applyLabelOverridesToTalkTime(
+  stats: TalkTimeStats,
+  labelOverrides: Map<string, string>,
+): TalkTimeStats {
+  if (labelOverrides.size === 0) return stats;
+  const speakers = stats.speakers.map((row) => {
+    const override = labelOverrides.get(row.label);
+    return override ? { ...row, label: override } : row;
+  });
+  return { ...stats, speakers };
+}
 import { runParakeetPass } from "./parakeet-pass.js";
 import { appendPostFinalizeNote } from "./summary.js";
 import { runOpencodeIndex } from "./opencode.js";
@@ -169,6 +189,11 @@ interface DiarizationOutcome {
   entries: TranscriptEntry[];
   segments: DiarSegment[];
   speakersRecord: Record<string, unknown>;
+  // canonical "Speaker N" -> display name (only populated when the registry
+  // matched a named voice). The caller applies this to the Talk Time footer
+  // rows so the footer stays in sync with the body, which already had entry
+  // labels overridden inside this step.
+  labelOverrides: Map<string, string>;
 }
 
 // Diarizes sys-source entries into "Speaker N" labels (F1). Fails open: any
@@ -188,15 +213,15 @@ export async function runDiarizationStep(
     diarization: { ok: false },
   };
 
-  if (!config.diarizationEnabled) return { entries, segments: [], speakersRecord };
-  if (session.mode !== "full") return { entries, segments: [], speakersRecord };
-  if (!entries.some((e) => e.source === "sys")) return { entries, segments: [], speakersRecord };
+  if (!config.diarizationEnabled) return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
+  if (session.mode !== "full") return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
+  if (!entries.some((e) => e.source === "sys")) return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
 
   const analysisBin = resolveAnalysisBin(config);
   if (!existsSync(analysisBin)) {
     warn(`Diarization skipped: AudioAnalysis binary not found at ${analysisBin}, keeping Others labels`);
     speakersRecord.diarization = { ok: false, error: "AudioAnalysis binary not found" };
-    return { entries, segments: [], speakersRecord };
+    return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
   }
 
   let sysFileCount = 0;
@@ -204,9 +229,9 @@ export async function runDiarizationStep(
     const files = await readdir(session.sessionDir);
     sysFileCount = files.filter((f) => /^sys-\d{3}\.wav$/.test(f)).length;
   } catch {
-    return { entries, segments: [], speakersRecord };
+    return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
   }
-  if (sysFileCount === 0) return { entries, segments: [], speakersRecord };
+  if (sysFileCount === 0) return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
 
   const startedAt = Date.now();
   try {
@@ -232,13 +257,13 @@ export async function runDiarizationStep(
       // Cross-session registry: match/register voices against prior meetings.
       // On a match with a known name, rewrites entry.speaker to that name so the
       // transcript + parakeet A/B both display it. Fails open (warns, never blocks).
-      await applySpeakerRegistry(session, config, rawSegments, rawEmbeddings, diarizedEntries, speakersRecord, warn);
+      const labelOverrides = await applySpeakerRegistry(session, config, rawSegments, rawEmbeddings, diarizedEntries, speakersRecord, warn);
 
       speakersRecord.entryAssignments = diarizedEntries
         .filter((e) => e.source === "sys")
         .map((e) => ({ chunkIndex: e.chunkIndex, speaker: e.speaker ?? null }));
 
-      return { entries: diarizedEntries, segments, speakersRecord };
+      return { entries: diarizedEntries, segments, speakersRecord, labelOverrides };
     } finally {
       await cleanupSysConcat(session.sessionDir);
     }
@@ -246,7 +271,7 @@ export async function runDiarizationStep(
     const message = err instanceof Error ? err.message : String(err);
     warn(`Diarization failed: ${message}, keeping Others labels`);
     speakersRecord.diarization = { ok: false, error: message };
-    return { entries, segments: [], speakersRecord };
+    return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
   }
 }
 
@@ -256,6 +281,8 @@ export async function runDiarizationStep(
 // Persists globalSpeakerId/matchedName per canonical "Speaker N" into
 // speakers.json so `meet rename` can later patch the registry entry. No-op when
 // the registry is disabled or no embeddings were emitted. Fails open.
+// Returns the labelOverrides so the caller can also patch the Talk Time footer
+// (computed against canonical segments, which deliberately stay "Speaker N").
 async function applySpeakerRegistry(
   session: Session,
   config: Config,
@@ -264,9 +291,9 @@ async function applySpeakerRegistry(
   diarizedEntries: TranscriptEntry[],
   speakersRecord: Record<string, unknown>,
   warn: (msg: string) => void,
-): Promise<void> {
-  if (!config.speakerRegistryEnabled) return;
-  if (Object.keys(rawEmbeddings).length === 0) return;
+): Promise<Map<string, string>> {
+  if (!config.speakerRegistryEnabled) return new Map();
+  if (Object.keys(rawEmbeddings).length === 0) return new Map();
 
   const rawToLabel = buildSpeakerLabelMap(rawSegments);
   const embeddingsByLabel = new Map<string, number[]>();
@@ -274,7 +301,7 @@ async function applySpeakerRegistry(
     const label = rawToLabel.get(rawId);
     if (label && Array.isArray(emb) && emb.length > 0) embeddingsByLabel.set(label, emb);
   }
-  if (embeddingsByLabel.size === 0) return;
+  if (embeddingsByLabel.size === 0) return new Map();
 
   try {
     const registry = loadRegistry(config.speakerRegistryPath);
@@ -305,9 +332,12 @@ async function applySpeakerRegistry(
       speakerRegistry[label] = { globalSpeakerId: meta.globalSpeakerId, matchedName: meta.matchedName };
     }
     speakersRecord.speakerRegistry = speakerRegistry;
+
+    return labelOverrides;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     warn(`Speaker registry update failed: ${message}`);
+    return new Map();
   }
 }
 
@@ -508,16 +538,19 @@ export async function finalizeSession(
         }
 
         await progressWriter.update(makeProgress("diarize", 0, 0));
-        const { entries: diarizedEntries, segments, speakersRecord } = await runDiarizationStep(session, config, entries, warn, log);
+        const { entries: diarizedEntries, segments, speakersRecord, labelOverrides } = await runDiarizationStep(session, config, entries, warn, log);
         entries = diarizedEntries;
 
-        const talkTime = computeTalkTime({
-          entryRecords: storedRecords,
-          chunkDurationSeconds: session.chunkDurationSeconds,
-          micRmsThresholdDb: config.micRmsThresholdDb,
-          sysRmsThresholdDb: config.sysRmsThresholdDb,
-          diarSegments: segments,
-        });
+        const talkTime = applyLabelOverridesToTalkTime(
+          computeTalkTime({
+            entryRecords: storedRecords,
+            chunkDurationSeconds: session.chunkDurationSeconds,
+            micRmsThresholdDb: config.micRmsThresholdDb,
+            sysRmsThresholdDb: config.sysRmsThresholdDb,
+            diarSegments: segments,
+          }),
+          labelOverrides,
+        );
         speakersRecord.talkTime = talkTime;
 
         const outputDir = dirname(session.outputFile);

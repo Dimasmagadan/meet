@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { writeAtomic } from "./storage.js";
 import { escapeRegex } from "./regex-utils.js";
 import { loadRegistry, saveRegistry } from "./speaker-registry.js";
+import { acquireGlobalFinalPassLock, releaseGlobalFinalPassLock } from "./locks.js";
 
 export interface RenameFileCount {
   file: string;            // basename: "transcript.md", "transcript.parakeet.md", "index.md"
@@ -71,7 +72,19 @@ export async function renameSpeaker(
   }
 
   const speakerNames: Record<string, string> = record.speakerNames ?? {};
-  const currentLabel = speakerNames[speakerId] ?? speakerId;
+
+  // `speakerNames` maps canonical id -> current display label. The user may pass
+  // either (e.g. after a registry auto-label, the body shows "Женя" and that's
+  // what they'll type). Resolve to the canonical id once and key everything off
+  // it: the speakerNames write, the speakerRegistry lookup, and the body/footer
+  // regex (currentLabel comes from speakerNames[canonicalId]). Without this,
+  // renaming by display name silently skips registry propagation and writes a
+  // bogus second speakerNames key alongside the canonical one.
+  let canonicalId = speakerId;
+  for (const [id, label] of Object.entries(speakerNames)) {
+    if (label === speakerId) { canonicalId = id; break; }
+  }
+  const currentLabel = speakerNames[canonicalId] ?? canonicalId;
 
   const files = (await readdir(meetingDir)).filter((f) => /^transcript.*\.md$/.test(f)).sort();
   const counts: RenameFileCount[] = [];
@@ -109,17 +122,24 @@ export async function renameSpeaker(
     counts.push({ file: "index.md", bodyMatches: 0, footerMatches: 0, indexMatches });
   }
 
-  speakerNames[speakerId] = newName;
+  speakerNames[canonicalId] = newName;
   await writeAtomic(speakersPath, JSON.stringify({ ...record, speakerNames }, null, 2));
 
   // Propagate the name into the cross-session registry so future meetings
   // auto-apply it. Only when the registry is enabled AND this meeting's
   // speakers.json carries a globalSpeakerId for the canonical id. Fails open.
+  // Serialized against concurrent finalize/forget via the global final-pass lock
+  // — without it, a background finalize could clobber this rename (or vice versa)
+  // because both do load → mutate → save on the same registry file.
   let registryUpdated = false;
   if (options?.speakerRegistryEnabled && options.registryPath) {
-    const globalSpeakerId = record.speakerRegistry?.[speakerId]?.globalSpeakerId;
+    const globalSpeakerId = record.speakerRegistry?.[canonicalId]?.globalSpeakerId;
     if (globalSpeakerId) {
+      const locked = acquireGlobalFinalPassLock("<registry-mutation>");
       try {
+        if (!locked) {
+          throw new Error("registry busy: a final pass is running, retry in a moment");
+        }
         const registry = loadRegistry(options.registryPath);
         const entry = registry.speakers.find((s) => s.id === globalSpeakerId);
         if (entry) {
@@ -127,8 +147,8 @@ export async function renameSpeaker(
           await saveRegistry(registry, options.registryPath);
           registryUpdated = true;
         }
-      } catch {
-        // Registry update is best-effort; the local rename already succeeded.
+      } finally {
+        if (locked) releaseGlobalFinalPassLock();
       }
     }
   }

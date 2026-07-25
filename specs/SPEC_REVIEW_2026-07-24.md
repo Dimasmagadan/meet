@@ -132,6 +132,12 @@ False merges (two people → one identity, then a name propagates across meeting
 
 Full split/merge editing is deferred — this is the honest floor given the opt-in biometric scope.
 
+#### Known ceilings (S1, intentionally deferred)
+- **Fixed threshold, frozen embeddings.** Matching uses a fixed `speakerMatchThreshold` (default `0.75`) against the first-seen 256-d WeSpeaker vector. There is no centroid update across meetings and no per-voice threshold tuning — recall is bounded by how representative the first chunk's embedding is.
+- **No `matches.log` rotation.** The log is append-only and unbounded; a long-running install will need manual cleanup or a future rotation pass.
+- **Same-run diarization is treated as ground truth.** Two labels cleared against one registry entry in the same finalize do not collapse — Speaker 1 claims it, Speaker 2 re-registers (see `applyRegistryToSpeakers` claimed-set guard). This trades rare split-then-merge fixes for predictable per-meeting semantics.
+- **No bulk purge / encryption at rest.** `meet speakers forget <globalId>` is per-id only; embeddings are stored as plain JSON. A future `--all` companion and on-disk encryption are the obvious privacy hardening.
+
 #### Privacy
 Embeddings only (no raw audio), local disk only, opt-in. Documented in README + `meet doctor`.
 

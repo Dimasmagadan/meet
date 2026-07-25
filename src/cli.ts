@@ -5,7 +5,7 @@ import { Recorder } from "./recorder.js";
 import { makeHeader } from "./assembler.js";
 import { finalizeSession } from "./finalize.js";
 import { showStatus } from "./status.js";
-import { isActiveRecording, readActiveRecordingLock } from "./locks.js";
+import { isActiveRecording, readActiveRecordingLock, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock } from "./locks.js";
 import { transcribeImport, type ImportOptions } from "./import.js";
 import { renameSpeaker } from "./speaker-rename.js";
 import { loadRegistry, saveRegistry, forgetSpeaker, matchesLogPath } from "./speaker-registry.js";
@@ -602,13 +602,25 @@ async function runSpeakersForget(globalId: string) {
     process.exit(1);
   }
 
-  const registry = loadRegistry(config.speakerRegistryPath);
-  if (!forgetSpeaker(registry, globalId)) {
-    console.log(chalk.red(`No registry speaker with id ${globalId}`));
+  // Serialize against concurrent finalize/rename — both also do load → mutate →
+  // save on the registry file under this lock. Without it, a background finalize
+  // could clobber this forget (or vice versa).
+  const locked = acquireGlobalFinalPassLock("<registry-mutation>");
+  if (!locked) {
+    console.log(chalk.red("Registry busy: a final pass is running, retry in a moment."));
     process.exit(1);
   }
-  await saveRegistry(registry, config.speakerRegistryPath);
-  console.log(chalk.green(`Forgot ${globalId}; its voice will re-register fresh in the next meeting.`));
+  try {
+    const registry = loadRegistry(config.speakerRegistryPath);
+    if (!forgetSpeaker(registry, globalId)) {
+      console.log(chalk.red(`No registry speaker with id ${globalId}`));
+      process.exit(1);
+    }
+    await saveRegistry(registry, config.speakerRegistryPath);
+    console.log(chalk.green(`Forgot ${globalId}; its voice will re-register fresh in the next meeting.`));
+  } finally {
+    releaseGlobalFinalPassLock();
+  }
 }
 
 async function listMeetings() {
