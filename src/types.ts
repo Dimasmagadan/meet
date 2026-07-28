@@ -115,6 +115,8 @@ export interface Config {
   // Swift audio capture (which keeps default priority) never starves during a
   // live recording. Fail-opens to no wrapping when taskpolicy is unavailable.
   lowerProcessPriority: boolean;
+  // P5: live-queue lag (in chunks) above which the status line warns. Visibility only — no dropping.
+  liveQueueLagWarnChunks: number;
 }
 
 export interface TranscribeOptions {
@@ -224,4 +226,5 @@ export const DEFAULT_CONFIG: Config = {
   speakerMatchThreshold: 0.75,
   speakerRegistryPath: "~/.meet/speakers/registry.json",
   lowerProcessPriority: true,
+  liveQueueLagWarnChunks: 8,
 };

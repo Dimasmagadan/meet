@@ -1,7 +1,7 @@
 # SDD Spec: Speaker Recognition, AI Perf, Codebase & Task Linking
 
 **Date:** 2026-07-24
-**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-Spike resolved 2026-07-24 (cheap path holds). **S1 shipped** (Node side, 428/428 tests pass). **L1 shipped** (453/453 tests pass; new `src/git-context.ts` + `meet link` + `--repo` + meta.md/dashboard surface). **P2+P3 shipped** (473/473 tests pass; new `src/compute-device.ts` + `src/process-priority.ts`; P2 rescoped to doctor device-visibility only — whisper.cpp has no `--metal` flag, see note; `taskpolicy -c utility` QoS at the shared whisper + parakeet/diarize spawns). **L2 shipped** (commits `81e0b1e` + `be5aee0`, 2026-07-24 — raw-regex phrasebook mode + seeded Bitrix URL rule). **S2 shipped** (this PR, 499/499 tests pass; `DiarizeCommand.swift --offline` flag + new `src/diarization-ab.ts`). All six workstream steps are now shipped.
+**Status:** P1+P4 shipped (commit `a25046e`, 2026-07-24) — 397/397 tests pass. S1-Spike resolved 2026-07-24 (cheap path holds). **S1 shipped** (Node side, 428/428 tests pass). **L1 shipped** (453/453 tests pass; new `src/git-context.ts` + `meet link` + `--repo` + meta.md/dashboard surface). **P2+P3 shipped** (473/473 tests pass; new `src/compute-device.ts` + `src/process-priority.ts`; P2 rescoped to doctor device-visibility only — whisper.cpp has no `--metal` flag, see note; `taskpolicy -c utility` QoS at the shared whisper + parakeet/diarize spawns). **L2 shipped** (commits `81e0b1e` + `be5aee0`, 2026-07-24 — raw-regex phrasebook mode + seeded Bitrix URL rule). **S2 shipped** (499/499 tests pass; `DiarizeCommand.swift --offline` flag + new `src/diarization-ab.ts`). **P5 shipped** (this PR, 502/502 tests pass; `formatLagStatus()` in `src/recorder.ts` + `liveQueueLagWarnChunks` config). All six workstream steps are now shipped — **spec complete.**
 **Owner:** Dmitrii Diakonov
 
 ---
@@ -252,6 +252,9 @@ Spawn `whisper-cli` / `AudioAnalysis` with lowered priority so the Swift audio c
 `system-monitor.ts:98` only `pgrep`s `whisper-cli`. Add `pgrep -f AudioAnalysis` so P1's gate actually sees diarize/parakeet CoreML pressure (currently invisible). Combine into the existing `overloaded` boolean (any heavy child process running + high loadavg → back off).
 
 ### P5. Backpressure on the live queue
+
+> ✅ **Shipped.** New exported pure `formatLagStatus(lagChunks, chunkDurationSeconds, warnChunks, colorWarn?)` in `src/recorder.ts`, called from `startStatus()`'s 5s status-line tick. Below `liveQueueLagWarnChunks` (default `8` chunks ≈ 2 min at the default 15s chunk duration) behavior is unchanged (`lag ~Ns` / `up to date`); at/above threshold the line is yellow and reads `lag ~Ns (queue backing up)`. New `liveQueueLagWarnChunks: number` config (default `8`). No chunk dropping — visibility only, per spec. 3 new tests in `src/recorder.test.ts`.
+
 `pipeline.ts:23` queue is unbounded; lag is computed (`recorder.ts:440-443`) but never acted on. When lag exceeds `liveQueueLagWarnChunks` (default ~8 chunks ≈ 2 min), emit a status warning line. No chunk dropping in MVP — visibility only.
 
 #### Tests

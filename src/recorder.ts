@@ -446,10 +446,13 @@ export class Recorder {
         hour: "2-digit",
         minute: "2-digit",
       });
-      const lagSec =
-        (this.micChunks + this.sysChunks - stats.totalDone) *
-        this.config.chunkDurationSeconds;
-      const lagStr = lagSec > 0 ? `lag ~${lagSec}s` : "up to date";
+      const lagChunks = this.micChunks + this.sysChunks - stats.totalDone;
+      const lagStr = formatLagStatus(
+        lagChunks,
+        this.config.chunkDurationSeconds,
+        this.config.liveQueueLagWarnChunks,
+        chalk.yellow,
+      );
 
       let capStr = "";
       if (this.opts.maxDurationMinutes > 0) {
@@ -630,6 +633,17 @@ export class Recorder {
 
     this.startStatus();
   }
+}
+
+export function formatLagStatus(
+  lagChunks: number,
+  chunkDurationSeconds: number,
+  warnChunks: number,
+  colorWarn: (s: string) => string = (s) => s,
+): string {
+  const lagSec = lagChunks * chunkDurationSeconds;
+  if (lagChunks >= warnChunks) return colorWarn(`lag ~${lagSec}s (queue backing up)`);
+  return lagSec > 0 ? `lag ~${lagSec}s` : "up to date";
 }
 
 function formatDuration(sec: number): string {
