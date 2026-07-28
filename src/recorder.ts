@@ -642,7 +642,9 @@ export function formatLagStatus(
   colorWarn: (s: string) => string = (s) => s,
 ): string {
   const lagSec = lagChunks * chunkDurationSeconds;
-  if (lagChunks >= warnChunks) return colorWarn(`lag ~${lagSec}s (queue backing up)`);
+  if (lagChunks >= warnChunks) {
+    return colorWarn(`lag ~${lagSec}s (queue backing up)`);
+  }
   return lagSec > 0 ? `lag ~${lagSec}s` : "up to date";
 }
 

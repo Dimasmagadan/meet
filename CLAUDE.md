@@ -304,6 +304,7 @@ Key settings:
 - `vocabularyReload` — mtime hot-reload of the vocabulary file (default: `true`)
 - `opencodeIndexPass` — run `runOpencodeIndex()` after `meet start` recordings finalize, writing `index.md` (default: `false` — opt-in since it needs the optional `opencode` CLI and adds up to 180s to finalize)
 - `lowerProcessPriority` — spawn whisper-cli / AudioAnalysis under `taskpolicy -c utility` so the Swift capture keeps priority during recording (default: `true`; fail-opens when taskpolicy is absent)
+- `liveQueueLagWarnChunks` — live transcription queue lag (in chunks) at/above which the status line warns (default: `8`, ≈2 min at the default 15s chunk duration; visibility only, no chunk dropping)
 
 **Tags**: Define tags in `tags.md` at project root (used by interactive picker)
 
