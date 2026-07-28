@@ -231,35 +231,7 @@ npm run build && node --test dist/filters.test.js
 
 ## Critical Gotchas
 
-### Swift: VoiceProcessing IO 9-Channel Bug
-
-When you call `setVoiceProcessingEnabled(true)` on AVAudioEngine, Apple silently changes the output format to **9 channels**. This is undocumented and breaks most code.
-
-**Solution**: Extract channel 0 manually from the PCM buffer:
-```swift
-let pcmBuffer = AVAudioPCMBuffer(...)
-let floatData = pcmBuffer.floatChannelData![0]  // channel 0 only
-```
-
-**Do NOT use AVAudioConverter** — it crashes with 9-channel input. Resample manually with linear interpolation.
-
-### Swift: ScreenCaptureKit Requires Video Config
-
-Even for audio-only capture, you must provide minimal video config:
-```swift
-config.width = 2
-config.height = 2
-```
-
-### Swift: WAV Header Finalization
-
-After writing audio data, finalize the WAV header:
-```swift
-try wavWriter.finalize()  // updates byte counts in header
-try FileManager.default.moveItem(atPath: tmpPath, toPath: finalPath)
-```
-
-Finalization must happen before the rename — the header includes file size.
+Swift-specific gotchas (VoiceProcessing IO 9-channel bug, ScreenCaptureKit video config, WAV header finalization order) live in `native/AudioCapture/CLAUDE.md`.
 
 ### TypeScript: whisper-cli vs whisper
 
@@ -282,29 +254,10 @@ This prevents partial reads if process crashes mid-write.
 
 **Config file**: `~/.meet/config.json` (created on first run)
 
-Key settings:
-- `liveModelPath` — model for live transcription during recording (default: `ggml-small.bin`)
-- `finalModelPath` — model for final high-quality pass (default: `ggml-medium.bin`)
-- `outputDir` — where meetings are saved (default: `~/Meetings`)
-- `language` — Whisper language code (default: `ru`)
-- `finalRetranscribe` — run final pass after recording (default: `true`)
-- `silenceGate` — skip silent chunks (default: `true`)
-- `diarizationEnabled` — speaker diarization on the final pass (default: `true`)
-- `diarizationMinOverlap` — below this chunk-overlap ratio a sys entry stays "Others" (default: `0.3`)
-- `diarizationAbPass` — opt-in offline-VBx diarizer A/B pass, writes `diarization-ab-report.json` (default: `false`)
-- `analysisBin` — path to the `AudioAnalysis` binary (default: resolved like `captureBin`)
-- `parakeetComparePass` — run the Parakeet A/B pass after finalize (default: `true`)
-- `attentionAlerts` — master switch for live trigger-word alerts (default: `true`)
-- `triggersPath` — trigger word list (default: `./triggers.json`)
-- `triggersReload` — mtime hot-reload of the triggers file (default: `true`)
-- `attentionCooldownSeconds` — min seconds between alerts, per alert kind (default: `60`)
-- `attentionRecapEntries` — transcript entries shown in attention recap (default: `3`)
-- `attentionSound` — macOS notification sound name (default: `Glass`)
-- `vocabularyPath` — custom whisper-prompt vocabulary list (default: `./vocabulary.json`)
-- `vocabularyReload` — mtime hot-reload of the vocabulary file (default: `true`)
-- `opencodeIndexPass` — run `runOpencodeIndex()` after `meet start` recordings finalize, writing `index.md` (default: `false` — opt-in since it needs the optional `opencode` CLI and adds up to 180s to finalize)
-- `lowerProcessPriority` — spawn whisper-cli / AudioAnalysis under `taskpolicy -c utility` so the Swift capture keeps priority during recording (default: `true`; fail-opens when taskpolicy is absent)
-- `liveQueueLagWarnChunks` — live transcription queue lag (in chunks) at/above which the status line warns (default: `8`, ≈2 min at the default 15s chunk duration; visibility only, no chunk dropping)
+All config keys and their defaults live in `DEFAULT_CONFIG` in `src/types.ts` — read that for the full list. Non-obvious behavior worth knowing:
+- `opencodeIndexPass` (default `false`) — opt-in since it needs the optional `opencode` CLI and adds up to 180s to finalize
+- `lowerProcessPriority` (default `true`) — fail-opens to no wrapping when `taskpolicy` is absent
+- `liveQueueLagWarnChunks` (default `8`) — visibility only, never drops chunks
 
 **Tags**: Define tags in `tags.md` at project root (used by interactive picker)
 
@@ -347,38 +300,7 @@ When editing code or architecture:
 
 They share the same codebase and conventions — no special "opencode mode" is needed.
 
-## Common Workflows
-
-### Adding a New CLI Command
-
-1. Add command handler in `src/cli.ts` using Commander.js
-2. Implement logic in a new module (e.g., `src/myfeature.ts`)
-3. Add tests in `src/myfeature.test.ts`
-4. Update README.md if user-facing
-5. Update AGENTS.md if architectural
-
-### Fixing a Transcription Quality Issue
-
-Start in `src/cleanText()` (filter noise tokens) or `src/final-pass.ts` (echo removal). Consider:
-- Is it a noise token that should be filtered?
-- Is it a duplicate from the final pass that should be deduplicated?
-- Is it a phrase that phrasebook should fix?
-
-### Debugging Audio Capture
-
-Run `meet doctor` for a 12-second health check, or check:
-- Swift build: `cd native/AudioCapture && swift build -c release`
-- Audio permission: System Preferences → Privacy → Screen Recording → Enable Terminal
-- whisper-cli: `which whisper-cli` should find Homebrew binary
-
-### Debugging Transcription Queue
-
-Check `src/pipeline.ts` and `src/transcriber.ts`. The queue is sequential — if whisper-cli seems hung:
-```bash
-ps aux | grep whisper-cli
-```
-
-If stuck, the next `SIGINT` drains remaining chunks.
+For common dev workflows (adding a CLI command, fixing a transcription quality issue, debugging audio capture or the transcription queue), see the `dev-workflows` skill.
 
 ## Performance Notes
 
