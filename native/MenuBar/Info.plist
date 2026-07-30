@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Meet</string>
+  <key>CFBundleIdentifier</key><string>com.dimasmagadan.meet.menubar</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleExecutable</key><string>MeetMenuBar</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Meet records meetings locally and needs microphone access.</string>
+  <key>NSScreenCaptureDescription</key>
+  <string>Meet captures system audio (other participants) via ScreenCaptureKit.</string>
+</dict>
+</plist>

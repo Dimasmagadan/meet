@@ -14,7 +14,7 @@ import { detectWhisperCompute } from "./compute-device.js";
 import { isTaskpolicyAvailable } from "./process-priority.js";
 import { spawn, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
@@ -150,6 +150,13 @@ export function createProgram(): Command {
     .option("--output <path>", "Output file path", "~/Meetings/dashboard.html")
     .action(async (opts: { output?: string }) => {
       await generateDashboard(opts.output);
+    });
+
+  program
+    .command("bin-path")
+    .description("Print resolved runner paths as JSON (node + meet main) — used by the menu bar app")
+    .action(() => {
+      console.log(JSON.stringify(resolveRunnerPaths(loadConfig())));
     });
 
   return program;
@@ -716,4 +723,30 @@ async function listMeetings() {
   for (const name of entries) {
     console.log(`  ${name}`);
   }
+}
+
+function which(cmd: string): string | null {
+  try {
+    const out = execSync(`command -v ${cmd} 2>/dev/null`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+// Resolve the runner the menu bar app should spawn: `node <main.js> start <title> --headless`.
+// Resolution: menuBarMeetBin config override → realpath of the running dist/main.js
+// (authoritative for local dev, npm link, and global installs — `meet bin-path` always runs
+// from within meet, so process.argv[1] is the real JS file) → repo dist/main.js fallback.
+// `node` always via `which node` with /opt/homebrew/bin/node fallback.
+function resolveRunnerPaths(config: Config): { node: string; main: string; meet: string } {
+  const node = which("node") ?? "/opt/homebrew/bin/node";
+
+  if (config.menuBarMeetBin && config.menuBarMeetBin.trim() !== "") {
+    const main = expandPath(config.menuBarMeetBin);
+    return { node, main, meet: which("meet") ?? main };
+  }
+
+  const argvMain = realpathSync(process.argv[1] ?? join(homedir(), "www/repos/meet/dist/main.js"));
+  return { node, main: argvMain, meet: which("meet") ?? argvMain };
 }

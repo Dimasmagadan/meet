@@ -11,6 +11,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 <!-- FEATURES:core-recording -->
 ## Core recording
 
+- **Menu bar app** — `native/MenuBar/` builds a Dock-less `Meet.app` that drives `meet` headlessly from the menu bar: click the icon, enter a title, start/stop/pause/extend without a terminal. Optional launch-at-login; reuses the full pipeline via shell-out + POSIX signals.
 - **Foreground meeting recording** — `meet start "Title"` records mic + system audio, transcribes chunks live, and blocks the terminal until you stop.
 - **Mic-only mode** — `meet start --mic "Title"` for in-person meetings, interviews, or a phone on speaker.
 - **Dual-channel capture** — Swift `AudioCapture` records mic (AVAudioEngine + VoiceProcessing IO) and system audio (ScreenCaptureKit) in parallel into atomic 15s WAV chunks; `excludesCurrentProcessAudio` prevents feedback loops.
@@ -116,6 +117,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `meet link <dir> <repoPath>` | Attach/replace git repo context |
 | `meet speakers list / forget` | Cross-session speaker registry management |
 | `meet dashboard` | Generate HTML dashboard |
+| `meet bin-path` | Print resolved runner paths (used by the menu bar app) |
 
 </div>
 
@@ -155,6 +157,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `summaryEnabled` | `true` | Live extractive summary |
 | `gateHeavyPasses` | `true` | System-pressure gates |
 | `lowerProcessPriority` | `true` | QoS lowering |
+| `menuBarMeetBin` | (empty = auto) | Explicit `meet` runner for the menu bar app; empty → `meet bin-path` auto-resolves |
 
 </div>
 

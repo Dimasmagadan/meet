@@ -7,7 +7,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "MeetMenuBar",
-            path: "Sources/MeetMenuBar"
+            path: "Sources/MeetMenuBar",
+            // ServiceManagement is a system framework (SMAppService), not a SwiftPM
+            // package — link it explicitly so Launch-at-Login resolves without an Xcode project.
+            linkerSettings: [.linkedFramework("ServiceManagement")]
         )
     ]
 )

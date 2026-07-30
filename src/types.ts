@@ -117,6 +117,9 @@ export interface Config {
   lowerProcessPriority: boolean;
   // P5: live-queue lag (in chunks) above which the status line warns. Visibility only — no dropping.
   liveQueueLagWarnChunks: number;
+  // Menu bar app: explicit override for the `meet` runner (dist/main.js). Empty string →
+  // auto-resolved by `meet bin-path` (realpath of the running main + `which node`).
+  menuBarMeetBin: string;
 }
 
 export interface TranscribeOptions {
@@ -227,4 +230,5 @@ export const DEFAULT_CONFIG: Config = {
   speakerRegistryPath: "~/.meet/speakers/registry.json",
   lowerProcessPriority: true,
   liveQueueLagWarnChunks: 8,
+  menuBarMeetBin: "",
 };

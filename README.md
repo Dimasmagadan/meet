@@ -6,6 +6,7 @@ Local meeting transcription for macOS (Apple Silicon). Records mic + system audi
 
 ## Features
 
+- **Menu bar app** — `Meet.app` records without the terminal: click the menu bar icon, enter a title, then start/stop/pause/extend from the menu. Optional launch-at-login. Built from `native/MenuBar/`.
 - **Dual-channel capture** — mic (you) and system audio (others) recorded simultaneously
 - **Local transcription** — whisper.cpp with Metal GPU acceleration, no internet required
 - **Speaker diarization** — system audio labeled "Speaker 1", "Speaker 2", ... on the final pass (falls back to "Others" if diarization is off/unavailable); mic is always "Me"
@@ -77,6 +78,7 @@ meet finalize <sessionDir>      Finalize a stopped recording session
 meet status                     Show active recording/finalization jobs
 meet rename <dir> <id> <name>   Rename a diarized speaker label in a finalized meeting
 meet link <dir> <repoPath>      Attach/replace git repo context in a finalized meeting's meta.md
+meet bin-path                   Print resolved runner paths as JSON (used by the menu bar app)
 ```
 
 ### `start` options
@@ -113,6 +115,23 @@ meet transcribe recording.m4a --title "Interview with Alex"
 meet transcribe *.m4a                       # batch (titles from filenames)
 meet transcribe video.mp4 --date 2026-05-20 # custom date
 ```
+
+## Menu bar app
+
+`native/MenuBar/` builds a Dock-less `Meet.app` that lives in the menu bar and drives `meet` headlessly — no terminal needed. It shells out to `meet start "<title>" --headless` and controls the session with POSIX signals (SIGINT/SIGUSR1/SIGUSR2/SIGWINCH), reusing the entire TS pipeline unchanged.
+
+```bash
+npm run build                          # the app needs `meet` on PATH
+npm link                               # makes `meet` available globally (GUI apps have a minimal PATH)
+sh native/MenuBar/scripts/build-app.sh # swift build → assemble Meet.app → ad-hoc codesign
+open native/MenuBar/.build/Meet.app    # NOT the raw binary — LaunchServices must register the bundle
+```
+
+- Click the menu bar mic icon → **Start Recording** → enter a title → Start. The last title is remembered.
+- Mic/Screen TCC prompts are pre-requested from the app before capture starts; granting them lets the spawned `AudioCapture` record.
+- **Launch at Login** toggle (via `SMAppService`) so the app survives reboots — foundation for the future scheduler/calendar features.
+- `meet bin-path` prints the resolved `{node, main, meet}` paths the app uses; set `menuBarMeetBin` in config to override the runner.
+- Ad-hoc signature: keep the bundle at a stable path (e.g. `cp -R native/MenuBar/.build/Meet.app ~/Applications/Meet.app`) — moving or rebuilding it re-prompts TCC.
 
 ## Output
 
@@ -232,6 +251,7 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `summaryCpuThresholdLoad` | `6` | Pause when 1-min loadavg exceeds this (raw value) |
 | `summaryMemThresholdMb` | `768` | Pause below this free memory |
 | `summaryCatchupIntervalMs` | `30000` | Retry interval while overloaded |
+| `menuBarMeetBin` | (empty = auto) | Explicit `meet` runner for the menu bar app; empty → `meet bin-path` auto-resolves |
 
 ### Phrasebook
 
@@ -385,6 +405,18 @@ native/AudioCapture/
 │   ├── WAVWriter.swift         16kHz mono 16-bit PCM WAV, atomic rename
 │   └── Logger.swift            Structured JSON logging
 └── Sources/AudioAnalysis/      Second binary: diarize/transcribe/models (FluidAudio)
+
+native/MenuBar/                 Dock-less Meet.app menu-bar UI
+├── Sources/MeetMenuBar/
+│   ├── main.swift              NSApplication, setActivationPolicy(.accessory)
+│   ├── AppDelegate.swift       Status item, menu, title modal, TCC preflight
+│   ├── RecordingController.swift Headless meet spawn + POSIX signal control
+│   ├── RunnerResolver.swift    Resolves node + dist/main.js via `meet bin-path`
+│   ├── PermissionController.swift Mic/Screen TCC preflight + System Settings deep-link
+│   ├── LoginItemController.swift SMAppService launch-at-login wrapper
+│   └── SessionMonitor.swift    Attaches to CLI-started sessions via lock file
+├── Info.plist                  LSUIElement + usage strings
+└── scripts/build-app.sh        swift build → assemble Meet.app → ad-hoc codesign
 ```
 
 ## Known Limitations

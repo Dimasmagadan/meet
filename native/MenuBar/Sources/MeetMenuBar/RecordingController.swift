@@ -9,6 +9,9 @@ class RecordingController {
     }
 
     var onStateChange: ((RecordingState) -> Void)?
+    // Fires when Start cannot proceed (meet not found / spawn failed) so AppDelegate
+    // can surface an NSAlert instead of silently doing nothing.
+    var onStartFailed: ((String) -> Void)?
 
     private var process: Process?
     private var attachedPid: pid_t?
@@ -19,34 +22,26 @@ class RecordingController {
     private var timer: Timer?
     private var sessionMonitorTimer: Timer?
 
-    private var meetBin: String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/www/repos/meet/dist/main.js"
-    }
+    private let resolver = RunnerResolver()
 
-    func start() {
+    func start(title: String) {
         guard state == .idle else { return }
 
-        let whichNode = Process()
-        whichNode.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        whichNode.arguments = ["which", "node"]
-        let pipe = Pipe()
-        whichNode.standardOutput = pipe
-        try? whichNode.run()
-        whichNode.waitUntilExit()
-        let nodePath = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "/opt/homebrew/bin/node"
+        guard let runner = resolver.resolve() else {
+            onStartFailed?("meet was not found. Run `meet setup` (and `npm link` if needed) so `meet bin-path` resolves.")
+            return
+        }
 
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: nodePath)
-        proc.arguments = [meetBin, "start", "meeting", "--headless"]
+        proc.executableURL = URL(fileURLWithPath: runner.executable)
+        proc.arguments = runner.args + ["start", title, "--headless"]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
 
         do {
             try proc.run()
         } catch {
-            print("Failed to start meet: \(error)")
+            onStartFailed?("Failed to start meet: \(error.localizedDescription)")
             return
         }
 
@@ -117,6 +112,8 @@ class RecordingController {
         let elapsed = Int(Date().timeIntervalSince(started))
         return String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
     }
+
+    func currentDisplayState() -> RecordingState { state }
 
     func quit() {
         stop()

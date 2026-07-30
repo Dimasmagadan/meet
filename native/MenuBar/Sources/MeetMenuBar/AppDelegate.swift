@@ -5,6 +5,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     let recordingController = RecordingController()
     let sessionMonitor = SessionMonitor()
+    let permission = PermissionController()
+    let loginItem = LoginItemController()
+
+    private let lastTitleKey = "MeetMenuBar.lastTitle"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -17,6 +21,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         recordingController.onStateChange = { [weak self] state in
             DispatchQueue.main.async {
                 self?.updateStatusItem(state: state)
+            }
+        }
+        recordingController.onStartFailed = { [weak self] message in
+            DispatchQueue.main.async {
+                self?.showAlert(title: "Cannot start recording", message: message)
             }
         }
 
@@ -38,6 +47,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem.button?.image = NSImage(systemSymbolName: "mic.circle", accessibilityDescription: "Meet")
             menu.addItem(NSMenuItem(title: "Start Recording", action: #selector(startRecording), keyEquivalent: "r"))
             menu.addItem(NSMenuItem.separator())
+            addLoginItem(to: menu)
             menu.addItem(NSMenuItem(title: "Open Meetings Folder", action: #selector(openMeetings), keyEquivalent: "o"))
 
         case .recording:
@@ -68,8 +78,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
+    private func addLoginItem(to menu: NSMenu) {
+        let item = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
+        item.target = self
+        item.state = loginItem.isEnabled ? .on : .off
+        menu.addItem(item)
+    }
+
     @objc func startRecording() {
-        recordingController.start()
+        let defaultTitle = lastTitle() ?? "meeting"
+        guard let title = promptTitle(default: defaultTitle) else { return }
+        let resolved = title.isEmpty ? "meeting" : title
+        saveLastTitle(resolved)
+
+        // TCC preflight (SPEC §5). Mic is gated synchronously and refuses on deny;
+        // screen is best-effort (its prompt can't be read back), then we spawn.
+        Task {
+            let micOk = await permission.ensureMic()
+            guard micOk else {
+                self.showAlert(
+                    title: "Microphone access required",
+                    message: "Meet needs microphone access to record. Grant it in System Settings → Privacy & Security → Microphone."
+                )
+                openPrivacySettings(.microphone)
+                return
+            }
+            _ = self.permission.ensureScreen()
+            self.recordingController.start(title: resolved)
+        }
     }
 
     @objc func pauseRecording() {
@@ -88,6 +124,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         recordingController.extend()
     }
 
+    @objc func toggleLogin() {
+        do {
+            if loginItem.isEnabled {
+                try loginItem.disable()
+            } else {
+                try loginItem.enable()
+            }
+        } catch {
+            showAlert(
+                title: "Cannot change login item",
+                message: "Open System Settings → General → Login Items to manage Meet manually. (\(error.localizedDescription))"
+            )
+        }
+        rebuildMenu()
+    }
+
     @objc func openMeetings() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let meetingsDir = "\(home)/Meetings"
@@ -97,5 +149,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func quitApp() {
         recordingController.quit()
         NSApplication.shared.terminate(nil)
+    }
+
+    // MARK: - Private
+
+    private func rebuildMenu() {
+        updateStatusItem(state: recordingController.currentDisplayState())
+    }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func promptTitle(default defaultTitle: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Start recording"
+        alert.informativeText = "Meeting title"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        input.stringValue = defaultTitle
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Start")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = input
+        return alert.runModal() == .alertFirstButtonReturn ? input.stringValue : nil
+    }
+
+    private func lastTitle() -> String? {
+        UserDefaults.standard.string(forKey: lastTitleKey)
+    }
+
+    private func saveLastTitle(_ title: String) {
+        UserDefaults.standard.set(title, forKey: lastTitleKey)
     }
 }

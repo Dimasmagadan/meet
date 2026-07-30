@@ -9,7 +9,7 @@ macOS (Apple Silicon) CLI. Records mic + system audio, transcribes locally with 
 ```
 meet start "Title"
 ├── src/main.ts              — entry, dispatches CLI commands
-├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, status, rename, link, speakers
+├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, status, rename, link, speakers, dashboard, bin-path
 ├── src/recorder.ts          — session orchestration: spawns Swift capture, wires Pipeline, handles stdin hotkeys
 ├── src/types.ts             — shared types: Session, Chunk, Config, TranscriptEntry
 ├── src/pipeline.ts          — chokidar watches *.wav, sequential whisper queue, dedup, durable state
@@ -45,12 +45,22 @@ meet start "Title"
 ├── src/vad.ts               — voice activity detection wrapper (optional)
 ├── src/locks.ts             — file-based locks for finalization and active recording
 ├── src/status.ts            — display active session/finalization status
-└── native/AudioCapture/     — Swift CLI: ScreenCaptureKit + AVAudioEngine → WAV chunks
-    ├── main.swift              — CLI entry, --output-dir, --chunk-duration, --mode, --silence-timeout
-    ├── MicCapture.swift        — AVAudioEngine input tap, VoiceProcessing IO, 9-channel workaround
-    ├── SystemAudioCapture.swift — ScreenCaptureKit audio-only capture
-    ├── WAVWriter.swift         — 16kHz mono 16-bit PCM WAV output, atomic rename
-    └── Logger.swift            — structured JSON logging
+├── native/AudioCapture/     — Swift CLI: ScreenCaptureKit + AVAudioEngine → WAV chunks
+│   ├── main.swift              — CLI entry, --output-dir, --chunk-duration, --mode, --silence-timeout
+│   ├── MicCapture.swift        — AVAudioEngine input tap, VoiceProcessing IO, 9-channel workaround
+│   ├── SystemAudioCapture.swift — ScreenCaptureKit audio-only capture
+│   ├── WAVWriter.swift         — 16kHz mono 16-bit PCM WAV output, atomic rename
+│   └── Logger.swift            — structured JSON logging
+└── native/MenuBar/         — Swift menu-bar .app (SPEC_MENUBAR_UI_2026-07-30): spawns `meet start --headless`, controls via SIGINT/SIGUSR1/SIGUSR2/SIGWINCH; ad-hoc signed, Dock-less, optional launch-at-login
+    ├── main.swift              — NSApplication; setActivationPolicy(.accessory) (no Dock icon)
+    ├── AppDelegate.swift       — status item + menu (start/pause/stop/extend, Launch-at-Login), title modal, TCC preflight before spawn
+    ├── RecordingController.swift — headless meet spawn + POSIX signal control + attach-to-existing-session
+    ├── RunnerResolver.swift    — shells out to `meet bin-path` (PATH augmented with /opt/homebrew/bin,/usr/local/bin) → cached Runner{node,[main.js]}
+    ├── PermissionController.swift — TCC baseline (Phase 2 branch A+B): ensureMic() gated, ensureScreen() fail-open, openPrivacySettings() deep-link
+    ├── LoginItemController.swift — SMAppService.mainApp launch-at-login wrapper (macOS 13+)
+    ├── SessionMonitor.swift    — polls active-recording.lock every 5s → attaches to CLI-started sessions
+    ├── Info.plist              — LSUIElement, NSMicrophoneUsageDescription, NSScreenCaptureDescription, bundle id com.dimasmagadan.meet.menubar
+    └── scripts/build-app.sh    — swift build → assemble Meet.app → ad-hoc codesign (-s -)
 ```
 
 ## Build & Run
