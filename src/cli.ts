@@ -747,6 +747,11 @@ function resolveRunnerPaths(config: Config): { node: string; main: string; meet:
     return { node, main, meet: which("meet") ?? main };
   }
 
-  const argvMain = realpathSync(process.argv[1] ?? join(homedir(), "www/repos/meet/dist/main.js"));
+  // process.argv[1] is always the JS entry when Node runs a script (npm link,
+  // local, or global). Fail loudly instead of guessing a path that wouldn't exist
+  // on any other machine.
+  const argv1 = process.argv[1];
+  if (!argv1) throw new Error("meet bin-path: cannot resolve main.js (process.argv[1] is unset)");
+  const argvMain = realpathSync(argv1);
   return { node, main: argvMain, meet: which("meet") ?? argvMain };
 }

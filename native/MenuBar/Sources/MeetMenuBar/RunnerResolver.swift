@@ -53,9 +53,14 @@ final class RunnerResolver {
         } catch {
             return nil
         }
+        // Read stdout to EOF *before* waitUntilExit: the classic Process deadlock is
+        // wait-first when child output exceeds the pipe buffer (it blocks on write,
+        // never exits). bin-path emits a few hundred bytes so it can't happen here, but
+        // read-first is the canonical safe order — readDataToEndOfFile blocks until the
+        // child closes stdout (i.e. exits), so the subsequent waitUntilExit just reaps.
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
         guard proc.terminationStatus == 0 else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 }

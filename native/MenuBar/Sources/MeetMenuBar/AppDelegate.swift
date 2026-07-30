@@ -93,7 +93,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // TCC preflight (SPEC §5). Mic is gated synchronously and refuses on deny;
         // screen is best-effort (its prompt can't be read back), then we spawn.
-        Task {
+        // @MainActor: startRecording() is a plain @objc action — dynamically on the
+        // main thread, but with no *static* isolation, so a bare Task{} resumes off-main
+        // after the await. Pin to the main actor so NSAlert.runModal() stays on-main and
+        // RecordingController.start() schedules its Timers on the main RunLoop (which
+        // AppKit pumps); a pool thread's RunLoop is never run, freezing elapsed + monitor.
+        Task { @MainActor in
             let micOk = await permission.ensureMic()
             guard micOk else {
                 self.showAlert(
