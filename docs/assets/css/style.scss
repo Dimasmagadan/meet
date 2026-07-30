@@ -155,6 +155,25 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 3em 0; }
 }
 .hero-cta { display: flex; flex-wrap: wrap; gap: clamp.size(12, 16, 'xs', 'md'); margin-top: clamp.size(24, 36, 'xs', 'md'); }
 
+/* Two-column hero: copy left, framed preview image right. Stacks under 900px. */
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp.size(32, 64, 'xs', 'xl');
+  align-items: center;
+}
+@media (max-width: 900px) {
+  .hero-grid { grid-template-columns: 1fr; gap: clamp.size(24, 40, 'xs', 'md'); }
+}
+.hero-shot {
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.12);
+  box-shadow: 0 24px 64px rgba(0,0,0,.45);
+  background: #0d1117;
+}
+.hero-shot img { display: block; width: 100%; height: auto; }
+
 .btn {
   display: inline-flex; align-items: center; gap: .5em;
   padding: clamp.size(12, 16, 'xs', 'md') clamp.size(20, 28, 'xs', 'md');
