@@ -1,0 +1,36 @@
+title: meet
+description: >-
+  Local meeting transcription for macOS (Apple Silicon). Records mic + system
+  audio, transcribes locally with whisper.cpp, outputs timestamped markdown.
+  No cloud, no API keys, no data leaving your machine.
+
+# Project page → https://dimasmagadan.github.io/meet/
+url: "https://dimasmagadan.github.io"
+baseurl: "/meet"
+
+repository: Dimasmagadan/meet
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+permalink: pretty
+
+# Custom layout in docs/_layouts/default.html — no gem theme.
+# clamp-size is installed via npm into docs/node_modules and resolved here.
+sass:
+  load_paths:
+    - node_modules
+  style: compressed
+  quiet_deps: true       # suppress Sass deprecation warnings from clamp-size (legacy if())
+  silence_deprecations:
+    - if-function
+
+exclude:
+  - package.json
+  - package-lock.json
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+
+plugins: []

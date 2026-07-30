@@ -1,0 +1,117 @@
+---
+layout: default
+full_bleed: true
+description: >-
+  meet — local meeting transcription for macOS (Apple Silicon). Records mic +
+  system audio, transcribes on-device with whisper.cpp, outputs timestamped
+  markdown. No cloud, no API keys, no data leaving your machine.
+---
+
+<!-- SECTION:hero -->
+<section class="hero">
+  <div class="container">
+    <span class="eyebrow">Local-first &middot; macOS &middot; Apple Silicon</span>
+    <h1>Meetings, transcribed.<br>Right on your Mac.</h1>
+    <p class="lead">
+      <strong>meet</strong> records your microphone and system audio, transcribes it
+      on-device with whisper.cpp, and writes clean timestamped markdown. No cloud,
+      no API keys, no subscription, no data ever leaving your machine.
+    </p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="{{ '/quickstart/' | relative_url }}">Quick Start →</a>
+      <a class="btn btn-ghost" href="{{ '/features/' | relative_url }}">All features</a>
+    </div>
+  </div>
+</section>
+<!-- /SECTION:hero -->
+
+<!-- SECTION:why -->
+<section class="section">
+  <div class="container">
+    <div class="section-head">
+      <h2>Why meet</h2>
+      <p>The differentiators — what makes this a better choice for private, offline meeting notes.</p>
+    </div>
+    <ul class="why-list">
+      <li><strong>100% local &amp; private.</strong> Audio is transcribed on your machine with whisper.cpp. Nothing is uploaded, ever — no account, no API keys, no third party in the loop.</li>
+      <li><strong>Works offline.</strong> Once the model is downloaded, the whole pipeline runs with no network connection. Plan rides, flights, bad coffee-shop Wi-Fi.</li>
+      <li><strong>No subscription, no per-minute billing.</strong> Free forever, MIT-licensed, open source. Run it as much as you want.</li>
+      <li><strong>Metal GPU acceleration.</strong> whisper.cpp uses the Apple Silicon GPU by default — fast live transcription without a discrete card.</li>
+      <li><strong>Dual-channel capture.</strong> Records <em>you</em> (mic) and <em>others</em> (system audio) separately, so speakers are labeled by source from the very first chunk.</li>
+      <li><strong>Real speaker diarization.</strong> On the final pass, system audio is split into <code>Speaker 1</code>, <code>Speaker 2</code>… with per-speaker talk-time stats.</li>
+      <li><strong>Live, not after-the-fact.</strong> Chunks are transcribed while you talk; a rolling summary and attention alerts appear during the call itself.</li>
+      <li><strong>Plain-text output you own.</strong> Every meeting is a folder of markdown files under <code>~/Meetings/</code> — version it, grep it, script it.</li>
+    </ul>
+  </div>
+</section>
+<!-- /SECTION:why -->
+
+<!-- SECTION:features-highlight -->
+<section class="section section-alt">
+  <div class="container">
+    <div class="section-head">
+      <h2>Built for the whole meeting</h2>
+      <p>From the first second of capture to a searchable, tagged, speaker-labeled transcript. A few highlights — see <a href="{{ '/features/' | relative_url }}">all features</a>.</p>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <span class="tag">capture</span>
+        <h3>Dual-channel recording</h3>
+        <p>Mic (you) + system audio (others) captured in parallel, atomically handed off as 15s WAV chunks.</p>
+      </div>
+      <div class="card">
+        <span class="tag">quality</span>
+        <h3>Two-model pipeline</h3>
+        <p>Fast small model live, higher-quality medium model on the final pass — with echo and duplicate filtering.</p>
+      </div>
+      <div class="card">
+        <span class="tag">speakers</span>
+        <h3>Diarization + talk time</h3>
+        <p>System audio split into labeled speakers with a per-speaker duration &amp; percentage footer.</p>
+      </div>
+      <div class="card">
+        <span class="tag">live</span>
+        <h3>Attention alerts</h3>
+        <p>Get a macOS notification when someone says your name or a trigger word during the call.</p>
+      </div>
+      <div class="card">
+        <span class="tag">live</span>
+        <h3>Rolling summary</h3>
+        <p>A resource-aware TextRank summary is written next to the transcript while you record.</p>
+      </div>
+      <div class="card">
+        <span class="tag">tunable</span>
+        <h3>Vocabulary &amp; phrasebook</h3>
+        <p>Hot-reloadable custom vocabulary biases the decoder; regex phrasebook rewrites transcripts on the fly.</p>
+      </div>
+      <div class="card">
+        <span class="tag">import</span>
+        <h3>Transcribe existing files</h3>
+        <p>Point it at <code>m4a</code>/<code>mp4</code>/<code>wav</code> files — batch or one-off — for meetings recorded elsewhere.</p>
+      </div>
+      <div class="card">
+        <span class="tag">reliable</span>
+        <h3>Crash-safe by design</h3>
+        <p>Atomic writes, an append-only transcript log, and stale-session detection mean no lost work on a hard kill.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- /SECTION:features-highlight -->
+
+<!-- SECTION:cta -->
+<section class="section">
+  <div class="container">
+    <div class="card" style="text-align:center">
+      <h2 style="margin-top:0">Ready to try it?</h2>
+      <p class="lead" style="margin-inline:auto;max-width:52ch">
+        Install takes a few minutes: Homebrew for whisper.cpp + ffmpeg, clone the repo, build, download the model.
+      </p>
+      <div class="hero-cta" style="justify-content:center">
+        <a class="btn btn-primary" href="{{ '/quickstart/' | relative_url }}">Get started</a>
+        <a class="btn btn-ghost" href="https://github.com/Dimasmagadan/meet">View on GitHub</a>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- /SECTION:cta -->

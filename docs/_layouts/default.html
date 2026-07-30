@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if page.title %}{{ page.title }} &middot; {% endif %}{{ site.title }}</title>
+  <meta name="description" content="{{ page.description | default: site.description | strip }}">
+  <link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="{{ '/' | relative_url }}">
+        <span class="brand-mark">▌</span> meet
+      </a>
+      <nav class="site-nav">
+        <a href="{{ '/' | relative_url }}">Home</a>
+        <a href="{{ '/features/' | relative_url }}">Features</a>
+        <a href="{{ '/quickstart/' | relative_url }}">Quick Start</a>
+        <a href="https://github.com/Dimasmagadan/meet">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    {% if page.full_bleed %}{{ content }}{% else %}<div class="container">{{ content }}</div>{% endif %}
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span>Local meeting transcription &middot; <a href="https://github.com/Dimasmagadan/meet">Dimasmagadan/meet</a></span>
+      <span><a href="https://github.com/Dimasmagadan/meet/blob/master/LICENSE">MIT licensed</a></span>
+    </div>
+  </footer>
+</body>
+</html>

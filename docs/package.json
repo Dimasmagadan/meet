@@ -1,0 +1,9 @@
+{
+  "name": "meet-docs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Jekyll sources for the meet GitHub Pages site. Not published.",
+  "dependencies": {
+    "clamp-size": "1.0.1"
+  }
+}

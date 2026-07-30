@@ -178,6 +178,22 @@ Three file-based locks in `locks.ts`:
 
 All locks use `isPidAlive()` (via `process.kill(pid, 0)`) to detect dead processes and auto-clean stale locks.
 
+### Documentation & Website Sync
+
+`docs/` is a Jekyll site deployed to GitHub Pages by `.github/workflows/pages.yml` (Actions build, **not** the Pages auto-build — it needs `npm install` for `clamp-size`). Responsive typography/spacing use the `clamp-size` npm package via `sass.load_paths: [node_modules]`. There is no gem theme — a custom `docs/_layouts/default.html` + `docs/assets/css/style.scss`.
+
+When a CLI command, config flag, or user-facing feature is **added, changed, or removed**, update **all three** in the same change:
+
+1. `src/cli.ts` (source of truth)
+2. `README.md` — CLI Commands table, Features list, Configuration table
+3. `docs/` — edit the matching `<!-- SECTION:... -->` / `<!-- FEATURES:... -->` block (see marker map below). The marker names are the contract; do not edit outside a marker without adding a new named block. Close each block with the matching `<!-- /SECTION:... -->`.
+
+Marker map:
+- `index.html`: `SECTION:hero`, `SECTION:why`, `SECTION:features-highlight`, `SECTION:cta`
+- `features.md`: `FEATURES:core-recording`, `FEATURES:transcription-quality`, `FEATURES:speaker-identification`, `FEATURES:ab-comparison`, `FEATURES:live-attention`, `FEATURES:finalization`, `FEATURES:post-processing`, `FEATURES:import-batch`, `FEATURES:reliability`, `FEATURES:cli-reference`, `FEATURES:config-reference`
+
+Local preview: `cd docs && bundle install && npm install && bundle exec jekyll serve` → http://127.0.0.1:4000/meet/. Push to `master` triggers a deploy; check the Actions tab if the site doesn't update. `docs/package-lock.json` and `docs/Gemfile.lock` are committed for reproducible CI.
+
 ## Critical Gotchas
 
 ### Swift Audio

@@ -8,3 +8,13 @@ meet-*/
 tags.md
 triggers.json
 phrasebook.json
+
+# Jekyll site (docs/) — built by Actions, not committed
+docs/_site/
+docs/.jekyll-cache/
+docs/.jekyll-metadata
+docs/.sass-cache/
+docs/serve.log
+
+# Playwright MCP artifacts
+.playwright-mcp/

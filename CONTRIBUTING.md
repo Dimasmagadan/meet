@@ -104,7 +104,7 @@ Key constraints documented in `.opencode/skills/swift-audio/SKILL.md`:
 - One logical change per PR
 - Include tests for new behavior
 - Update `AGENTS.md` if adding new modules or changing architecture
-- Update `README.md` if changing CLI interface or user-facing behavior
+- Update `README.md` **and** the matching `docs/` page block (`<!-- SECTION:... -->`) if changing the CLI interface or any user-facing behavior — see "Documentation & Website Sync" in `AGENTS.md`
 
 ## Reporting Issues
 
