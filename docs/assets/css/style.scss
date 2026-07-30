@@ -82,9 +82,23 @@ img { max-width: 100%; height: auto; }
   letter-spacing: -.02em; color: var(--ink);
 }
 .brand-mark { color: var(--accent); }
-.site-nav { display: flex; gap: clamp.size(14, 24, 'xs', 'md'); flex-wrap: wrap; }
+.site-nav { display: flex; gap: clamp.size(14, 24, 'xs', 'md'); flex-wrap: wrap; margin-left: auto; }
 .site-nav a { color: var(--muted); font-weight: 500; font-size: clamp.size(15, 16, 'xs', 'md'); }
 .site-nav a:hover { color: var(--ink); text-decoration: none; }
+
+/* ---------- Language switcher ---------- */
+.lang-switch {
+  display: flex; align-items: center; gap: .35em;
+  margin-left: clamp.size(14, 24, 'xs', 'md');
+  font-size: clamp.size(13, 14, 'xs', 'md');
+}
+.lang-switch a {
+  color: var(--muted); font-weight: 600; letter-spacing: .02em;
+  padding: .15em .2em; border-radius: 6px;
+}
+.lang-switch a:hover { color: var(--ink); text-decoration: none; }
+.lang-switch a.active { color: var(--accent); }
+.lang-switch span { color: var(--line); user-select: none; }
 
 /* ---------- Typography ---------- */
 h1, h2, h3, h4 { line-height: 1.15; letter-spacing: -.02em; color: var(--ink); margin: 0 0 .5em; }

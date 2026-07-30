@@ -16,6 +16,19 @@ kramdown:
   syntax_highlighter: rouge
 permalink: pretty
 
+# Bilingual docs: English at site root, Russian under /ru/.
+# `lang` is auto-injected by path scope so individual pages don't repeat it.
+languages: [en, ru]
+defaults:
+  - scope:
+      path: ""
+    values:
+      lang: "en"
+  - scope:
+      path: "ru"
+    values:
+      lang: "ru"
+
 # Custom layout in docs/_layouts/default.html — no gem theme.
 # clamp-size is installed via npm into docs/node_modules and resolved here.
 sass:

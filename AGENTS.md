@@ -182,17 +182,20 @@ All locks use `isPidAlive()` (via `process.kill(pid, 0)`) to detect dead process
 
 `docs/` is a Jekyll site deployed to GitHub Pages by `.github/workflows/pages.yml` (Actions build, **not** the Pages auto-build — it needs `npm install` for `clamp-size`). Responsive typography/spacing use the `clamp-size` npm package via `sass.load_paths: [node_modules]`. There is no gem theme — a custom `docs/_layouts/default.html` + `docs/assets/css/style.scss`.
 
-When a CLI command, config flag, or user-facing feature is **added, changed, or removed**, update **all three** in the same change:
+**Bilingual.** English lives at the site root; Russian mirrors it under `docs/ru/` (same page slugs: `docs/ru/index.html`, `docs/ru/features.md`, `docs/ru/quickstart.md`). `page.lang` is auto-injected by `_config.yml` `defaults` (root→`en`, `ru/`→`ru`); the layout routes nav through a `/ru` prefix, localizes nav labels, renders an `EN | RU` switcher computed from `page.url`, and emits `hreflang` pairs. Code blocks, CLI commands, flags, and paths are **never** translated — only prose.
+
+When a CLI command, config flag, or user-facing feature is **added, changed, or removed**, update **all four** in the same change (the two `docs/` markers must stay byte-identical between languages so the same marker name resolves on both pages):
 
 1. `src/cli.ts` (source of truth)
 2. `README.md` — CLI Commands table, Features list, Configuration table
-3. `docs/` — edit the matching `<!-- SECTION:... -->` / `<!-- FEATURES:... -->` block (see marker map below). The marker names are the contract; do not edit outside a marker without adding a new named block. Close each block with the matching `<!-- /SECTION:... -->`.
+3. `docs/` (English) — edit the matching `<!-- SECTION:... -->` / `<!-- FEATURES:... -->` block (see marker map below). The marker names are the contract; do not edit outside a marker without adding a new named block. Close each block with the matching `<!-- /SECTION:... -->`.
+4. `docs/ru/` (Russian) — edit the **same-named** marker block, translating prose only.
 
-Marker map:
+Marker map (applies to both `docs/<file>` and `docs/ru/<file>`):
 - `index.html`: `SECTION:hero`, `SECTION:why`, `SECTION:features-highlight`, `SECTION:cta`
 - `features.md`: `FEATURES:core-recording`, `FEATURES:transcription-quality`, `FEATURES:speaker-identification`, `FEATURES:ab-comparison`, `FEATURES:live-attention`, `FEATURES:finalization`, `FEATURES:post-processing`, `FEATURES:import-batch`, `FEATURES:reliability`, `FEATURES:cli-reference`, `FEATURES:config-reference`
 
-Local preview: `cd docs && bundle install && npm install && bundle exec jekyll serve` → http://127.0.0.1:4000/meet/. Push to `master` triggers a deploy; check the Actions tab if the site doesn't update. `docs/package-lock.json` and `docs/Gemfile.lock` are committed for reproducible CI.
+Local preview: `cd docs && bundle install && npm install && bundle exec jekyll serve` → http://127.0.0.1:4000/meet/ (EN) / http://127.0.0.1:4000/meet/ru/ (RU). Push to `master` triggers a deploy; check the Actions tab if the site doesn't update. `docs/package-lock.json` and `docs/Gemfile.lock` are committed for reproducible CI.
 
 ## Critical Gotchas
 

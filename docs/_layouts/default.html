@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ page.lang | default: 'en' }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,19 +7,36 @@
   <meta name="description" content="{{ page.description | default: site.description | strip }}">
   <link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>">
+
+  {% comment %} Bilingual hreflang pair: en at root, ru under /ru/.
+     Both URLs derive from the normalized EN path (page.url with any
+     leading /ru stripped) so they resolve correctly on either language. {% endcomment %}
+  {% assign en_url = page.url | remove_first: '/ru' %}
+  {% assign ru_url = '/ru' | append: en_url %}
+  <link rel="alternate" hreflang="en" href="{{ en_url | absolute_url }}">
+  <link rel="alternate" hreflang="ru" href="{{ ru_url | absolute_url }}">
+  <link rel="alternate" hreflang="x-default" href="{{ en_url | absolute_url }}">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="site-header">
     <div class="container header-inner">
-      <a class="brand" href="{{ '/' | relative_url }}">
+      {% assign lang = page.lang | default: 'en' %}
+      {% if lang == 'ru' %}{% assign lp = '/ru' %}{% else %}{% assign lp = '' %}{% endif %}
+
+      <a class="brand" href="{{ lp | append: '/' | relative_url }}">
         <span class="brand-mark">▌</span> meet
       </a>
       <nav class="site-nav">
-        <a href="{{ '/' | relative_url }}">Home</a>
-        <a href="{{ '/features/' | relative_url }}">Features</a>
-        <a href="{{ '/quickstart/' | relative_url }}">Quick Start</a>
+        <a href="{{ lp | append: '/' | relative_url }}">{% if lang == 'ru' %}Главная{% else %}Home{% endif %}</a>
+        <a href="{{ lp | append: '/features/' | relative_url }}">{% if lang == 'ru' %}Возможности{% else %}Features{% endif %}</a>
+        <a href="{{ lp | append: '/quickstart/' | relative_url }}">{% if lang == 'ru' %}Быстрый старт{% else %}Quick Start{% endif %}</a>
         <a href="https://github.com/Dimasmagadan/meet">GitHub</a>
+      </nav>
+      <nav class="lang-switch" aria-label="Language">
+        <a href="{{ en_url | relative_url }}" {% if lang == 'en' %}class="active" aria-current="true"{% endif %}>EN</a>
+        <span aria-hidden="true">/</span>
+        <a href="{{ ru_url | relative_url }}" {% if lang == 'ru' %}class="active" aria-current="true"{% endif %}>RU</a>
       </nav>
     </div>
   </header>

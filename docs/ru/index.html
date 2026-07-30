@@ -1,0 +1,120 @@
+---
+layout: default
+full_bleed: true
+lang: ru
+description: >-
+  meet — локальная расшифровка встреч для macOS (Apple Silicon). Записывает
+  микрофон и звук системы, расшифровывает на устройстве через whisper.cpp,
+  выдаёт markdown с тайм-кодами. Без облака, без API-ключей, данные не покидают
+  ваш компьютер.
+---
+
+<!-- SECTION:hero -->
+<section class="hero">
+  <div class="container">
+    <span class="eyebrow">Локально &middot; macOS &middot; Apple Silicon</span>
+    <h1>Встречи, расшифрованные<br>прямо на вашем Mac.</h1>
+    <p class="lead">
+      <strong>meet</strong> записывает ваш микрофон и звук системы, расшифровывает
+      всё на устройстве через whisper.cpp и сохраняет аккуратный markdown с
+      тайм-кодами. Без облака, без API-ключей, без подписки — данные никогда не
+      покидают ваш компьютер.
+    </p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="{{ '/ru/quickstart/' | relative_url }}">Быстрый старт →</a>
+      <a class="btn btn-ghost" href="{{ '/ru/features/' | relative_url }}">Все возможности</a>
+    </div>
+  </div>
+</section>
+<!-- /SECTION:hero -->
+
+<!-- SECTION:why -->
+<section class="section">
+  <div class="container">
+    <div class="section-head">
+      <h2>Почему meet</h2>
+      <p>Ключевые отличия — то, что делает этот инструмент лучшим выбором для приватных, офлайн-конспектов встреч.</p>
+    </div>
+    <ul class="why-list">
+      <li><strong>100% локально и приватно.</strong> Аудио расшифровывается на вашей машине через whisper.cpp. Ничего не загружается — ни одного раза: без аккаунта, без API-ключей, без третьих сторон.</li>
+      <li><strong>Работает офлайн.</strong> После скачивания модели весь конвейер работает без сети. Поездки, перелёты, плохой Wi-Fi в кофейне — не помеха.</li>
+      <li><strong>Без подписки и без поминутной оплаты.</strong> Бесплатно навсегда, MIT-лицензия, открытый код. Записывайте сколько угодно.</li>
+      <li><strong>Ускорение на GPU Metal.</strong> whisper.cpp использует GPU Apple Silicon по умолчанию — быстрая расшифровка в реальном времени без отдельной видеокарты.</li>
+      <li><strong>Двухканальная запись.</strong> <em>Вас</em> (микрофон) и <em>собеседников</em> (звук системы) пишет раздельно, поэтому спикеры размечаются по источнику с самого первого куска.</li>
+      <li><strong>Настоящая диаризация.</strong> На финальном проходе звук системы разбивается на <code>Speaker 1</code>, <code>Speaker 2</code>… со статистикой времени разговора по каждому спикеру.</li>
+      <li><strong>Вживую, а не постфактум.</strong> Куски расшифровываются прямо во время разговора; накатная выжимка и оповещения внимания появляются в ходе звонка.</li>
+      <li><strong>Вывод в простом тексте, который ваш.</strong> Каждая встреча — папка markdown-файлов в <code>~/Meetings/</code>: версонируйте, грепайте, автоматизируйте.</li>
+    </ul>
+  </div>
+</section>
+<!-- /SECTION:why -->
+
+<!-- SECTION:features-highlight -->
+<section class="section section-alt">
+  <div class="container">
+    <div class="section-head">
+      <h2>На всю встречу целиком</h2>
+      <p>От первой секунды записи до поискимого, размеченного, подписанного спикерами протокола. Несколько ярких моментов — все возможности см. на <a href="{{ '/ru/features/' | relative_url }}">отдельной странице</a>.</p>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <span class="tag">запись</span>
+        <h3>Двухканальная запись</h3>
+        <p>Микрофон (вы) + звук системы (остальные) пишутся параллельно, атомарно передаются 15-секундными WAV-кусками.</p>
+      </div>
+      <div class="card">
+        <span class="tag">качество</span>
+        <h3>Двухмодельный конвейер</h3>
+        <p>Быстрая small-модель вживую, более качественная medium-модель на финальном проходе — с фильтром эха и дубликатов.</p>
+      </div>
+      <div class="card">
+        <span class="tag">спикеры</span>
+        <h3>Диаризация + время речи</h3>
+        <p>Звук системы разбивается на подписанных спикеров с футером по длительности и проценту для каждого.</p>
+      </div>
+      <div class="card">
+        <span class="tag">вживую</span>
+        <h3>Оповещения внимания</h3>
+        <p>Получайте macOS-уведомление, когда во время звонка звучит ваше имя или слово-триггер.</p>
+      </div>
+      <div class="card">
+        <span class="tag">вживую</span>
+        <h3>Накатная выжимка</h3>
+        <p>Выжимка TextRank с учётом нагрузки пишется рядом с транскриптом прямо во время записи.</p>
+      </div>
+      <div class="card">
+        <span class="tag">настройка</span>
+        <h3>Словарь и фразеонимус</h3>
+        <p>Горячо-перезагружаемый словарь смещает декодер; фразеонимус-regex переписывает транскрипт на лету.</p>
+      </div>
+      <div class="card">
+        <span class="tag">импорт</span>
+        <h3>Расшифровка готовых файлов</h3>
+        <p>Дайте ему <code>m4a</code>/<code>mp4</code>/<code>wav</code> — пакетно или по одному — для встреч, записанных в других местах.</p>
+      </div>
+      <div class="card">
+        <span class="tag">надёжность</span>
+        <h3>Защита от сбоев по дизайну</h3>
+        <p>Атомарные записи, append-only лог транскрипта и детектор зависших сессий — ничего не теряется при жёстком завершении.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- /SECTION:features-highlight -->
+
+<!-- SECTION:cta -->
+<section class="section">
+  <div class="container">
+    <div class="card" style="text-align:center">
+      <h2 style="margin-top:0">Готовы попробовать?</h2>
+      <p class="lead" style="margin-inline:auto;max-width:52ch">
+        Установка занимает пару минут: Homebrew для whisper.cpp + ffmpeg, клонируйте репозиторий, соберите, скачайте модель.
+      </p>
+      <div class="hero-cta" style="justify-content:center">
+        <a class="btn btn-primary" href="{{ '/ru/quickstart/' | relative_url }}">Начать</a>
+        <a class="btn btn-ghost" href="https://github.com/Dimasmagadan/meet">Смотреть на GitHub</a>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- /SECTION:cta -->
