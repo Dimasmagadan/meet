@@ -10,7 +10,7 @@ function makeSessionDir(): string {
 }
 
 function pendingTagsPath(sessionDir: string): string {
-  return join(sessionDir, "pending-tags.json");
+  return join(sessionDir, "pending-tags.log");
 }
 
 test("hasTagCaseInsensitive: matches ignoring case", () => {
@@ -18,24 +18,27 @@ test("hasTagCaseInsensitive: matches ignoring case", () => {
   assert.equal(hasTagCaseInsensitive(["Important"], "Dev"), false);
 });
 
-test("queuePendingTags: writes a JSON array, dedups case-insensitively", async () => {
+test("queuePendingTags: appends tag lines; dedup happens at drain", async () => {
   const dir = makeSessionDir();
   try {
     await queuePendingTags(dir, ["Tech", "tech", "Arch", "tech"]);
-    const raw = JSON.parse(readFileSync(pendingTagsPath(dir), "utf-8"));
-    assert.deepEqual(raw, ["Tech", "Arch"]);
+    assert.equal(readFileSync(pendingTagsPath(dir), "utf-8"), "Tech\ntech\nArch\ntech\n");
+    assert.deepEqual(drainPendingTags(dir), ["Tech", "Arch"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("queuePendingTags: merges across two calls before a drain", async () => {
+test("queuePendingTags: concurrent calls lose no tags", async () => {
   const dir = makeSessionDir();
   try {
-    await queuePendingTags(dir, ["One"]);
-    await queuePendingTags(dir, ["two", "One", "Two"]);
-    const raw = JSON.parse(readFileSync(pendingTagsPath(dir), "utf-8"));
-    assert.deepEqual(raw, ["One", "two"]);
+    await Promise.all([
+      queuePendingTags(dir, ["Alpha"]),
+      queuePendingTags(dir, ["beta", "Alpha", "Gamma"]),
+    ]);
+    const drained = drainPendingTags(dir);
+    assert.deepEqual(new Set(drained), new Set(["Alpha", "beta", "Gamma"]));
+    assert.equal(existsSync(pendingTagsPath(dir)), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

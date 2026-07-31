@@ -312,16 +312,18 @@ export class Recorder {
       if (!hasTagCaseInsensitive(this.session.tags, tag)) {
         this.session.tags.push(tag);
         added.push(tag);
-        void appendTagToFile(tag); // best-effort: surface it in the picker's tags.md too
+        void appendTagToFile(tag).catch((err) => this.warn("tags.md append failed", err));
       }
     }
     if (added.length === 0) return;
     void writeAtomic(
       join(this.session.sessionDir, "session.json"),
       JSON.stringify(this.session, null, 2),
-    ).then(() => {
-      process.stdout.write(`\n${chalk.green(`Tag added: ${added.join(", ")}`)}\n`);
-    });
+    )
+      .then(() => {
+        process.stdout.write(`\n${chalk.green(`Tag added: ${added.join(", ")}`)}\n`);
+      })
+      .catch((err) => this.warn("session.json tags write failed", err));
   }
 
   private spawnBackgroundFinalizer(): void {

@@ -74,28 +74,33 @@ export function hasTagCaseInsensitive(arr: string[], tag: string): boolean {
 }
 
 function pendingTagsPath(sessionDir: string): string {
-  return resolve(sessionDir, "pending-tags.json");
+  return resolve(sessionDir, "pending-tags.log");
 }
 
+// Append-only inbox: each `meet tag` appends its lines in one O_APPEND write,
+// so concurrent writers can never clobber each other's tags (no read-modify-write).
+// Dedup is deferred to drainPendingTags().
 export async function queuePendingTags(sessionDir: string, tags: string[]): Promise<void> {
-  const path = pendingTagsPath(sessionDir);
-  let existing: string[] = [];
-  if (existsSync(path)) {
-    try { existing = JSON.parse(readFileSync(path, "utf-8")); } catch {}
-  }
-  for (const tag of tags) {
-    if (!hasTagCaseInsensitive(existing, tag)) existing.push(tag);
-  }
-  await writeAtomic(path, JSON.stringify(existing));
+  const lines = tags.map((t) => `${t.trim()}\n`).filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return;
+  await appendFile(pendingTagsPath(sessionDir), lines.join(""), "utf-8");
 }
 
 // Drains and deletes the inbox; returns [] if nothing pending.
 export function drainPendingTags(sessionDir: string): string[] {
   const path = pendingTagsPath(sessionDir);
   if (!existsSync(path)) return [];
-  let tags: string[] = [];
-  try { tags = JSON.parse(readFileSync(path, "utf-8")); } catch {}
+  let lines: string[] = [];
+  try { lines = readFileSync(path, "utf-8").split("\n"); } catch {}
   try { unlinkSync(path); } catch {}
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const line of lines) {
+    const tag = line.trim();
+    if (!tag || seen.has(tag.toLowerCase())) continue;
+    seen.add(tag.toLowerCase());
+    tags.push(tag);
+  }
   return tags;
 }
 

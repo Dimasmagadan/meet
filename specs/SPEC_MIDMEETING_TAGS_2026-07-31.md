@@ -28,10 +28,12 @@ Signals (`SIGUSR1`/`SIGUSR2`/`SIGWINCH`) carry no payload, and tag text is arbit
 ```
 Meet.app "Add Tag…" → NSAlert text input
   → spawn: meet tag <sessionDir> <tag1> [tag2 ...]   (one-shot, exits immediately)
-       → writes/merges <sessionDir>/pending-tags.json   (atomic .tmp→rename, like everything else)
+       → appends each tag as a line to <sessionDir>/pending-tags.log
+         (one O_APPEND appendFile per call — no read-modify-write, so concurrent
+          writers can never clobber each other; dedup deferred to the drain)
 
 Recorder (already running, headless or interactive)
-  → existing 5s status tick also checks pending-tags.json
+  → existing 5s status tick also checks pending-tags.log
        → merges into session.tags (case-insensitive dedup), unlinks the file
        → writeAtomic(session.json)
        → new tags also appended to tags.md via existing appendTagToFile()
@@ -56,34 +58,39 @@ Export the existing private dedup helper and add a small queue writer/reader:
 export function hasTagCaseInsensitive(arr: string[], tag: string): boolean { ... }
 
 function pendingTagsPath(sessionDir: string): string {
-  return resolve(sessionDir, "pending-tags.json");
+  return resolve(sessionDir, "pending-tags.log");
 }
 
+// Append-only inbox: each `meet tag` appends its lines in one O_APPEND write,
+// so concurrent writers can never clobber each other's tags (no read-modify-write).
+// Dedup is deferred to drainPendingTags().
 export async function queuePendingTags(sessionDir: string, tags: string[]): Promise<void> {
-  const path = pendingTagsPath(sessionDir);
-  let existing: string[] = [];
-  if (existsSync(path)) {
-    try { existing = JSON.parse(readFileSync(path, "utf-8")); } catch {}
-  }
-  for (const tag of tags) {
-    if (!hasTagCaseInsensitive(existing, tag)) existing.push(tag);
-  }
-  await writeAtomic(path, JSON.stringify(existing));
+  const lines = tags.map((t) => `${t.trim()}\n`).filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return;
+  await appendFile(pendingTagsPath(sessionDir), lines.join(""), "utf-8");
 }
 
 // Drains and deletes the inbox; returns [] if nothing pending.
 export function drainPendingTags(sessionDir: string): string[] {
   const path = pendingTagsPath(sessionDir);
   if (!existsSync(path)) return [];
-  let tags: string[] = [];
-  try { tags = JSON.parse(readFileSync(path, "utf-8")); } catch {}
+  let lines: string[] = [];
+  try { lines = readFileSync(path, "utf-8").split("\n"); } catch {}
   try { unlinkSync(path); } catch {}
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const line of lines) {
+    const tag = line.trim();
+    if (!tag || seen.has(tag.toLowerCase())) continue;
+    seen.add(tag.toLowerCase());
+    tags.push(tag);
+  }
   return tags;
 }
 ```
-`writeAtomic` is already imported from `./storage.js` in this file. `unlinkSync`/`existsSync` join the existing `node:fs` import.
+`appendFile` (default flag `a`) creates the inbox on first write, so no exists-check race at open time. `unlinkSync`/`existsSync` join the existing `node:fs` import.
 
-`// ponytail:` read-then-unlink has a sub-second race if `meet tag` writes between `drainPendingTags`'s read and unlink — a single-user local tool polling every 5s, upgrade to a lockfile if it ever matters.
+`// ponytail:` the remaining read-then-unlink window is a writer opening the file in the same instant the drainer reads-and-unlinks — a single-user local tool polling every 5s; the original writer-writer race is gone (O_APPEND), and the drain-write window only drops a tag that the next click re-adds. Upgrade to a lockfile if it ever matters.
 
 ### 3.2 `src/cli.ts` — `meet tag` subcommand
 
@@ -247,7 +254,7 @@ No changes to `runTagPicker()`, `writeMetaFile()`, `types.ts`, pipeline, finaliz
 
 | Layer | Approach |
 |---|---|
-| `queuePendingTags` / `drainPendingTags` | Unit test in `src/tags.test.ts` (new cases): dedup case-insensitive, merge across two `queuePendingTags` calls before a drain, drain-then-empty-file returns `[]` |
+| `queuePendingTags` / `drainPendingTags` | Unit test in `src/tags.test.ts` (new cases): dedup case-insensitive, concurrent `queuePendingTags` calls lose no tags, drain-then-empty-file returns `[]` |
 | `promptTags` merge fix | Manual — no existing `recorder.test.ts` to extend (recorder has no unit coverage today; stays that way) |
 | End-to-end (menu bar) | Start recording from `Meet.app` → "Add Tag…" mid-meeting → `cat <sessionDir>/session.json` shows the tag within 5s → Stop → `meta.md` `Tags:` line includes it |
 | End-to-end (CLI) | `meet start "x"` in a terminal, from another shell run `meet tag <sessionDir> foo`, confirm it shows up in the stop-time picker as pre-selected/merged and lands in `meta.md` |
@@ -259,6 +266,7 @@ No changes to `runTagPicker()`, `writeMetaFile()`, `types.ts`, pipeline, finaliz
 
 | Risk | Mitigation |
 |---|---|
-| Read-then-unlink race on `pending-tags.json` if `meet tag` runs at the exact instant of a drain | `ponytail:` noted in §3.1; single-user local tool, 5s poll — a lost tag just gets re-added on next click |
+| Writer-writer race: two concurrent `meet tag` calls silently drop tags | Fixed in this change — append-only O_APPEND lines, dedup deferred to the drain (`§3.1`) |
+| Read-then-unlink race on `pending-tags.log` if `meet tag` runs at the exact instant of a drain | `ponytail:` noted in §3.1; single-user local tool, 5s poll — a lost tag just gets re-added on next click |
 | Menu bar spawns a `meet tag` process per click | One-shot, `stdio: nullDevice`, exits immediately — same cost profile as the existing background finalizer spawn |
 | User adds a tag right as the meeting is stopped (race between the 5s tick and `promptTags()`) | `promptTags()` calls `applyPendingTags()` itself first (§3.3), closing the gap down to the write-to-disk latency of `meet tag`, not the 5s tick |
