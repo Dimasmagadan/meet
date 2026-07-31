@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **Test single file** | `npm run build && node --test dist/import.test.js` |
 | **Type check** | `npm run lint` |
 | **Run app** | `node dist/main.js start "Title"` |
-| **Build Swift** | `cd native/AudioCapture && swift build -c release && cd ../..` |
+| **Build Swift** | `./native/AudioCapture/scripts/build.sh` |
 
 ## Architecture Overview
 

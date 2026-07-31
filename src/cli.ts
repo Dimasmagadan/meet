@@ -309,7 +309,7 @@ function checkSetup(config: Config, mode: string): string[] {
 
   const captureBin = getCaptureBinPath(config);
   if (!existsSync(captureBin)) {
-    errors.push(`AudioCapture not built: ${captureBin}. Run: cd native/AudioCapture && swift build -c release`);
+    errors.push(`AudioCapture not built: ${captureBin}. Run: ./native/AudioCapture/scripts/build.sh`);
   }
 
   return errors;
@@ -355,7 +355,7 @@ async function runSetup() {
     console.log(chalk.green("  AudioCapture: ") + captureBin);
   } else {
     console.log(chalk.red("  AudioCapture: NOT BUILT"));
-    console.log(chalk.gray("    Build: cd native/AudioCapture && swift build -c release"));
+    console.log(chalk.gray("    Build: ./native/AudioCapture/scripts/build.sh"));
     ok = false;
   }
 

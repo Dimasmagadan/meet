@@ -1,7 +1,9 @@
 #!/bin/sh
 # Assembles the Swift menu-bar binary into a signed, Dock-less Meet.app bundle.
-# Ad-hoc signature (-s -) is stable per bundle path, so TCC grants persist for
-# a bundle kept at a fixed location (recommended: ~/Applications/Meet.app).
+# Signed with a stable self-signed identity "Meet Self-Signed" when present, so
+# TCC grants persist across rebuilds. Ad-hoc (-s -) mints a new cdhash every
+# build, so TCC can't durably recognize the app and re-prompts each launch.
+# Falls back to ad-hoc on machines without the cert (CI / other contributors).
 set -e
 
 cd "$(dirname "$0")/.."          # native/MenuBar
@@ -20,9 +22,15 @@ if [ -f Meet.icns ]; then
   cp Meet.icns "$APP/Contents/Resources/Meet.icns"
 fi
 
-# Ad-hoc sign. --deep not needed (no embedded frameworks).
-codesign --force --sign - "$APP"
+# Sign with a stable identity when available so TCC grants survive rebuilds;
+# ad-hoc fallback otherwise. --deep not needed (no embedded frameworks).
+if security find-identity -p codesigning | grep -q '"Meet Self-Signed"'; then
+  SIGN_ID="Meet Self-Signed"
+else
+  SIGN_ID="-"
+fi
+codesign --force --sign "$SIGN_ID" "$APP"
+echo "Signed with: $SIGN_ID"
 
 echo "Built: $APP"
-echo "Install (stable path for TCC):  cp -R \"$APP\" ~/Applications/Meet.app"
-echo "Launch:                          open \"$APP\"   # NOT the raw binary"
+echo "Launch:  open \"$APP\"   # NOT the raw binary"

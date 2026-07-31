@@ -16,7 +16,7 @@ Thanks for your interest. This is a small, opinionated tool — here's how to wo
 ```bash
 npm install
 npm run build                              # TypeScript → dist/
-cd native/AudioCapture && swift build -c release   # Swift binary
+./native/AudioCapture/scripts/build.sh             # Swift binary
 ```
 
 ### Run

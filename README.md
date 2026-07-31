@@ -46,7 +46,7 @@ git clone https://github.com/Dimasmagadan/meet.git
 cd meet
 npm install
 npm run build
-cd native/AudioCapture && swift build -c release && cd ../..
+./native/AudioCapture/scripts/build.sh
 ```
 
 ### 3. Download model and verify setup

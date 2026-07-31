@@ -48,7 +48,7 @@ SWIFT_BIN="$(pwd)/native/AudioCapture/.build/release/AudioCapture"
 if [[ -f "$SWIFT_BIN" ]]; then
     ok "AudioCapture: $SWIFT_BIN"
 else
-    warn "AudioCapture not built. Run: cd native/AudioCapture && swift build -c release"
+    warn "AudioCapture not built. Run: ./native/AudioCapture/scripts/build.sh"
 fi
 
 OUTPUT_DIR="$HOME/Meetings"

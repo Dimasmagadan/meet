@@ -67,7 +67,7 @@ meet start "Title"
 
 ```bash
 npm install && npm run build                         # TypeScript
-cd native/AudioCapture && swift build -c release     # Swift
+./native/AudioCapture/scripts/build.sh              # Swift
 node dist/main.js start "Meeting Title"              # Run
 npm run lint                                         # Type-check (tsc --noEmit)
 npm run build && node --test dist/import.test.js     # Single test file

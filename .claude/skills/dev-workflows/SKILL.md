@@ -21,7 +21,7 @@ Start in `src/cleanText()` (filter noise tokens) or `src/final-pass.ts` (echo re
 ## Debugging Audio Capture
 
 Run `meet doctor` for a 12-second health check, or check:
-- Swift build: `cd native/AudioCapture && swift build -c release`
+- Swift build: `./native/AudioCapture/scripts/build.sh`
 - Audio permission: System Preferences → Privacy → Screen Recording → Enable Terminal
 - whisper-cli: `which whisper-cli` should find Homebrew binary
 

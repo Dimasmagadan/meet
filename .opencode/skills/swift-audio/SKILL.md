@@ -40,7 +40,7 @@ config.height = 2
 ## Build
 
 ```bash
-cd native/AudioCapture && swift build -c release
+./native/AudioCapture/scripts/build.sh
 # Output: .build/release/AudioCapture
 ```
 
