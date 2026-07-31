@@ -45,10 +45,10 @@ meet start "Title"
 ├── src/vad.ts               — voice activity detection wrapper (optional)
 ├── src/locks.ts             — file-based locks for finalization and active recording
 ├── src/status.ts            — display active session/finalization status
-├── native/AudioCapture/     — Swift CLI: ScreenCaptureKit + AVAudioEngine → WAV chunks
-│   ├── main.swift              — CLI entry, --output-dir, --chunk-duration, --mode, --silence-timeout
+├── native/AudioCapture/     — Swift CLI: Core Audio process tap + AVAudioEngine → WAV chunks
+│   ├── main.swift              — CLI entry, --output-dir, --chunk-duration, --mode, --silence-timeout; guards SystemAudioCapture behind `#available(macOS 14.2, *)`
 │   ├── MicCapture.swift        — AVAudioEngine input tap, VoiceProcessing IO, 9-channel workaround
-│   ├── SystemAudioCapture.swift — ScreenCaptureKit audio-only capture
+│   ├── SystemAudioCapture.swift — Core Audio process tap (macOS 14.2+, SPEC_TCC_SCREEN_REPROMPT_2026-07-31 §6): `CATapDescription(__monoGlobalTapButExcludeProcesses:)` → private aggregate device (tap + default output subdevice for clock) → `AudioDeviceCreateIOProcIDWithBlock` → manual linear-interpolation resample to 16kHz, same pattern as MicCapture. Needs only "System Audio Recording Only" TCC, not Screen Recording — replaced ScreenCaptureKit, which required full Screen Recording for audio-only capture and was subject to periodic re-approval nags
 │   ├── WAVWriter.swift         — 16kHz mono 16-bit PCM WAV output, atomic rename
 │   └── Logger.swift            — structured JSON logging
 └── native/MenuBar/         — Swift menu-bar .app (SPEC_MENUBAR_UI_2026-07-30): spawns `meet start --headless`, controls via SIGINT/SIGUSR1/SIGUSR2/SIGWINCH; ad-hoc signed, Dock-less, optional launch-at-login
@@ -56,10 +56,10 @@ meet start "Title"
     ├── AppDelegate.swift       — status item + menu (start/pause/stop/extend, Launch-at-Login), title modal, TCC preflight before spawn
     ├── RecordingController.swift — headless meet spawn + POSIX signal control + attach-to-existing-session
     ├── RunnerResolver.swift    — shells out to `meet bin-path` (PATH augmented with /opt/homebrew/bin,/usr/local/bin) → cached Runner{node,[main.js]}
-    ├── PermissionController.swift — TCC baseline (Phase 2 branch A+B): ensureMic() gated, ensureScreen() fail-open, openPrivacySettings() deep-link
+    ├── PermissionController.swift — TCC baseline: ensureMic() gated synchronously; no screen/system-audio preflight (SPEC_TCC_SCREEN_REPROMPT_2026-07-31 §6 — Core Audio process taps have no public preflight API; AudioCapture raises the "System Audio Recording Only" prompt itself as the responsible process), openPrivacySettings() deep-link
     ├── LoginItemController.swift — SMAppService.mainApp launch-at-login wrapper (macOS 13+)
     ├── SessionMonitor.swift    — polls active-recording.lock every 5s → attaches to CLI-started sessions
-    ├── Info.plist              — LSUIElement, NSMicrophoneUsageDescription, NSScreenCaptureDescription, bundle id com.dimasmagadan.meet.menubar
+    ├── Info.plist              — LSUIElement, NSMicrophoneUsageDescription, bundle id com.dimasmagadan.meet.menubar (NSScreenCaptureDescription dropped — not a real TCC key; Phase 2 adds NSAudioCaptureUsageDescription)
     └── scripts/build-app.sh    — swift build → assemble Meet.app → ad-hoc codesign (-s -)
 ```
 
@@ -213,7 +213,7 @@ Local preview: `cd docs && bundle install && npm install && bundle exec jekyll s
 
 - **VoiceProcessing IO 9-channel bug**: `setVoiceProcessingEnabled(true)` silently changes output to 9 channels. Do NOT use `AVAudioConverter` — it crashes. Extract channel 0 manually, resample with linear interpolation.
 - **System audio ducking**: set `voiceProcessingOtherAudioDuckingConfiguration` with `enableAdvancedDucking: false, duckingLevel: .min`
-- **ScreenCaptureKit**: requires minimal video config (`width: 2, height: 2`) even for audio-only. Set `excludesCurrentProcessAudio = true`
+- **Core Audio process tap** (system audio, macOS 14.2+): `CATapDescription`'s convenience initializers are all `NS_REFINED_FOR_SWIFT` with no Swift overlay shipped in the SDK — Swift only sees the `__`-prefixed selectors (e.g. `CATapDescription(__monoGlobalTapButExcludeProcesses:)`), confirmed via `swiftc -typecheck` against the real SDK headers, not guessed
 - **Atomic chunk handoff**: write `*.wav.tmp`, finalize header, close, then `rename()` to `*.wav`
 
 ### Transcription

@@ -28,6 +28,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.showAlert(title: "Cannot start recording", message: message)
             }
         }
+        recordingController.onCaptureFailed = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.showAlert(
+                    title: "Recording failed to start",
+                    message: "Meet could not capture system audio. Grant Meet \"System Audio Recording Only\" access in System Settings → Privacy & Security, then try again."
+                )
+                openPrivacySettings(.screenCapture)
+            }
+        }
 
         sessionMonitor.onRecordingDetected = { [weak self] sessionDir in
             DispatchQueue.main.async {
@@ -93,8 +103,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let resolved = title.isEmpty ? "meeting" : title
         saveLastTitle(resolved)
 
-        // TCC preflight (SPEC §5). Mic is gated synchronously and refuses on deny;
-        // screen is best-effort (its prompt can't be read back), then we spawn.
+        // TCC preflight. Mic is gated synchronously and refuses on deny. System audio has no
+        // public preflight API (Core Audio process taps, SPEC_TCC_SCREEN_REPROMPT_2026-07-31
+        // §6) — AudioCapture raises the real "System Audio Recording Only" prompt itself, and
+        // capture failures are surfaced post-spawn via RecordingController.onCaptureFailed.
         // @MainActor: startRecording() is a plain @objc action — dynamically on the
         // main thread, but with no *static* isolation, so a bare Task{} resumes off-main
         // after the await. Pin to the main actor so NSAlert.runModal() stays on-main and
@@ -110,7 +122,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 openPrivacySettings(.microphone)
                 return
             }
-            _ = self.permission.ensureScreen()
             self.recordingController.start(title: resolved)
         }
     }

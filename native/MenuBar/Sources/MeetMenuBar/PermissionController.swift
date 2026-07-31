@@ -1,13 +1,15 @@
 import AVFoundation
-import CoreGraphics
 import AppKit
 
-// TCC preflight for Mic + Screen Recording (SPEC §5). We implement branches A + B as the
-// default baseline (the spike may refine this): pre-request from the app *itself* before
-// spawning children, so Meet.app enters TCC first as the responsible process (bare child
-// binaries like node/AudioCapture otherwise get unreliable prompts). Mic can be gated
-// synchronously; screen capture's request API cannot return the user's live choice, so it
-// only triggers the prompt and fails open.
+// TCC preflight for Mic (SPEC_TCC_SCREEN_REPROMPT_2026-07-31 §5, §6). Pre-request from the app
+// itself before spawning children, so Meet.app enters TCC first as the responsible process
+// (bare child binaries like node/AudioCapture otherwise get unreliable prompts). Mic can be
+// gated synchronously and refused on deny.
+//
+// System audio has no preflight here: since the Core Audio process tap rewrite (§6) it needs
+// only "System Audio Recording Only" (kTCCServiceAudioCapture), which has no public
+// CGPreflight-equivalent API. AudioCapture raises that prompt itself as the responsible
+// process; failures are surfaced post-spawn via RecordingController.onCaptureFailed.
 final class PermissionController {
     /// Pre-request microphone access. Returns false only when explicitly denied/restricted
     /// (branch A refuse-to-start). Fail-open on @unknown states.
@@ -27,21 +29,13 @@ final class PermissionController {
             return true
         }
     }
-
-    /// Preflight screen capture; if not already granted, trigger the TCC prompt so Meet.app
-    /// enters the screen-capture authorization first. Cannot synchronously read the user's
-    /// choice, so this never hard-blocks — it returns whether access was already granted
-    /// before the call (informational; recording proceeds either way).
-    @discardableResult
-    func ensureScreen() -> Bool {
-        if CGPreflightScreenCaptureAccess() { return true }
-        _ = CGRequestScreenCaptureAccess()
-        return false
-    }
 }
 
 enum PrivacyPane: String {
     case microphone = "Privacy_Microphone"
+    // Same underlying pane as before the Core Audio tap rewrite: System Settings merged Screen
+    // Recording and System Audio Recording into one "Screen & System Audio Recording" pane
+    // under this identifier.
     case screenCapture = "Privacy_ScreenCapture"
 }
 

@@ -12,6 +12,10 @@ class RecordingController {
     // Fires when Start cannot proceed (meet not found / spawn failed) so AppDelegate
     // can surface an NSAlert instead of silently doing nothing.
     var onStartFailed: ((String) -> Void)?
+    // Fires when the spawned recording exits shortly after start without the user
+    // stopping it (capture/permission failure). Distinct from onStartFailed so
+    // AppDelegate can point the user at the right privacy pane (SPEC_TCC_SCREEN_REPROMPT §5.1).
+    var onCaptureFailed: (() -> Void)?
 
     private var process: Process?
     private var attachedPid: pid_t?
@@ -21,6 +25,12 @@ class RecordingController {
     private var startedAt: Date?
     private var timer: Timer?
     private var sessionMonitorTimer: Timer?
+    // Capture-failure heuristics. userStopped distinguishes a user Stop from an
+    // unexpected exit; spawnedAt (spawn sessions only) bounds the failure window;
+    // terminationHandled makes handleTermination() fire-once across its two callers.
+    private var userStopped = false
+    private var spawnedAt: Date?
+    private var terminationHandled = false
 
     private let resolver = RunnerResolver()
 
@@ -48,6 +58,9 @@ class RecordingController {
         process = proc
         attachedPid = proc.processIdentifier
         startedAt = Date()
+        spawnedAt = Date()
+        userStopped = false
+        terminationHandled = false
         state = .recording
 
         startTimer()
@@ -73,6 +86,7 @@ class RecordingController {
     }
 
     func stop() {
+        userStopped = true
         if let proc = process, proc.isRunning {
             sendSignal(SIGINT, to: proc.processIdentifier)
         } else if let pid = attachedPid {
@@ -112,6 +126,7 @@ class RecordingController {
               isPidAlive(pid) else { return }
 
         attachedPid = pid
+        terminationHandled = false
 
         if let startedStr = json["startedAt"] as? String {
             let formatter = ISO8601DateFormatter()
@@ -157,12 +172,28 @@ class RecordingController {
     }
 
     private func handleTermination() {
+        // Called from both proc.terminationHandler and checkSessionState(); make it fire-once.
+        guard !terminationHandled else { return }
+        terminationHandled = true
+
+        // A spawned session that died without the user stopping it, within a short window of
+        // start, is a capture/permission failure (e.g. Screen Recording denied / stale csreq).
+        // userStopped guards normal Stop; auto-stops run far past this window; attached sessions
+        // have no spawnedAt. The SCK failure path (stale csreq, §3 H1) exits within seconds.
+        let fastCaptureFailure: Bool = {
+            guard !userStopped, let start = spawnedAt else { return false }
+            return Date().timeIntervalSince(start) < 15
+        }()
+
         stopTimer()
         stopSessionMonitor()
         process = nil
         attachedPid = nil
         startedAt = nil
+        spawnedAt = nil
         state = .idle
+
+        if fastCaptureFailure { onCaptureFailed?() }
     }
 
     private func startTimer() {

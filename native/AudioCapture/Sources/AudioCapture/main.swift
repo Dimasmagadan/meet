@@ -34,7 +34,10 @@ class CaptureRunner {
     let silenceTimeout: Int
     let voiceProcessing: Bool
     var micCapture: MicCapture?
-    var systemCapture: SystemAudioCapture?
+    // Typed as Any? because SystemAudioCapture requires macOS 14.2+ while CaptureRunner (used for
+    // mic-only mode too) targets 14.0+; cast at each use site instead of raising this class's
+    // availability floor for a feature only the "full" mode needs.
+    var systemCapture: Any?
     var shouldStop = false
 
     init(outputDir: String, chunkDuration: Int, mode: String, silenceTimeout: Int, voiceProcessing: Bool) {
@@ -75,25 +78,34 @@ class CaptureRunner {
         }
 
         if mode == "full" {
-            let sys = SystemAudioCapture(outputDir: dir, chunkDurationSeconds: chunkDuration) { name in
-                let idx = Int(name.replacingOccurrences(of: "sys-", with: "").replacingOccurrences(of: ".wav", with: "")) ?? 0
-                logJSON("info", "chunk_finalized", ["source": "sys", "filename": name, "index": idx])
-            }
-            do {
-                try await sys.start()
-                systemCapture = sys
-                fputs("System audio capture started\n", stderr)
-                logJSON("info", "stream_started", ["source": "sys"])
-            } catch {
-                fputs("System audio capture failed: \(error)\n", stderr)
-                logJSON("error", "stream_error", ["source": "sys", "message": String(describing: error)])
+            if #available(macOS 14.2, *) {
+                let sys = SystemAudioCapture(outputDir: dir, chunkDurationSeconds: chunkDuration) { name in
+                    let idx = Int(name.replacingOccurrences(of: "sys-", with: "").replacingOccurrences(of: ".wav", with: "")) ?? 0
+                    logJSON("info", "chunk_finalized", ["source": "sys", "filename": name, "index": idx])
+                }
+                do {
+                    try sys.start()
+                    systemCapture = sys
+                    fputs("System audio capture started\n", stderr)
+                    logJSON("info", "stream_started", ["source": "sys"])
+                } catch {
+                    fputs("System audio capture failed: \(error)\n", stderr)
+                    logJSON("error", "stream_error", ["source": "sys", "message": String(describing: error)])
+                }
+            } else {
+                fputs("System audio capture requires macOS 14.2+ (Core Audio process taps)\n", stderr)
+                logJSON("error", "stream_error", ["source": "sys", "message": "macOS 14.2+ required"])
             }
         }
 
         while !CaptureRunnerSignalRelay.shared.shouldStop {
             let relay = CaptureRunnerSignalRelay.shared
             micCapture?.paused = relay.paused
-            systemCapture?.paused = relay.paused
+            if #available(macOS 14.2, *) {
+                let sys = systemCapture as? SystemAudioCapture
+                sys?.paused = relay.paused
+                if !relay.paused { sys?.recoverIfStalled() }
+            }
 
             if let mic = micCapture, !relay.paused {
                 mic.recoverIfStalled()
@@ -117,7 +129,9 @@ class CaptureRunner {
 
     func stopAll() {
         _ = micCapture?.stop()
-        systemCapture?.stop()
+        if #available(macOS 14.2, *) {
+            (systemCapture as? SystemAudioCapture)?.stop()
+        }
     }
 }
 

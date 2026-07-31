@@ -25,7 +25,7 @@ meet start "Title"
 │
 ├─ Spawns Swift binary (native/AudioCapture)
 │  ├─ Mic capture via AVAudioEngine + VoiceProcessing IO
-│  ├─ System audio via ScreenCaptureKit
+│  ├─ System audio via Core Audio process tap (macOS 14.2+)
 │  └─ Writes atomic WAV chunks: mic-001.wav, sys-001.wav, ...
 │
 ├─ Node.js pipeline (TypeScript/chokidar)
@@ -157,7 +157,7 @@ meet start "Title"
 **native/AudioCapture/** — Swift CLI (audio capture)
 - `main.swift` — CLI entry, mode selection (mic/full), signal handling
 - `MicCapture.swift` — AVAudioEngine mic tap with VoiceProcessing IO workaround
-- `SystemAudioCapture.swift` — ScreenCaptureKit audio-only extraction
+- `SystemAudioCapture.swift` — Core Audio process tap audio extraction (macOS 14.2+; `@available`-gated in `main.swift`, requires only "System Audio Recording Only" TCC, no Screen Recording)
 - `WAVWriter.swift` — 16kHz mono 16-bit PCM WAV writer, atomic chunk handoff
 - `Logger.swift` — Structured JSON logging to stderr
 
