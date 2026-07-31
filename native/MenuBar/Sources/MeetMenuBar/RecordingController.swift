@@ -85,6 +85,22 @@ class RecordingController {
         sendSignal(SIGWINCH, to: pid)
     }
 
+    func addTag(_ raw: String) {
+        guard state == .recording || state == .paused else { return }
+        guard let runner = resolver.resolve(), let sessionDir = currentSessionDir() else { return }
+        let tags = raw.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !tags.isEmpty else { return }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: runner.executable)
+        proc.arguments = runner.args + ["tag", sessionDir] + tags
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+    }
+
     func attachToExistingSession(sessionDir: String) {
         guard state == .idle else { return }
         let lockPath = FileManager.default.homeDirectoryForCurrentUser
@@ -129,6 +145,15 @@ class RecordingController {
 
     private func isPidAlive(_ pid: pid_t) -> Bool {
         kill(pid, 0) == 0
+    }
+
+    private func currentSessionDir() -> String? {
+        let lockPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".meet/sessions/active-recording.lock")
+        guard let data = FileManager.default.contents(atPath: lockPath.path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sessionDir = json["sessionDir"] as? String else { return nil }
+        return sessionDir
     }
 
     private func handleTermination() {

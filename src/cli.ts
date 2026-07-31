@@ -23,6 +23,7 @@ import { analyzeWavFile } from "./audio-metrics.js";
 import { generateDashboard } from "./dashboard.js";
 import { getTriggers } from "./triggers.js";
 import { sendMacNotification, type AttentionAlert } from "./attention.js";
+import { queuePendingTags } from "./tags.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -83,6 +84,15 @@ export function createProgram(): Command {
       } else {
         await runForegroundFinalize(sessionDir);
       }
+    });
+
+  program
+    .command("tag")
+    .description("Queue tags to be picked up by a running recording session")
+    .argument("<sessionDir>", "Session directory path")
+    .argument("<tags...>", "One or more tags")
+    .action(async (sessionDir: string, tags: string[]) => {
+      await queuePendingTags(sessionDir, tags);
     });
 
   program

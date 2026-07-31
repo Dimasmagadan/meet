@@ -9,7 +9,7 @@ macOS (Apple Silicon) CLI. Records mic + system audio, transcribes locally with 
 ```
 meet start "Title"
 ├── src/main.ts              — entry, dispatches CLI commands
-├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, status, rename, link, speakers, dashboard, bin-path
+├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, tag, status, rename, link, speakers, dashboard, bin-path
 ├── src/recorder.ts          — session orchestration: spawns Swift capture, wires Pipeline, handles stdin hotkeys
 ├── src/types.ts             — shared types: Session, Chunk, Config, TranscriptEntry
 ├── src/pipeline.ts          — chokidar watches *.wav, sequential whisper queue, dedup, durable state

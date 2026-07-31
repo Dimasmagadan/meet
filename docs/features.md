@@ -112,6 +112,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `meet doctor [mic\|full]` | 12-second capture health check + diagnostics |
 | `meet list` | List past meetings |
 | `meet finalize <sessionDir>` | Finalize a stopped recording (`--background`) |
+| `meet tag <sessionDir> <tags...>` | Queue tags for a running recording session |
 | `meet status` | Show active recording/finalization jobs |
 | `meet rename <dir> <id> <name>` | Rename a diarized speaker label |
 | `meet link <dir> <repoPath>` | Attach/replace git repo context |

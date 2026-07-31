@@ -7,7 +7,7 @@ import { Pipeline } from "./pipeline.js";
 import { appendEntry, chunkToTimestamp, entriesFromSession } from "./assembler.js";
 import { AttentionMonitor, buildRecap, formatRecap, sendMacNotification } from "./attention.js";
 import { runOpencodeQuestion } from "./opencode.js";
-import { runTagPicker, writeMetaFile } from "./tags.js";
+import { runTagPicker, writeMetaFile, drainPendingTags, hasTagCaseInsensitive, appendTagToFile } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
 import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
 import { getCaptureBinPath, writeAtomic, createWarnOnce } from "./storage.js";
@@ -269,22 +269,29 @@ export class Recorder {
   }
 
   private async promptTags(): Promise<void> {
-    let tags: string[] = [];
+    this.applyPendingTags(); // catch anything queued in the last <5s before stop
+    const existing = this.session.tags ?? [];
+    let picked: string[] = [];
     if (!this.opts.headless && process.stdin.isTTY) {
       try {
-        tags = await runTagPicker(this.session, { note: "Final transcription running in background…" });
+        picked = await runTagPicker(this.session, { note: "Final transcription running in background…" });
       } catch {
         process.stdout.write(chalk.gray("(tag picker skipped)\n"));
       }
     }
 
-    if (tags.length > 0) {
-      this.session.tags = tags;
+    const finalTags = [...existing];
+    for (const tag of picked) {
+      if (!hasTagCaseInsensitive(finalTags, tag)) finalTags.push(tag);
+    }
+
+    if (finalTags.length > 0) {
+      this.session.tags = finalTags;
       await writeAtomic(
         join(this.session.sessionDir, "session.json"),
         JSON.stringify(this.session, null, 2),
       );
-      console.log(chalk.green(`Tags: ${tags.join(", ")}`));
+      console.log(chalk.green(`Tags: ${finalTags.join(", ")}`));
     } else if (!this.opts.headless && process.stdin.isTTY) {
       console.log(chalk.gray("(no tags added)"));
     }
@@ -293,7 +300,28 @@ export class Recorder {
     // captured git context (L1) lands as a "- Repo:" line. Previously this
     // was skipped when no tags were picked or in headless mode, leaving
     // tag-less meetings invisible to `meet dashboard`.
-    await writeMetaFile(this.session, tags);
+    await writeMetaFile(this.session, finalTags);
+  }
+
+  private applyPendingTags(): void {
+    const incoming = drainPendingTags(this.session.sessionDir);
+    if (incoming.length === 0) return;
+    this.session.tags = this.session.tags ?? [];
+    const added: string[] = [];
+    for (const tag of incoming) {
+      if (!hasTagCaseInsensitive(this.session.tags, tag)) {
+        this.session.tags.push(tag);
+        added.push(tag);
+        void appendTagToFile(tag); // best-effort: surface it in the picker's tags.md too
+      }
+    }
+    if (added.length === 0) return;
+    void writeAtomic(
+      join(this.session.sessionDir, "session.json"),
+      JSON.stringify(this.session, null, 2),
+    ).then(() => {
+      process.stdout.write(`\n${chalk.green(`Tag added: ${added.join(", ")}`)}\n`);
+    });
   }
 
   private spawnBackgroundFinalizer(): void {
@@ -485,6 +513,7 @@ export class Recorder {
         `\r${status} | chunks: mic ${this.micChunks}, sys ${this.sysChunks} | transcribed: ${stats.totalDone} | ${lagStr}${capStr}${noTextStr}${summarySuffix} | ${now}  `,
       );
 
+      this.applyPendingTags();
       this.checkAutoStop();
     }, 5000);
   }

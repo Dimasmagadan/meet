@@ -57,6 +57,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Pause", action: #selector(pauseRecording), keyEquivalent: "p"))
             menu.addItem(NSMenuItem(title: "Stop", action: #selector(stopRecording), keyEquivalent: "s"))
+            menu.addItem(NSMenuItem(title: "Add Tag…", action: #selector(addTag), keyEquivalent: "t"))
             menu.addItem(NSMenuItem(title: "Extend +15m", action: #selector(extendRecording), keyEquivalent: "e"))
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Open Meetings Folder", action: #selector(openMeetings), keyEquivalent: "o"))
@@ -68,6 +69,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Resume", action: #selector(resumeRecording), keyEquivalent: "r"))
             menu.addItem(NSMenuItem(title: "Stop", action: #selector(stopRecording), keyEquivalent: "s"))
+            menu.addItem(NSMenuItem(title: "Add Tag…", action: #selector(addTag), keyEquivalent: "t"))
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Open Meetings Folder", action: #selector(openMeetings), keyEquivalent: "o"))
         }
@@ -129,6 +131,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         recordingController.extend()
     }
 
+    @objc func addTag() {
+        guard let raw = promptTag(), !raw.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        recordingController.addTag(raw)
+    }
+
     @objc func toggleLogin() {
         do {
             if loginItem.isEnabled {
@@ -179,6 +186,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         input.stringValue = defaultTitle
         alert.accessoryView = input
         alert.addButton(withTitle: "Start")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = input
+        return alert.runModal() == .alertFirstButtonReturn ? input.stringValue : nil
+    }
+
+    private func promptTag() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Add tag"
+        alert.informativeText = "Tag name (comma-separated for multiple)"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Add")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = input
         return alert.runModal() == .alertFirstButtonReturn ? input.stringValue : nil

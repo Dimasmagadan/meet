@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, unlinkSync } from "node:fs";
 import { writeFile, appendFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import chalk from "chalk";
 import { writeAtomic } from "./storage.js";
@@ -69,9 +68,35 @@ export async function writeMetaFile(session: Session, tags: string[], options?: 
   await writeAtomic(metaPath, lines.join("\n"));
 }
 
-function hasTagCaseInsensitive(arr: string[], tag: string): boolean {
+export function hasTagCaseInsensitive(arr: string[], tag: string): boolean {
   const lower = tag.toLowerCase();
   return arr.some(t => t.toLowerCase() === lower);
+}
+
+function pendingTagsPath(sessionDir: string): string {
+  return resolve(sessionDir, "pending-tags.json");
+}
+
+export async function queuePendingTags(sessionDir: string, tags: string[]): Promise<void> {
+  const path = pendingTagsPath(sessionDir);
+  let existing: string[] = [];
+  if (existsSync(path)) {
+    try { existing = JSON.parse(readFileSync(path, "utf-8")); } catch {}
+  }
+  for (const tag of tags) {
+    if (!hasTagCaseInsensitive(existing, tag)) existing.push(tag);
+  }
+  await writeAtomic(path, JSON.stringify(existing));
+}
+
+// Drains and deletes the inbox; returns [] if nothing pending.
+export function drainPendingTags(sessionDir: string): string[] {
+  const path = pendingTagsPath(sessionDir);
+  if (!existsSync(path)) return [];
+  let tags: string[] = [];
+  try { tags = JSON.parse(readFileSync(path, "utf-8")); } catch {}
+  try { unlinkSync(path); } catch {}
+  return tags;
 }
 
 export async function runTagPicker(session: Session, opts?: { note?: string }): Promise<string[]> {

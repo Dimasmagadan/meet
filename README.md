@@ -75,6 +75,7 @@ meet setup                      Check dependencies and configuration
 meet doctor [mic|full]          Test audio capture (12-second health check)
 meet list                       List past meetings
 meet finalize <sessionDir>      Finalize a stopped recording session
+meet tag <sessionDir> <tags...> Queue tags for a running recording session
 meet status                     Show active recording/finalization jobs
 meet rename <dir> <id> <name>   Rename a diarized speaker label in a finalized meeting
 meet link <dir> <repoPath>      Attach/replace git repo context in a finalized meeting's meta.md
@@ -365,7 +366,7 @@ meet start "Meeting Title"
 ```
 src/
 ├── main.ts              Entry point
-├── cli.ts               Commander CLI: start, setup, list, transcribe, doctor, finalize, status, rename
+├── cli.ts               Commander CLI: start, setup, list, transcribe, doctor, finalize, tag, status, rename
 ├── types.ts             Shared types: Session, Config, TranscriptEntry, Chunk
 ├── pipeline.ts          File watcher + whisper queue, dedup, health monitoring
 ├── transcriber.ts       whisper-cli wrapper, cleanText() noise filter
