@@ -99,20 +99,27 @@ class RecordingController {
         sendSignal(SIGWINCH, to: pid)
     }
 
-    func addTag(_ raw: String) {
-        guard state == .recording || state == .paused else { return }
-        guard let runner = resolver.resolve(), let sessionDir = currentSessionDir() else { return }
+    @discardableResult
+    func addTag(_ raw: String) -> Bool {
+        guard state == .recording || state == .paused else { return false }
+        guard let runner = resolver.resolve(), let sessionDir = currentSessionDir() else { return false }
         let tags = raw.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        guard !tags.isEmpty else { return }
+        guard !tags.isEmpty else { return true }   // nothing to queue is not a failure
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: runner.executable)
         proc.arguments = runner.args + ["tag", sessionDir] + tags
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
-        try? proc.run()
+        do {
+            try proc.run()
+            proc.waitUntilExit()   // the write must land before the stop flow's SIGINT
+        } catch {
+            return false
+        }
+        return proc.terminationStatus == 0
     }
 
     func attachToExistingSession(sessionDir: String) {

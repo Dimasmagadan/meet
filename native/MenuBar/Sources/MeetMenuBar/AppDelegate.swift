@@ -99,7 +99,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func startRecording() {
         let defaultTitle = lastTitle() ?? "meeting"
-        guard let title = promptTitle(default: defaultTitle) else { return }
+        guard let title = promptText(message: "Start recording", info: "Meeting title", ok: "Start", default: defaultTitle) else { return }
         let resolved = title.isEmpty ? "meeting" : title
         saveLastTitle(resolved)
 
@@ -135,6 +135,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func stopRecording() {
+        guard let tags = promptText(message: "Stop recording", info: "Tags (optional, comma-separated)", ok: "Stop") else { return }
+        if !recordingController.addTag(tags) {
+            showAlert(title: "Tags not saved", message: "Meet could not queue \"\(tags)\" for this recording. Stopping anyway.")
+        }
         recordingController.stop()
     }
 
@@ -143,7 +147,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func addTag() {
-        guard let raw = promptTag(), !raw.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard let raw = promptText(message: "Add tag", info: "Tag name (comma-separated for multiple)", ok: "Add") else { return }
         recordingController.addTag(raw)
     }
 
@@ -189,29 +193,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    private func promptTitle(default defaultTitle: String) -> String? {
+    private func promptText(message: String, info: String, ok: String, default def: String = "") -> String? {
         let alert = NSAlert()
-        alert.messageText = "Start recording"
-        alert.informativeText = "Meeting title"
+        alert.messageText = message
+        alert.informativeText = info
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        input.stringValue = defaultTitle
+        input.stringValue = def
         alert.accessoryView = input
-        alert.addButton(withTitle: "Start")
+        alert.addButton(withTitle: ok)
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = input
-        return alert.runModal() == .alertFirstButtonReturn ? input.stringValue : nil
-    }
-
-    private func promptTag() -> String? {
-        let alert = NSAlert()
-        alert.messageText = "Add tag"
-        alert.informativeText = "Tag name (comma-separated for multiple)"
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        alert.accessoryView = input
-        alert.addButton(withTitle: "Add")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = input
-        return alert.runModal() == .alertFirstButtonReturn ? input.stringValue : nil
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return input.stringValue
     }
 
     private func lastTitle() -> String? {
