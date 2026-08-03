@@ -23,7 +23,7 @@ import { analyzeWavFile } from "./audio-metrics.js";
 import { generateDashboard } from "./dashboard.js";
 import { getTriggers } from "./triggers.js";
 import { sendMacNotification, type AttentionAlert } from "./attention.js";
-import { queuePendingTags, readTags, appendTagToFile, hasTagCaseInsensitive } from "./tags.js";
+import { writeTagsState, readTagsState, readTags, appendTagToFile, hasTagCaseInsensitive } from "./tags.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -88,11 +88,11 @@ export function createProgram(): Command {
 
   program
     .command("tag")
-    .description("Queue tags to be picked up by a running recording session")
+    .description("Set a recording session's full tag selection (replaces the previous selection)")
     .argument("<sessionDir>", "Session directory path")
-    .argument("<tags...>", "One or more tags")
+    .argument("[tags...]", "Complete set of currently selected tags (empty clears the selection)")
     .action(async (sessionDir: string, tags: string[]) => {
-      await queuePendingTags(sessionDir, tags);
+      await writeTagsState(sessionDir, tags);
       const known = readTags();
       for (const tag of tags) {
         if (!hasTagCaseInsensitive(known, tag)) {
@@ -105,8 +105,10 @@ export function createProgram(): Command {
   program
     .command("tags")
     .description("List tags defined in tags.md")
-    .action(() => {
-      for (const tag of readTags()) {
+    .option("--session <sessionDir>", "List the current tag selection for this session instead")
+    .action((opts: { session?: string }) => {
+      const tags = opts.session ? readTagsState(opts.session) : readTags();
+      for (const tag of tags) {
         console.log(tag);
       }
     });

@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { queuePendingTags, drainPendingTags, hasTagCaseInsensitive } from "./tags.js";
+import { writeTagsState, readTagsState, hasTagCaseInsensitive } from "./tags.js";
 
 function makeSessionDir(): string {
   return mkdtempSync(join(tmpdir(), "meet-tags-"));
 }
 
-function pendingTagsPath(sessionDir: string): string {
-  return join(sessionDir, "pending-tags.log");
+function tagsStatePath(sessionDir: string): string {
+  return join(sessionDir, "tags-state.json");
 }
 
 test("hasTagCaseInsensitive: matches ignoring case", () => {
@@ -18,58 +18,105 @@ test("hasTagCaseInsensitive: matches ignoring case", () => {
   assert.equal(hasTagCaseInsensitive(["Important"], "Dev"), false);
 });
 
-test("queuePendingTags: appends tag lines; dedup happens at drain", async () => {
+test("writeTagsState: persists a dedup'd snapshot", async () => {
   const dir = makeSessionDir();
   try {
-    await queuePendingTags(dir, ["Tech", "tech", "Arch", "tech"]);
-    assert.equal(readFileSync(pendingTagsPath(dir), "utf-8"), "Tech\ntech\nArch\ntech\n");
-    assert.deepEqual(drainPendingTags(dir), ["Tech", "Arch"]);
+    await writeTagsState(dir, ["Tech", "tech", "Arch", "tech"]);
+    const raw = JSON.parse(readFileSync(tagsStatePath(dir), "utf-8"));
+    assert.deepEqual(raw.tags, ["Tech", "Arch"]);
+    assert.deepEqual(readTagsState(dir), ["Tech", "Arch"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("queuePendingTags: concurrent calls lose no tags", async () => {
+test("writeTagsState: a later write fully replaces the previous selection", async () => {
   const dir = makeSessionDir();
   try {
-    await Promise.all([
-      queuePendingTags(dir, ["Alpha"]),
-      queuePendingTags(dir, ["beta", "Alpha", "Gamma"]),
-    ]);
-    const drained = drainPendingTags(dir);
-    assert.deepEqual(new Set(drained), new Set(["Alpha", "beta", "Gamma"]));
-    assert.equal(existsSync(pendingTagsPath(dir)), false);
+    await writeTagsState(dir, ["work", "personal"]);
+    await writeTagsState(dir, ["work"]); // "personal" unchecked
+    assert.deepEqual(readTagsState(dir), ["work"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("drainPendingTags: returns queued tags and removes the inbox", async () => {
+test("writeTagsState: writing [] clears the selection", async () => {
   const dir = makeSessionDir();
   try {
-    await queuePendingTags(dir, ["One", "two"]);
-    assert.deepEqual(drainPendingTags(dir), ["One", "two"]);
-    assert.equal(existsSync(pendingTagsPath(dir)), false);
+    await writeTagsState(dir, ["work"]);
+    await writeTagsState(dir, []);
+    assert.deepEqual(readTagsState(dir), []);
+    assert.equal(existsSync(tagsStatePath(dir)), true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("drainPendingTags: returns [] with no inbox file", () => {
+test("readTagsState: returns [] with no state file", () => {
   const dir = makeSessionDir();
   try {
-    assert.deepEqual(drainPendingTags(dir), []);
+    assert.deepEqual(readTagsState(dir), []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("drainPendingTags: drain-then-empty returns []", async () => {
+test("readTagsState: returns [] on malformed JSON", async () => {
   const dir = makeSessionDir();
   try {
-    await queuePendingTags(dir, ["One"]);
-    drainPendingTags(dir);
-    assert.deepEqual(drainPendingTags(dir), []);
+    const fs = await import("node:fs/promises");
+    await fs.writeFile(tagsStatePath(dir), "{not json", "utf-8");
+    assert.deepEqual(readTagsState(dir), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Models the menu-bar pickers end-to-end: mid-call "Add Tag…" writes the full
+// selection, and the Stop dialog (or a second "Add Tag…") reads that same state to
+// pre-check its boxes — whatever it submits (even untouched) becomes the new state.
+test("tag selected mid-call survives untouched through a later picker submit", async () => {
+  const dir = makeSessionDir();
+  try {
+    await writeTagsState(dir, ["work"]); // mid-call "Add Tag…"
+
+    const preChecked = readTagsState(dir); // next picker (Stop, or Add Tag again) pre-checks from this
+    assert.deepEqual(preChecked, ["work"]);
+
+    await writeTagsState(dir, preChecked); // user submits with the checkbox left untouched
+
+    assert.deepEqual(readTagsState(dir), ["work"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("picker: pre-checked tag plus a newly-typed tag both survive to the final state", async () => {
+  const dir = makeSessionDir();
+  try {
+    await writeTagsState(dir, ["work"]); // mid-call "Add Tag…"
+
+    const preChecked = readTagsState(dir);
+    const selected = [...preChecked, "followup"]; // checkbox left checked + new tag typed
+    await writeTagsState(dir, selected);
+
+    assert.deepEqual(readTagsState(dir), ["work", "followup"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("picker: unchecking a pre-checked tag removes it from the final state", async () => {
+  const dir = makeSessionDir();
+  try {
+    await writeTagsState(dir, ["work", "personal"]);
+
+    const preChecked = readTagsState(dir);
+    const selected = preChecked.filter((t) => t !== "personal"); // user unchecks "personal"
+    await writeTagsState(dir, selected);
+
+    assert.deepEqual(readTagsState(dir), ["work"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

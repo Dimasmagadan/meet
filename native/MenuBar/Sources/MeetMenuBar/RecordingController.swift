@@ -99,18 +99,18 @@ class RecordingController {
         sendSignal(SIGWINCH, to: pid)
     }
 
+    // Replaces the session's full tag selection (never appends) — both the mid-call
+    // "Add Tag…" picker and the Stop picker always submit their complete checked set,
+    // so the CLI's `tag` command overwrites tags-state.json wholesale each time.
     @discardableResult
-    func addTag(_ raw: String) -> Bool {
+    func setTags(_ tags: [String]) -> Bool {
         guard state == .recording || state == .paused else { return false }
         guard let runner = resolver.resolve(), let sessionDir = currentSessionDir() else { return false }
-        let tags = raw.split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        guard !tags.isEmpty else { return true }   // nothing to queue is not a failure
+        let cleaned = tags.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: runner.executable)
-        proc.arguments = runner.args + ["tag", sessionDir] + tags
+        proc.arguments = runner.args + ["tag", sessionDir] + cleaned
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         do {
@@ -122,13 +122,24 @@ class RecordingController {
         return proc.terminationStatus == 0
     }
 
-    // Synchronous `meet tags` spawn (Node cold start, same cost as addTag) — called only
+    // Synchronous `meet tags` spawn (Node cold start, same cost as setTags) — called only
     // when a tag-picker dialog is about to open, not on a hot path.
     func fetchAvailableTags() -> [String] {
+        runAndCaptureLines(["tags"])
+    }
+
+    // The session's current tag selection (from tags-state.json), so any picker —
+    // mid-call "Add Tag…" or Stop — can pre-check what was already selected.
+    func fetchTagsState() -> [String] {
+        guard let sessionDir = currentSessionDir() else { return [] }
+        return runAndCaptureLines(["tags", "--session", sessionDir])
+    }
+
+    private func runAndCaptureLines(_ args: [String]) -> [String] {
         guard let runner = resolver.resolve() else { return [] }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: runner.executable)
-        proc.arguments = runner.args + ["tags"]
+        proc.arguments = runner.args + args
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice

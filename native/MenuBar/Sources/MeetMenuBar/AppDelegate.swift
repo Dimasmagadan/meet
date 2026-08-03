@@ -135,9 +135,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func stopRecording() {
-        guard let tags = promptTags(message: "Stop recording", info: "Tags (optional)", ok: "Stop") else { return }
-        if !recordingController.addTag(tags) {
-            showAlert(title: "Tags not saved", message: "Meet could not queue \"\(tags)\" for this recording. Stopping anyway.")
+        let current = recordingController.fetchTagsState()
+        guard let tags = promptTags(message: "Stop recording", info: "Tags (optional)", ok: "Stop", preChecked: current) else { return }
+        if !recordingController.setTags(tags) {
+            showAlert(title: "Tags not saved", message: "Meet could not save tags for this recording. Stopping anyway.")
         }
         recordingController.stop()
     }
@@ -147,8 +148,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func addTag() {
-        guard let raw = promptTags(message: "Add tag", info: "Select tags or type a new one", ok: "Add") else { return }
-        recordingController.addTag(raw)
+        let current = recordingController.fetchTagsState()
+        guard let tags = promptTags(message: "Add tag", info: "Select tags or type a new one", ok: "Add", preChecked: current) else { return }
+        if !recordingController.setTags(tags) {
+            showAlert(title: "Tags not saved", message: "Meet could not save tags for this recording.")
+        }
     }
 
     @objc func toggleLogin() {
@@ -212,16 +216,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return input.stringValue
     }
 
-    // Checkbox per tag in tags.md + a free-text field for a brand-new one. Returns a
-    // comma-joined string (same shape promptText used to return) so it drops straight
-    // into recordingController.addTag(); "" means nothing selected, not cancelled.
-    private func promptTags(message: String, info: String, ok: String) -> String? {
+    // Checkbox per tag in tags.md + a free-text field for a brand-new one. Returns the
+    // full checked selection (+ any newly typed tag) as an array — both call sites pass
+    // this straight to recordingController.setTags(), which replaces the session's tag
+    // state wholesale; [] means nothing selected, not cancelled.
+    private func promptTags(message: String, info: String, ok: String, preChecked: [String] = []) -> [String]? {
         let alert = NSAlert()
         alert.messageText = message
         alert.informativeText = info
 
         let existingTags = recordingController.fetchAvailableTags()
-        let checkboxes: [NSButton] = existingTags.map { NSButton(checkboxWithTitle: $0, target: nil, action: nil) }
+        let checkboxes: [NSButton] = existingTags.map { tag in
+            let checkbox = NSButton(checkboxWithTitle: tag, target: nil, action: nil)
+            if preChecked.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) { checkbox.state = .on }
+            return checkbox
+        }
 
         let newTagField = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
         newTagField.placeholderString = "New tag"
@@ -248,7 +257,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var selected = checkboxes.filter { $0.state == .on }.map { $0.title }
         let newTag = newTagField.stringValue.trimmingCharacters(in: .whitespaces)
         if !newTag.isEmpty { selected.append(newTag) }
-        return selected.joined(separator: ",")
+        return selected
     }
 
     private func lastTitle() -> String? {

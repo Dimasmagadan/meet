@@ -7,7 +7,7 @@ import { Pipeline } from "./pipeline.js";
 import { appendEntry, chunkToTimestamp, entriesFromSession } from "./assembler.js";
 import { AttentionMonitor, buildRecap, formatRecap, sendMacNotification } from "./attention.js";
 import { runOpencodeQuestion } from "./opencode.js";
-import { runTagPicker, writeMetaFile, drainPendingTags, hasTagCaseInsensitive, appendTagToFile } from "./tags.js";
+import { runTagPicker, writeMetaFile, readTagsState, hasTagCaseInsensitive } from "./tags.js";
 import { parseCaptureLine } from "./capture-events.js";
 import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
 import { getCaptureBinPath, writeAtomic, createWarnOnce } from "./storage.js";
@@ -303,25 +303,24 @@ export class Recorder {
     await writeMetaFile(this.session, finalTags);
   }
 
+  // The menu bar's tag pickers (mid-call "Add Tag…" and Stop) always submit their full
+  // checked selection via `meet tag`, which replaces tags-state.json wholesale — so this
+  // just mirrors that file into session.tags, it never merges or appends.
   private applyPendingTags(): void {
-    const incoming = drainPendingTags(this.session.sessionDir);
-    if (incoming.length === 0) return;
-    this.session.tags = this.session.tags ?? [];
-    const added: string[] = [];
-    for (const tag of incoming) {
-      if (!hasTagCaseInsensitive(this.session.tags, tag)) {
-        this.session.tags.push(tag);
-        added.push(tag);
-        void appendTagToFile(tag).catch((err) => this.warn("tags.md append failed", err));
-      }
-    }
-    if (added.length === 0) return;
+    const incoming = readTagsState(this.session.sessionDir);
+    const current = this.session.tags ?? [];
+    const unchanged = incoming.length === current.length && incoming.every((t, i) => t === current[i]);
+    if (unchanged) return;
+
+    this.session.tags = incoming;
     void writeAtomic(
       join(this.session.sessionDir, "session.json"),
       JSON.stringify(this.session, null, 2),
     )
       .then(() => {
-        process.stdout.write(`\n${chalk.green(`Tag added: ${added.join(", ")}`)}\n`);
+        if (incoming.length > 0) {
+          process.stdout.write(`\n${chalk.green(`Tags: ${incoming.join(", ")}`)}\n`);
+        }
       })
       .catch((err) => this.warn("session.json tags write failed", err));
   }

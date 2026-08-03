@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, unlinkSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { writeFile, appendFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import chalk from "chalk";
@@ -73,35 +73,41 @@ export function hasTagCaseInsensitive(arr: string[], tag: string): boolean {
   return arr.some(t => t.toLowerCase() === lower);
 }
 
-function pendingTagsPath(sessionDir: string): string {
-  return resolve(sessionDir, "pending-tags.log");
+function tagsStatePath(sessionDir: string): string {
+  return resolve(sessionDir, "tags-state.json");
 }
 
-// Append-only inbox: each `meet tag` appends its lines in one O_APPEND write,
-// so concurrent writers can never clobber each other's tags (no read-modify-write).
-// Dedup is deferred to drainPendingTags().
-export async function queuePendingTags(sessionDir: string, tags: string[]): Promise<void> {
-  const lines = tags.map((t) => `${t.trim()}\n`).filter((l) => l.trim().length > 0);
-  if (lines.length === 0) return;
-  await appendFile(pendingTagsPath(sessionDir), lines.join(""), "utf-8");
-}
-
-// Drains and deletes the inbox; returns [] if nothing pending.
-export function drainPendingTags(sessionDir: string): string[] {
-  const path = pendingTagsPath(sessionDir);
-  if (!existsSync(path)) return [];
-  let lines: string[] = [];
-  try { lines = readFileSync(path, "utf-8").split("\n"); } catch {}
-  try { unlinkSync(path); } catch {}
+function dedupTags(tags: string[]): string[] {
   const seen = new Set<string>();
-  const tags: string[] = [];
-  for (const line of lines) {
-    const tag = line.trim();
+  const out: string[] = [];
+  for (const raw of tags) {
+    const tag = raw.trim();
     if (!tag || seen.has(tag.toLowerCase())) continue;
     seen.add(tag.toLowerCase());
-    tags.push(tag);
+    out.push(tag);
   }
-  return tags;
+  return out;
+}
+
+// Full-replace snapshot of a session's current tag selection — both the mid-call
+// "Add Tag…" picker and the Stop picker submit the complete checked set every time
+// (never a delta), so a single writer-at-a-time replace is correct: no append-only
+// inbox needed, and unchecking a tag is expressed by simply omitting it next write.
+export async function writeTagsState(sessionDir: string, tags: string[]): Promise<void> {
+  await writeAtomic(tagsStatePath(sessionDir), JSON.stringify({ tags: dedupTags(tags) }, null, 2));
+}
+
+// Read-only; [] if nothing has been selected yet. Used both to pre-check a picker
+// before it opens and to fold the selection into the session's final tags at stop.
+export function readTagsState(sessionDir: string): string[] {
+  const path = tagsStatePath(sessionDir);
+  if (!existsSync(path)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    return Array.isArray(parsed.tags) ? dedupTags(parsed.tags.filter((t: unknown) => typeof t === "string")) : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function runTagPicker(session: Session, opts?: { note?: string }): Promise<string[]> {
