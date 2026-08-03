@@ -122,6 +122,27 @@ class RecordingController {
         return proc.terminationStatus == 0
     }
 
+    // Synchronous `meet tags` spawn (Node cold start, same cost as addTag) — called only
+    // when a tag-picker dialog is about to open, not on a hot path.
+    func fetchAvailableTags() -> [String] {
+        guard let runner = resolver.resolve() else { return [] }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: runner.executable)
+        proc.arguments = runner.args + ["tags"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0, let output = String(data: data, encoding: .utf8) else { return [] }
+            return output.split(separator: "\n").map { String($0) }
+        } catch {
+            return []
+        }
+    }
+
     func attachToExistingSession(sessionDir: String) {
         guard state == .idle else { return }
         let lockPath = FileManager.default.homeDirectoryForCurrentUser

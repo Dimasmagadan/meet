@@ -135,7 +135,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func stopRecording() {
-        guard let tags = promptText(message: "Stop recording", info: "Tags (optional, comma-separated)", ok: "Stop") else { return }
+        guard let tags = promptTags(message: "Stop recording", info: "Tags (optional)", ok: "Stop") else { return }
         if !recordingController.addTag(tags) {
             showAlert(title: "Tags not saved", message: "Meet could not queue \"\(tags)\" for this recording. Stopping anyway.")
         }
@@ -147,7 +147,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func addTag() {
-        guard let raw = promptText(message: "Add tag", info: "Tag name (comma-separated for multiple)", ok: "Add") else { return }
+        guard let raw = promptTags(message: "Add tag", info: "Select tags or type a new one", ok: "Add") else { return }
         recordingController.addTag(raw)
     }
 
@@ -204,8 +204,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = input
         NSApp.activate(ignoringOtherApps: true)
+        // Queued, not called directly: fires once the modal run loop is already pumping
+        // (after NSAlert's own show/layout), so it doesn't fight that layout pass the way
+        // calling makeKeyAndOrderFront/makeFirstResponder before runModal() did.
+        DispatchQueue.main.async { alert.window.makeFirstResponder(input) }
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         return input.stringValue
+    }
+
+    // Checkbox per tag in tags.md + a free-text field for a brand-new one. Returns a
+    // comma-joined string (same shape promptText used to return) so it drops straight
+    // into recordingController.addTag(); "" means nothing selected, not cancelled.
+    private func promptTags(message: String, info: String, ok: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = info
+
+        let existingTags = recordingController.fetchAvailableTags()
+        let checkboxes: [NSButton] = existingTags.map { NSButton(checkboxWithTitle: $0, target: nil, action: nil) }
+
+        let newTagField = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        newTagField.placeholderString = "New tag"
+
+        let stack = NSStackView(views: checkboxes + [newTagField])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        // NSAlert sizes its panel from accessoryView.frame at assignment time, not from
+        // Auto Layout constraints — a widthAnchor constraint here fights the view's default
+        // translatesAutoresizingMaskIntoConstraints=true and collapses everything to (0,0),
+        // which is why the checkboxes overlapped and fell outside the clickable area. Compute
+        // the natural size via fittingSize and set the frame directly instead.
+        stack.setFrameSize(stack.fittingSize)
+
+        alert.accessoryView = stack
+        alert.addButton(withTitle: ok)
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = newTagField
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { alert.window.makeFirstResponder(newTagField) }
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        var selected = checkboxes.filter { $0.state == .on }.map { $0.title }
+        let newTag = newTagField.stringValue.trimmingCharacters(in: .whitespaces)
+        if !newTag.isEmpty { selected.append(newTag) }
+        return selected.joined(separator: ",")
     }
 
     private func lastTitle() -> String? {

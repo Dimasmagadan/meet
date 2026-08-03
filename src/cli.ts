@@ -23,7 +23,7 @@ import { analyzeWavFile } from "./audio-metrics.js";
 import { generateDashboard } from "./dashboard.js";
 import { getTriggers } from "./triggers.js";
 import { sendMacNotification, type AttentionAlert } from "./attention.js";
-import { queuePendingTags } from "./tags.js";
+import { queuePendingTags, readTags, appendTagToFile, hasTagCaseInsensitive } from "./tags.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -93,6 +93,22 @@ export function createProgram(): Command {
     .argument("<tags...>", "One or more tags")
     .action(async (sessionDir: string, tags: string[]) => {
       await queuePendingTags(sessionDir, tags);
+      const known = readTags();
+      for (const tag of tags) {
+        if (!hasTagCaseInsensitive(known, tag)) {
+          await appendTagToFile(tag);
+          known.push(tag);
+        }
+      }
+    });
+
+  program
+    .command("tags")
+    .description("List tags defined in tags.md")
+    .action(() => {
+      for (const tag of readTags()) {
+        console.log(tag);
+      }
     });
 
   program
