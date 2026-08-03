@@ -26,6 +26,7 @@ export function writeActiveRecordingLock(session: Session): void {
   writeFileSync(activeLockPath(), JSON.stringify({
     pid: process.pid,
     sessionDir: session.sessionDir,
+    outputFile: session.outputFile,
     title: session.title,
     startedAt: session.startedAt,
     updatedAt: new Date().toISOString(),
@@ -39,6 +40,7 @@ export function clearActiveRecordingLock(): void {
 export interface ActiveRecordingLock {
   pid: number;
   sessionDir: string;
+  outputFile: string;
   title: string;
   startedAt: string;
   updatedAt: string;

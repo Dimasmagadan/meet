@@ -7,6 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let sessionMonitor = SessionMonitor()
     let permission = PermissionController()
     let loginItem = LoginItemController()
+    let notchPanelController = NotchPanelController()
 
     private let lastTitleKey = "MeetMenuBar.lastTitle"
 
@@ -21,6 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         recordingController.onStateChange = { [weak self] state in
             DispatchQueue.main.async {
                 self?.updateStatusItem(state: state)
+                self?.notchPanelController.setArmed(state == .recording || state == .paused)
             }
         }
         recordingController.onStartFailed = { [weak self] message in
