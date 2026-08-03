@@ -59,6 +59,7 @@ meet start "Title"
     ├── PermissionController.swift — TCC baseline: ensureMic() gated synchronously; no screen/system-audio preflight (SPEC_TCC_SCREEN_REPROMPT_2026-07-31 §6 — Core Audio process taps have no public preflight API; AudioCapture raises the "System Audio Recording Only" prompt itself as the responsible process), openPrivacySettings() deep-link
     ├── LoginItemController.swift — SMAppService.mainApp launch-at-login wrapper (macOS 13+)
     ├── SessionMonitor.swift    — polls active-recording.lock every 5s → attaches to CLI-started sessions
+    ├── NotchPanelController.swift — SPEC_NOTCH_TRANSCRIPT_PANEL_2026-08-03: single NSPanel, collapsed frame = physical notch rect, grows on hover to show a scrollable tail of the active recording's transcript.md (polled while revealed); armed only while recording/paused
     ├── Info.plist              — LSUIElement, NSMicrophoneUsageDescription, bundle id com.dimasmagadan.meet.menubar (NSScreenCaptureDescription dropped — not a real TCC key; Phase 2 adds NSAudioCaptureUsageDescription)
     └── scripts/build-app.sh    — swift build → assemble Meet.app → ad-hoc codesign (-s -)
 ```

@@ -12,6 +12,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 ## Core recording
 
 - **Menu bar app** — `native/MenuBar/` builds a Dock-less `Meet.app` that drives `meet` headlessly from the menu bar: click the icon, enter a title, start/stop/pause/extend without a terminal. Optional launch-at-login; reuses the full pipeline via shell-out + POSIX signals.
+- **Notch transcript panel** (14"/16" MacBook Pro, M1 Pro+) — while recording, hover the physical notch to reveal a scrollable live tail of the transcript; hides again when you move away.
 - **Foreground meeting recording** — `meet start "Title"` records mic + system audio, transcribes chunks live, and blocks the terminal until you stop.
 - **Mic-only mode** — `meet start --mic "Title"` for in-person meetings, interviews, or a phone on speaker.
 - **Dual-channel capture** — Swift `AudioCapture` records mic (AVAudioEngine + VoiceProcessing IO) and system audio (ScreenCaptureKit) in parallel into atomic 15s WAV chunks; `excludesCurrentProcessAudio` prevents feedback loops.

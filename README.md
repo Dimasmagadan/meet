@@ -131,6 +131,7 @@ open native/MenuBar/.build/Meet.app    # NOT the raw binary — LaunchServices m
 - Click the menu bar mic icon → **Start Recording** → enter a title → Start. The last title is remembered.
 - Mic/Screen TCC prompts are pre-requested from the app before capture starts; granting them lets the spawned `AudioCapture` record.
 - **Launch at Login** toggle (via `SMAppService`) so the app survives reboots — foundation for the future scheduler/calendar features.
+- **Notch transcript panel** (14"/16" MacBook Pro, M1 Pro+ only) — while recording, hover the physical notch to reveal a scrollable live tail of the transcript; moves away to hide again. See `specs/SPEC_NOTCH_TRANSCRIPT_PANEL_2026-08-03.md`.
 - `meet bin-path` prints the resolved `{node, main, meet}` paths the app uses; set `menuBarMeetBin` in config to override the runner.
 - Ad-hoc signature: keep the bundle at a stable path (e.g. `cp -R native/MenuBar/.build/Meet.app ~/Applications/Meet.app`) — moving or rebuilding it re-prompts TCC.
 
@@ -415,7 +416,8 @@ native/MenuBar/                 Dock-less Meet.app menu-bar UI
 │   ├── RunnerResolver.swift    Resolves node + dist/main.js via `meet bin-path`
 │   ├── PermissionController.swift Mic/Screen TCC preflight + System Settings deep-link
 │   ├── LoginItemController.swift SMAppService launch-at-login wrapper
-│   └── SessionMonitor.swift    Attaches to CLI-started sessions via lock file
+│   ├── SessionMonitor.swift    Attaches to CLI-started sessions via lock file
+│   └── NotchPanelController.swift Hover-revealed live-transcript panel at the notch
 ├── Info.plist                  LSUIElement + usage strings
 └── scripts/build-app.sh        swift build → assemble Meet.app → ad-hoc codesign
 ```
