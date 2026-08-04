@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { dirname, join } from "node:path";
+import { dirname, basename, join } from "node:path";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 import { Pipeline } from "./pipeline.js";
 import { appendEntry, chunkToTimestamp, entriesFromSession } from "./assembler.js";
@@ -13,7 +13,7 @@ import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
 import { getCaptureBinPath, writeAtomic, createWarnOnce } from "./storage.js";
 import { SummaryScheduler, summaryOutputPath } from "./summary.js";
 import { getSystemPressure } from "./system-monitor.js";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, renameSync } from "node:fs";
 
 export interface RecorderOptions {
   silenceTimeout: number;
@@ -39,7 +39,7 @@ export class Recorder {
   private pausedAccumMs = 0;
   private pauseStartedAt: number | null = null;
   private readonly startedAt: Date;
-  private readonly outputFile: string;
+  private outputFile: string;
   private startNextMeeting = false;
   private resolveRun: (() => void) | null = null;
   private sigintHandler: (() => void) | null = null;
@@ -325,6 +325,65 @@ export class Recorder {
       .catch((err) => this.warn("session.json tags write failed", err));
   }
 
+  // Applies a pending `meet retitle` request dropped by the menu bar (mirrors
+  // applyPendingTags' marker-file handoff). The Recorder is the only process
+  // that can safely move its own output folder without racing its own writes,
+  // so the short-lived `retitle` CLI only writes the marker; this does the move.
+  private applyPendingRetitle(): void {
+    const markerPath = join(this.session.sessionDir, "retitle-request.json");
+    if (!existsSync(markerPath)) return;
+
+    let marker: RetitleMarker;
+    try {
+      marker = JSON.parse(readFileSync(markerPath, "utf-8"));
+    } catch {
+      try { unlinkSync(markerPath); } catch {}
+      return;
+    }
+
+    const { noop, newOutputFile } = planRetitle(this.outputFile, marker);
+    if (noop) {
+      try { unlinkSync(markerPath); } catch {}
+      return;
+    }
+
+    const oldMeetingDir = dirname(this.outputFile);
+    const newMeetingDir = dirname(newOutputFile);
+
+    // Belt-and-braces pre-check: renameSync onto an existing non-empty directory
+    // throws ENOTEMPTY/EEXIST, reachable whenever two meetings in the same
+    // wall-clock minute slug identically. Losing the live recording over a
+    // cosmetic rename is worse than just keeping the old path.
+    if (existsSync(newMeetingDir)) {
+      this.warn("retitle: target folder already exists, keeping old path", newMeetingDir);
+      try { unlinkSync(markerPath); } catch {}
+      return;
+    }
+
+    try {
+      renameSync(oldMeetingDir, newMeetingDir);
+    } catch (err) {
+      this.warn("retitle: rename failed, keeping old path", err);
+      try { unlinkSync(markerPath); } catch {}
+      return;
+    }
+
+    this.session.title = marker.title;
+    this.outputFile = newOutputFile;
+    this.session.outputFile = newOutputFile;
+    this.summaryScheduler?.setOutputFile(summaryOutputPath(this.session));
+
+    void writeAtomic(
+      join(this.session.sessionDir, "session.json"),
+      JSON.stringify(this.session, null, 2),
+    ).catch((err) => this.warn("session.json write failed after retitle", err));
+    writeActiveRecordingLock(this.session);
+
+    try { unlinkSync(markerPath); } catch {}
+
+    process.stdout.write(`\n${chalk.green(`Renamed to "${marker.title}"`)}\n`);
+  }
+
   private spawnBackgroundFinalizer(): void {
     const binPath = process.argv[1];
     const child = spawn(process.execPath, [binPath, "finalize", this.session.sessionDir], {
@@ -515,6 +574,7 @@ export class Recorder {
       );
 
       this.applyPendingTags();
+      this.applyPendingRetitle();
       this.checkAutoStop();
     }, 5000);
   }
@@ -663,6 +723,25 @@ export class Recorder {
 
     this.startStatus();
   }
+}
+
+export interface RetitleMarker {
+  title: string;
+  newOutputDir: string;
+}
+
+// Pure: decides whether a pending retitle marker is a no-op (the new slug
+// resolves to the folder we're already in) and, if not, the new outputFile
+// path — same basename, new parent dir.
+export function planRetitle(
+  currentOutputFile: string,
+  marker: RetitleMarker,
+): { noop: boolean; newOutputFile: string } {
+  const currentDir = dirname(currentOutputFile);
+  if (marker.newOutputDir === currentDir) {
+    return { noop: true, newOutputFile: currentOutputFile };
+  }
+  return { noop: false, newOutputFile: join(marker.newOutputDir, basename(currentOutputFile)) };
 }
 
 export function formatLagStatus(

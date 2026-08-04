@@ -366,6 +366,7 @@ export interface SummarySchedulerOptions {
 
 export class SummaryScheduler {
   private readonly opts: SummarySchedulerOptions;
+  private outputFile: string;
   private chunkCounter = 0;
   private dirty = false;
   private disabled = false;
@@ -375,6 +376,15 @@ export class SummaryScheduler {
 
   constructor(opts: SummarySchedulerOptions) {
     this.opts = opts;
+    this.outputFile = opts.outputFile;
+  }
+
+  // Repoints the write target after a live retitle moves the meeting folder
+  // (see recorder.ts:applyPendingRetitle) — opts.outputFile is a one-time
+  // snapshot from construction, so without this the scheduler keeps writing
+  // summary.md to the now-stale pre-rename path.
+  setOutputFile(path: string): void {
+    this.outputFile = path;
   }
 
   onChunk(_source: "mic" | "sys", _index: number): void {
@@ -424,7 +434,7 @@ export class SummaryScheduler {
             chunkDurationSeconds: this.opts.session.chunkDurationSeconds,
           },
         );
-        await writeAtomic(this.opts.outputFile, markdown);
+        await writeAtomic(this.outputFile, markdown);
         this.dirty = false;
         this.stopCatchupTimer();
       } catch (err) {
@@ -492,7 +502,7 @@ export class SummaryScheduler {
           chunkDurationSeconds: this.opts.session.chunkDurationSeconds,
         },
       );
-      await writeAtomic(this.opts.outputFile, markdown);
+      await writeAtomic(this.outputFile, markdown);
       this.dirty = false;
     } catch (err) {
       // Never propagate into the recording path.

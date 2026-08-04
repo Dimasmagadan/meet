@@ -4,12 +4,16 @@ import Cocoa
 // specs/SPEC_NOTCH_TRANSCRIPT_PANEL_2026-08-03.md. The window's collapsed
 // frame *is* the notch rect (a physical cutout, so a window there is
 // invisible by definition) — hovering it grows the same window downward.
-final class NotchPanelController {
+final class NotchPanelController: NSObject {
     static let maxLines = 4
     static let placeholder = "Ждём данные…"
 
     private static let panelWidth: CGFloat = 400
     private static let expandedHeight: CGFloat = 160
+    // ~60 reading columns at 14pt, not a measured character count.
+    private static let bigWidth: CGFloat = 620
+    private static let bigHeightFraction: CGFloat = 0.5
+    private static let expandButtonSize = NSSize(width: 72, height: 20)
     private static let hideDelay: TimeInterval = 0.35
     private static let pollInterval: TimeInterval = 1.0
     // Scrollback shown once expanded; tail-4 stays the pure-function default (see selfCheckTailExtraction).
@@ -21,8 +25,11 @@ final class NotchPanelController {
     private var panel: NSPanel?
     private var scrollView: NSScrollView?
     private var textView: NSTextView?
+    private var expandButton: NSButton?
     private var collapsedFrame: NSRect = .zero
     private var expandedFrame: NSRect = .zero
+    private var bigFrame: NSRect = .zero
+    private var isBigExpanded = false
     private var notchHeight: CGFloat = 0
     private var pollTimer: Timer?
     private var hideWorkItem: DispatchWorkItem?
@@ -37,7 +44,7 @@ final class NotchPanelController {
     // MARK: - Arm / disarm
 
     private func arm() {
-        guard let notch = Self.notchRect(on: NSScreen.main) else { return }
+        guard let screen = Self.notchScreen(), let notch = Self.notchRect(on: screen) else { return }
 
         notchHeight = notch.height
         // Collapsed frame must not exceed the notch's own bounds — anything wider peeks
@@ -48,6 +55,13 @@ final class NotchPanelController {
             y: notch.maxY - Self.expandedHeight,
             width: Self.panelWidth,
             height: Self.expandedHeight
+        )
+        let bigHeight = screen.frame.height * Self.bigHeightFraction
+        bigFrame = NSRect(
+            x: notch.midX - Self.bigWidth / 2,
+            y: notch.maxY - bigHeight,
+            width: Self.bigWidth,
+            height: bigHeight
         )
 
         if panel == nil {
@@ -81,8 +95,7 @@ final class NotchPanelController {
         // Text starts below the physical notch cutout, not at the window's top edge —
         // the window itself still spans the full notch-to-expandedHeight rect (matches
         // notch black so the collapsed->expanded grow reads as one shape).
-        let topInset = notchHeight + 4
-        let scrollFrame = NSRect(x: 10, y: 6, width: Self.panelWidth - 20, height: Self.expandedHeight - 6 - topInset)
+        let scrollFrame = Self.scrollFrame(for: NSSize(width: Self.panelWidth, height: Self.expandedHeight), notchHeight: notchHeight)
 
         let scrollView = NSScrollView(frame: scrollFrame)
         scrollView.hasVerticalScroller = true
@@ -106,6 +119,11 @@ final class NotchPanelController {
 
         scrollView.documentView = textView
 
+        let button = FirstMouseButton(title: "Раскрыть", target: self, action: #selector(toggleBigExpand))
+        button.bezelStyle = .inline
+        button.font = .systemFont(ofSize: 11)
+        button.frame = Self.buttonFrame(for: NSSize(width: Self.panelWidth, height: Self.expandedHeight), notchHeight: notchHeight)
+
         let content = TrackingView(frame: collapsedFrame)
         content.wantsLayer = true
         content.layer?.backgroundColor = NSColor.black.cgColor
@@ -114,12 +132,14 @@ final class NotchPanelController {
         content.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
         content.layer?.masksToBounds = true
         content.addSubview(scrollView)
+        content.addSubview(button)
         content.onHoverChange = { [weak self] hovering in self?.handleHover(hovering) }
 
         panel.contentView = content
         self.panel = panel
         self.scrollView = scrollView
         self.textView = textView
+        self.expandButton = button
     }
 
     // MARK: - Hover
@@ -128,7 +148,7 @@ final class NotchPanelController {
         hideWorkItem?.cancel()
         if hovering {
             startPolling()
-            animate(to: expandedFrame)
+            animate(to: isBigExpanded ? bigFrame : expandedFrame)
         } else {
             let workItem = DispatchWorkItem { [weak self] in self?.collapse() }
             hideWorkItem = workItem
@@ -138,14 +158,29 @@ final class NotchPanelController {
 
     private func collapse() {
         stopPolling()
+        isBigExpanded = false
+        expandButton?.title = "Раскрыть"
         animate(to: collapsedFrame)
+    }
+
+    // Toggles the reading-size panel (50% screen height) on and off; resets to the
+    // small hover size whenever the panel fully collapses (see collapse()).
+    @objc private func toggleBigExpand() {
+        hideWorkItem?.cancel()
+        isBigExpanded.toggle()
+        expandButton?.title = isBigExpanded ? "Свернуть" : "Раскрыть"
+        animate(to: isBigExpanded ? bigFrame : expandedFrame)
     }
 
     private func animate(to frame: NSRect) {
         guard let panel = panel else { return }
+        let newScrollFrame = Self.scrollFrame(for: frame.size, notchHeight: notchHeight)
+        let newButtonFrame = Self.buttonFrame(for: frame.size, notchHeight: notchHeight)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.18
             panel.animator().setFrame(frame, display: true)
+            scrollView?.animator().frame = newScrollFrame
+            expandButton?.animator().frame = newButtonFrame
         }
     }
 
@@ -188,6 +223,30 @@ final class NotchPanelController {
     }
 
     // MARK: - Pure helpers (see selfCheckTailExtraction)
+
+    // Text starts below the physical notch cutout *and* the button row at any panel
+    // size (collapsed, hover, or big-expanded) — insets are constant since neither the
+    // notch nor the button resize.
+    static func scrollFrame(for size: NSSize, notchHeight: CGFloat) -> NSRect {
+        let topInset = notchHeight + 4 + expandButtonSize.height
+        return NSRect(x: 10, y: 6, width: size.width - 20, height: size.height - 6 - topInset)
+    }
+
+    // Sits in its own row directly below the notch's dead zone — anything placed
+    // above that line is physically hidden by the cutout, invisible to the user.
+    static func buttonFrame(for size: NSSize, notchHeight: CGFloat) -> NSRect {
+        let rowTop = size.height - notchHeight - 4
+        return NSRect(
+            x: size.width - expandButtonSize.width - 8,
+            y: rowTop - expandButtonSize.height,
+            width: expandButtonSize.width,
+            height: expandButtonSize.height
+        )
+    }
+
+    static func notchScreen() -> NSScreen? {
+        NSScreen.screens.first { notchRect(on: $0) != nil }
+    }
 
     static func notchRect(on screen: NSScreen?) -> NSRect? {
         guard let screen = screen, screen.safeAreaInsets.top > 0,
@@ -252,4 +311,10 @@ private final class TrackingView: NSView {
 
     override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
     override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
+}
+
+// The panel never becomes key (.nonactivatingPanel), so without this override the
+// button's first click would just be swallowed as a "wake up the window" click.
+private final class FirstMouseButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

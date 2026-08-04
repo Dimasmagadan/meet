@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { loadConfig, getOutputPath, getOutputDir, getCaptureBinPath, resolveAnalysisBin, findStaleSessions, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath } from "./storage.js";
+import { loadConfig, getOutputPath, getOutputDir, getCaptureBinPath, resolveAnalysisBin, findStaleSessions, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath, readSession } from "./storage.js";
 import { Recorder } from "./recorder.js";
 import { makeHeader } from "./assembler.js";
 import { finalizeSession } from "./finalize.js";
@@ -16,7 +16,7 @@ import { spawn, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { nanoid } from "nanoid";
 import type { Session, Config } from "./types.js";
 import { analyzeWavFile } from "./audio-metrics.js";
@@ -36,7 +36,7 @@ export function createProgram(): Command {
   program
     .command("start")
     .description("Start a foreground recording session")
-    .argument("<title>", "Meeting title")
+    .argument("[title]", "Meeting title (default: \"meeting\")")
     .option("--mic", "Mic-only mode (no system audio)")
     .option("--silence <seconds>", "Silence timeout for audio capture (0 = disabled)", parseInt, 0)
     .option("--max-duration <minutes>", "Auto-stop after N minutes (0 = disabled)", parseInt)
@@ -45,9 +45,9 @@ export function createProgram(): Command {
     .option("--headless", "Run without terminal interaction (for menu bar app / automation)")
     .option("--no-summary", "Disable live extractive summary during recording")
     .option("--repo <path>", "Attach git repo context from <path> (default: current working directory)")
-    .action(async (title: string, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string }) => {
+    .action(async (title: string | undefined, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string }) => {
       const mode = opts.mic ? "mic" as const : "full" as const;
-      await startSessionLoop(title, mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing, opts.headless, opts.summary, opts.repo);
+      await startSessionLoop(title ?? "meeting", mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing, opts.headless, opts.summary, opts.repo);
     });
 
   program
@@ -121,6 +121,15 @@ export function createProgram(): Command {
     .argument("<newName>", "New display name")
     .action(async (meetingDir: string, speakerId: string, newName: string) => {
       await runRename(meetingDir, speakerId, newName);
+    });
+
+  program
+    .command("retitle")
+    .description("Rename an in-progress recording's title (moves its output folder in place)")
+    .argument("<sessionDir>", "Session directory path")
+    .argument("<newTitle>", "New meeting title")
+    .action(async (sessionDir: string, newTitle: string) => {
+      await runRetitle(sessionDir, newTitle);
     });
 
   program
@@ -648,6 +657,37 @@ async function runRename(meetingDir: string, speakerId: string, newName: string)
     console.log(chalk.red(err instanceof Error ? err.message : String(err)));
     process.exit(1);
   }
+}
+
+// Spawned synchronously by the menu bar (mirrors `meet tag`). Only drops the
+// retitle-request.json marker — the live Recorder is the sole owner of the actual
+// rename (see recorder.ts:applyPendingRetitle), since it's the only process that
+// can move its own output folder without racing its own writes.
+async function runRetitle(sessionDir: string, newTitle: string) {
+  const dir = expandPath(sessionDir);
+  const lock = readActiveRecordingLock();
+  if (!lock || lock.sessionDir !== dir) {
+    console.log(chalk.red("No active recording for this session."));
+    process.exit(1);
+  }
+
+  const session = await readSession(dir);
+  if (!session) {
+    console.log(chalk.red(`session.json not found: ${dir}`));
+    process.exit(1);
+  }
+
+  const config = loadConfig();
+  const newOutputDir = getOutputDir(config, newTitle, new Date(session.startedAt));
+  const currentOutputDir = dirname(session.outputFile);
+  if (newOutputDir === currentOutputDir) {
+    return; // same slug as today — no-op
+  }
+
+  await writeAtomic(
+    join(dir, "retitle-request.json"),
+    JSON.stringify({ title: newTitle, newOutputDir }),
+  );
 }
 
 async function runLink(meetingDir: string, repoPath: string) {

@@ -122,6 +122,31 @@ class RecordingController {
         return proc.terminationStatus == 0
     }
 
+    // Mirrors setTags(): guards on live state, spawns `meet retitle` synchronously (the
+    // write must land regardless of whatever happens next in the caller), waits for exit.
+    // The actual folder move happens in the live Recorder process (recorder.ts:applyPendingRetitle)
+    // on its next 5s status tick — this just drops the marker file.
+    @discardableResult
+    func retitle(title: String) -> Bool {
+        guard state == .recording || state == .paused else { return false }
+        guard let runner = resolver.resolve(), let sessionDir = currentSessionDir() else { return false }
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: runner.executable)
+        proc.arguments = runner.args + ["retitle", sessionDir, trimmed]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return false
+        }
+        return proc.terminationStatus == 0
+    }
+
     // Synchronous `meet tags` spawn (Node cold start, same cost as setTags) — called only
     // when a tag-picker dialog is about to open, not on a hot path.
     func fetchAvailableTags() -> [String] {

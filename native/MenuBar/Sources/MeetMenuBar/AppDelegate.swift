@@ -70,6 +70,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(NSMenuItem(title: "Pause", action: #selector(pauseRecording), keyEquivalent: "p"))
             menu.addItem(NSMenuItem(title: "Stop", action: #selector(stopRecording), keyEquivalent: "s"))
             menu.addItem(NSMenuItem(title: "Add Tag…", action: #selector(addTag), keyEquivalent: "t"))
+            menu.addItem(NSMenuItem(title: "Rename Meeting…", action: #selector(renameMeeting), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: "Extend +15m", action: #selector(extendRecording), keyEquivalent: "e"))
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Open Meetings Folder", action: #selector(openMeetings), keyEquivalent: "o"))
@@ -82,6 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(NSMenuItem(title: "Resume", action: #selector(resumeRecording), keyEquivalent: "r"))
             menu.addItem(NSMenuItem(title: "Stop", action: #selector(stopRecording), keyEquivalent: "s"))
             menu.addItem(NSMenuItem(title: "Add Tag…", action: #selector(addTag), keyEquivalent: "t"))
+            menu.addItem(NSMenuItem(title: "Rename Meeting…", action: #selector(renameMeeting), keyEquivalent: ""))
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Open Meetings Folder", action: #selector(openMeetings), keyEquivalent: "o"))
         }
@@ -99,12 +101,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(item)
     }
 
+    // Recording starts under the default title "meeting" the instant the mic gate clears —
+    // no dialog stands between "click Start" and "audio is being captured". The naming
+    // prompt still shows right after, but it's cosmetic from here on: Cancel just leaves
+    // the title as "meeting" (still renameable later via "Rename Meeting…").
     @objc func startRecording() {
-        let defaultTitle = lastTitle() ?? "meeting"
-        guard let title = promptText(message: "Start recording", info: "Meeting title", ok: "Start", default: defaultTitle) else { return }
-        let resolved = title.isEmpty ? "meeting" : title
-        saveLastTitle(resolved)
-
         // TCC preflight. Mic is gated synchronously and refuses on deny. System audio has no
         // public preflight API (Core Audio process taps, SPEC_TCC_SCREEN_REPROMPT_2026-07-31
         // §6) — AudioCapture raises the real "System Audio Recording Only" prompt itself, and
@@ -124,8 +125,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 openPrivacySettings(.microphone)
                 return
             }
-            self.recordingController.start(title: resolved)
+            self.recordingController.start(title: "meeting")
+
+            let defaultTitle = self.lastTitle() ?? "meeting"
+            if let title = self.promptText(message: "Meeting title", info: "Recording already started — name it now or later via \"Rename Meeting…\"", ok: "Save", default: defaultTitle) {
+                self.submitRetitle(title)
+            }
         }
+    }
+
+    @objc func renameMeeting() {
+        let defaultTitle = lastTitle() ?? "meeting"
+        guard let title = promptText(message: "Rename Meeting", info: "New meeting title", ok: "Rename", default: defaultTitle) else { return }
+        submitRetitle(title)
     }
 
     @objc func pauseRecording() {
@@ -260,6 +272,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let newTag = newTagField.stringValue.trimmingCharacters(in: .whitespaces)
         if !newTag.isEmpty { selected.append(newTag) }
         return selected
+    }
+
+    // Shared by the post-start prompt and "Rename Meeting…" — only a real (non-default)
+    // title is worth a retitle spawn or remembering as lastTitle(); "meeting" (Cancel,
+    // or literally typing the default) is already what's live, so it's a no-op.
+    private func submitRetitle(_ title: String) {
+        let resolved = title.isEmpty ? "meeting" : title
+        guard resolved != "meeting" else { return }
+        saveLastTitle(resolved)
+        if !recordingController.retitle(title: resolved) {
+            showAlert(title: "Rename failed", message: "Meet could not rename this recording.")
+        }
     }
 
     private func lastTitle() -> String? {
