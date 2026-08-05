@@ -180,7 +180,7 @@ export const DEFAULT_CONFIG: Config = {
   captureBin: "",
   prompt: "Разговор на русском языке. Консультация, обсуждение, вопросы и ответы.",
   opencodeBin: "opencode",
-  micVoiceProcessing: false,
+  micVoiceProcessing: true,
   silenceGate: true,
   micRmsThresholdDb: -60,
   sysRmsThresholdDb: -65,

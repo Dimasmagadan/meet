@@ -4,6 +4,7 @@ import Cocoa
 // recognition, diarization, alerts, language...) out of the ~50 keys in
 // config.json. Everything else stays a JSON edit via "Open Config File…".
 final class SettingsWindowController: NSWindowController {
+    private let voiceProcessingCheckbox = NSButton(checkboxWithTitle: "Mic Echo Cancellation (AEC)", target: nil, action: nil)
     private let diarizationCheckbox = NSButton(checkboxWithTitle: "Speaker Diarization", target: nil, action: nil)
     private let speakerRegistryCheckbox = NSButton(checkboxWithTitle: "Speaker Recognition (cross-session voice registry)", target: nil, action: nil)
     private let attentionCheckbox = NSButton(checkboxWithTitle: "Attention Alerts (trigger words)", target: nil, action: nil)
@@ -18,8 +19,8 @@ final class SettingsWindowController: NSWindowController {
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 480),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 620),
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -42,6 +43,7 @@ final class SettingsWindowController: NSWindowController {
 
     private func loadIntoFields() {
         config = ConfigStore.load()
+        voiceProcessingCheckbox.state = ConfigStore.bool(config, "micVoiceProcessing", default: true) ? .on : .off
         diarizationCheckbox.state = ConfigStore.bool(config, "diarizationEnabled", default: true) ? .on : .off
         speakerRegistryCheckbox.state = ConfigStore.bool(config, "speakerRegistryEnabled", default: false) ? .on : .off
         attentionCheckbox.state = ConfigStore.bool(config, "attentionAlerts", default: true) ? .on : .off
@@ -54,6 +56,7 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func save() {
+        config["micVoiceProcessing"] = voiceProcessingCheckbox.state == .on
         config["diarizationEnabled"] = diarizationCheckbox.state == .on
         config["speakerRegistryEnabled"] = speakerRegistryCheckbox.state == .on
         config["attentionAlerts"] = attentionCheckbox.state == .on
@@ -102,18 +105,22 @@ final class SettingsWindowController: NSWindowController {
         let mainStack = NSStackView(views: [
             sectionLabel("Recording"),
             labeledRow("Language (whisper -l):", languageField),
+            hint("Код языка распознавания речи (ru, en, ...)."),
             labeledRow("Chunk Duration (seconds):", chunkDurationField),
+            hint("Короче — быстрее живой транскрипт, но меньше контекста на chunk для точности. 15с — разумный баланс."),
+            withHint(voiceProcessingCheckbox, "Включай, если пишешь без наушников: иначе звук собеседника из динамиков попадёт обратно в твой микрофон и его слова будут подписаны как «Me». С наушниками можно выключить — AEC иногда слегка просаживает громкость микрофона."),
             separator(),
             sectionLabel("Speakers"),
-            diarizationCheckbox,
-            speakerRegistryCheckbox,
+            withHint(diarizationCheckbox, "Различать голоса в системном аудио и подписывать их Speaker 1/2/... Выключи, если митинг всегда 1-на-1 и разбивка по спикерам не нужна."),
+            withHint(speakerRegistryCheckbox, "Запоминать голоса между встречами, чтобы через время подставлять реальные имена вместо Speaker N. Включай, если регулярно встречаешься с одними и теми же людьми."),
             labeledRow("Speaker Match Threshold (0–1):", matchThresholdField),
+            hint("Порог схожести голоса для автоподстановки имени из реестра. Выше — надёжнее совпадение, но чаще остаётся Speaker N."),
             separator(),
             sectionLabel("Alerts & Passes"),
-            attentionCheckbox,
-            summaryCheckbox,
-            parakeetCheckbox,
-            lowerPriorityCheckbox,
+            withHint(attentionCheckbox, "Уведомление, когда в разговоре звучит слово из triggers.json (например, твоё имя) — не пропустить обращение, если отвлёкся."),
+            withHint(summaryCheckbox, "Живое саммари по ходу встречи в терминале/панели. Выключи, если отвлекает или встреча короткая."),
+            withHint(parakeetCheckbox, "Доп. прогон другой моделью (Parakeet) для сравнения качества транскрипции — удлиняет финализацию, полезно только при отладке качества."),
+            withHint(lowerPriorityCheckbox, "Понижает приоритет процесса транскрипции (taskpolicy), чтобы запись звука не проседала под нагрузкой. Оставляй включённым, выключай только для замера скорости распознавания."),
             separator(),
             openConfigButton,
             actionRow,
@@ -124,11 +131,25 @@ final class SettingsWindowController: NSWindowController {
         mainStack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         mainStack.translatesAutoresizingMaskIntoConstraints = false
 
-        contentView.addSubview(mainStack)
+        // Hints make the content taller than any fixed window size can
+        // guarantee (wrapping labels, localization, font size) — scroll
+        // rather than clip or guess a magic height.
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = mainStack
+
+        contentView.addSubview(scrollView)
         NSLayoutConstraint.activate([
-            mainStack.topAnchor.constraint(equalTo: contentView.topAnchor),
-            mainStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            mainStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            mainStack.topAnchor.constraint(equalTo: scrollView.topAnchor),
+            mainStack.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
+            mainStack.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
+            mainStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
         ])
     }
 
@@ -144,6 +165,25 @@ final class SettingsWindowController: NSWindowController {
         row.orientation = .horizontal
         row.spacing = 8
         return row
+    }
+
+    // Small gray caption under a checkbox/field, wrapped to the window width —
+    // the mini "when to enable/disable" instructions the settings window
+    // doesn't otherwise have room for.
+    private func hint(_ text: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.preferredMaxLayoutWidth = 380
+        return label
+    }
+
+    private func withHint(_ checkbox: NSButton, _ text: String) -> NSStackView {
+        let stack = NSStackView(views: [checkbox, hint(text)])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        return stack
     }
 
     private func separator() -> NSBox {
