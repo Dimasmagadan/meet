@@ -534,6 +534,11 @@ export async function finalizeSession(
 
     let finalPassLocked = false;
     let finalPassWallMs = 0;
+    // Chunk keys the final pass dropped as cross-channel echo (P1/P2,
+    // SPEC_MIC_ECHO_FILTERING_2026-08-05) — excluded below from the
+    // "did the final pass lose entries" safety-net comparison, since
+    // effective echo filtering is supposed to shrink the entry count.
+    let droppedEchoKeys = new Set<string>();
     try {
       if (config.finalRetranscribe) {
         if (!existsSync(finalModelPath)) {
@@ -552,10 +557,12 @@ export async function finalizeSession(
               : undefined;
 
             const finalPassStartedAt = Date.now();
-            entries = await runFinalPass(session, config, (done, total) => {
+            const finalPassResult = await runFinalPass(session, config, (done, total) => {
               progressWriter.update(makeProgress("final", done, total));
               log(`Final pass: ${done}/${total} chunks`);
             }, sessionEntries, beforeChunk);
+            entries = finalPassResult.entries;
+            droppedEchoKeys = finalPassResult.droppedEchoKeys;
             finalPassWallMs = Date.now() - finalPassStartedAt;
           } catch (err) {
             warn(`Final pass failed: ${err instanceof Error ? err.message : String(err)}, using live transcript`);
@@ -570,8 +577,11 @@ export async function finalizeSession(
       await progressWriter.forceFlush();
 
       if (entries.length > 0) {
-        if (baseEntries.length > 0 && entries.length < baseEntries.length) {
-          warn(`Final pass produced ${entries.length} entries vs ${baseEntries.length} non-silent live/stored entries, keeping live`);
+        const effectiveBaseEntries = droppedEchoKeys.size > 0
+          ? baseEntries.filter((e) => !droppedEchoKeys.has(`${e.source}-${String(e.chunkIndex).padStart(3, "0")}`))
+          : baseEntries;
+        if (effectiveBaseEntries.length > 0 && entries.length < effectiveBaseEntries.length) {
+          warn(`Final pass produced ${entries.length} entries vs ${effectiveBaseEntries.length} non-silent live/stored entries (excluding ${droppedEchoKeys.size} echo-filtered), keeping live`);
           entries = baseEntries;
         }
 

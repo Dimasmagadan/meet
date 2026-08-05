@@ -5,7 +5,13 @@ import { copyFile } from "node:fs/promises";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 import { loadConfig, resolveModelPath } from "./storage.js";
 import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
-import { analyzeWavFile, type AudioMetrics } from "./audio-metrics.js";
+import {
+  analyzeWavFileWithSamples,
+  frameSizeForRate,
+  frameRmsDb,
+  computeMicEchoScore,
+  type AudioMetrics,
+} from "./audio-metrics.js";
 import { filterEntries, type FinalChunkResult, type FilterConfig } from "./filters.js";
 import { chunkToTimestamp } from "./assembler.js";
 import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
@@ -26,6 +32,10 @@ export interface AudibleChunk {
   // false when below the source's silence-gate threshold — callers should
   // skip transcription but still account for the chunk in their own results.
   audible: boolean;
+  // Raw PCM, read once here so callers needing more than the summary metrics
+  // (e.g. the P2 echo envelope) don't re-read the file. Not retained by this
+  // function itself.
+  samples: Int16Array;
 }
 
 // Shared chunk-iteration shape for any full re-transcription pass (whisper
@@ -55,13 +65,22 @@ export async function forEachAudibleChunk(
     await beforeChunk?.();
 
     const wavPath = join(session.sessionDir, wav);
-    const metrics = await analyzeWavFile(wavPath);
+    const { metrics, samples } = await analyzeWavFileWithSamples(wavPath);
     const threshold = parsed.source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     const audible = metrics.rmsDb >= threshold;
 
     done++;
-    await onChunk({ source: parsed.source, index: parsed.index, wav, wavPath, metrics, audible }, done, total);
+    await onChunk({ source: parsed.source, index: parsed.index, wav, wavPath, metrics, audible, samples }, done, total);
   }
+}
+
+export interface FinalPassResult {
+  entries: TranscriptEntry[];
+  // Keys (`${source}-${paddedIndex}`) of mic entries dropped as cross-channel
+  // echo (P1 coverage or P2 audio score) — the finalize safety net excludes
+  // these from its "did the final pass lose entries" comparison, since
+  // effective echo filtering is supposed to shrink the entry count.
+  droppedEchoKeys: Set<string>;
 }
 
 export async function runFinalPass(
@@ -71,9 +90,16 @@ export async function runFinalPass(
   liveEntries?: TranscriptEntry[],
   beforeChunk?: () => Promise<void>,
   sensor?: PressureSensor,
-): Promise<TranscriptEntry[]> {
+): Promise<FinalPassResult> {
   const finalModelPath = resolveModelPath(config, "final");
   const results: FinalChunkResult[] = [];
+
+  // Per-~100ms-frame RMS envelope, keyed by chunk index (P2). Frame arrays are
+  // tiny (~150 floats per 15s chunk) — kept for the whole meeting, unlike the
+  // raw samples they're derived from, which are discarded after each chunk.
+  const frameSize = frameSizeForRate(16000);
+  const micFramesByIndex = new Map<number, number[]>();
+  const sysFramesByIndex = new Map<number, number[]>();
 
   // One wall-clock budget for the whole pass, threaded into every per-chunk
   // gate check so a many-chunk pass can't stall N × maxWaitMs. Live path is
@@ -82,6 +108,9 @@ export async function runFinalPass(
 
   await forEachAudibleChunk(session, config, async (chunk, done, total) => {
     if (gate) await whenNotOverloaded(gate, sensor);
+
+    const frames = frameRmsDb(chunk.samples, frameSize);
+    (chunk.source === "mic" ? micFramesByIndex : sysFramesByIndex).set(chunk.index, frames);
 
     if (!chunk.audible) {
       results.push({
@@ -128,13 +157,46 @@ export async function runFinalPass(
     onProgress?.(done, total);
   }, beforeChunk);
 
+  // P2: lag-search each mic chunk's envelope against its sys {N-1,N,N+1}
+  // neighbourhood (mirrors the P1 text window). Only chunks whose best
+  // correlation clears the threshold get a micEchoScore at all — filters.ts
+  // then drops on echoFraction, which is what stays safe under overlap.
+  for (const r of results) {
+    if (r.source !== "mic") continue;
+    const micFrames = micFramesByIndex.get(r.index);
+    if (!micFrames || micFrames.length === 0) continue;
+
+    const sysWindow = [
+      ...(sysFramesByIndex.get(r.index - 1) ?? []),
+      ...(sysFramesByIndex.get(r.index) ?? []),
+      ...(sysFramesByIndex.get(r.index + 1) ?? []),
+    ];
+    if (sysWindow.length === 0) continue;
+
+    const { correlation, echoFraction } = computeMicEchoScore(
+      micFrames,
+      sysWindow,
+      config.micRmsThresholdDb,
+      config.sysRmsThresholdDb
+    );
+    if (correlation >= config.micEchoCorrelationThreshold) {
+      r.micEchoScore = echoFraction;
+    }
+  }
+
   const filterConfig: FilterConfig = {
     micRmsThresholdDb: config.micRmsThresholdDb,
+    micEchoCoverageThreshold: config.micEchoCoverageThreshold,
+    micEchoFractionThreshold: config.micEchoFractionThreshold,
   };
 
-  const filtered = filterEntries(results, filterConfig);
+  const droppedEcho: FinalChunkResult[] = [];
+  const filtered = filterEntries(results, filterConfig, droppedEcho);
+  const droppedEchoKeys = new Set(
+    droppedEcho.map((r) => `${r.source}-${String(r.index).padStart(3, "0")}`)
+  );
 
-  return filtered
+  const entries = filtered
     .filter((r) => r.text)
     .map((r) => ({
       source: r.source,
@@ -142,4 +204,6 @@ export async function runFinalPass(
       timestamp: chunkToTimestamp(r.index, session.chunkDurationSeconds, session.startedAt),
       text: r.text,
     }));
+
+  return { entries, droppedEchoKeys };
 }

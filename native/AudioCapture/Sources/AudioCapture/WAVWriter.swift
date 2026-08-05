@@ -12,6 +12,11 @@ struct WAVWriter {
     private var currentTmpPath: URL?
     private var currentDataSize: Int = 0
     private let maxChunkSamples: Int
+    // Carries the overshoot past maxChunkSamples from one chunk into the next,
+    // so mic/sys chunks land on exact wall-clock boundaries instead of each
+    // accumulating its own per-buffer overshoot at a different rate (P0,
+    // SPEC_MIC_ECHO_FILTERING_2026-08-05 root cause B.2).
+    private var carry: [Int16] = []
 
     init(outputDir: URL, prefix: String, chunkDurationSeconds: Int) {
         self.outputDir = outputDir
@@ -38,6 +43,12 @@ struct WAVWriter {
         FileManager.default.createFile(atPath: tmpPath.path, contents: header)
         currentFileHandle = try FileHandle(forWritingTo: tmpPath)
         try currentFileHandle?.seekToEnd()
+
+        if !carry.isEmpty {
+            let toFlush = carry
+            carry = []
+            try appendSamples(toFlush)
+        }
     }
 
     mutating func appendSamples(_ samples: [Int16]) throws {
@@ -54,6 +65,18 @@ struct WAVWriter {
 
     mutating func appendSamplesIfNeeded(_ samples: [Int16]) throws -> Bool {
         guard currentDataSize / 2 < maxChunkSamples else { return false }
+
+        let remaining = maxChunkSamples - currentDataSize / 2
+        if samples.count > remaining {
+            // Split exactly at the chunk boundary: write the head, carry the
+            // tail into the next chunk instead of letting this chunk overshoot.
+            let head = Array(samples[0..<remaining])
+            let tail = Array(samples[remaining...])
+            try appendSamples(head)
+            carry = tail
+            return true
+        }
+
         try appendSamples(samples)
         return currentDataSize / 2 >= maxChunkSamples
     }

@@ -5,6 +5,10 @@ export interface FinalChunkResult {
   text: string;
   rmsDb: number;
   peakDb: number;
+  // P2: echoFraction at the best-correlated lag against the sys neighbourhood,
+  // set only when the correlation already cleared micEchoCorrelationThreshold
+  // (final-pass.ts). Undefined means "not computed / not correlated enough".
+  micEchoScore?: number;
 }
 
 const ACKNOWLEDGEMENTS = new Set([
@@ -56,6 +60,20 @@ function isDuplicate(micText: string, sysText: string): boolean {
   return false;
 }
 
+// Asymmetric coverage: "is everything the mic heard already present in what
+// the speakers played?" Unlike symmetric Jaccard, a sys side that legitimately
+// contains more material (near-end-only speech, a ±1-chunk neighbourhood)
+// doesn't drag the score down — the sys side is allowed to be a superset.
+function coverageRatio(micTokens: string[], sysTokens: Set<string>): number {
+  const micSet = new Set(micTokens);
+  if (micSet.size === 0) return 0;
+  let hit = 0;
+  for (const t of micSet) {
+    if (sysTokens.has(t)) hit++;
+  }
+  return hit / micSet.size;
+}
+
 function isAcknowledgement(text: string): boolean {
   const tokens = tokenize(text);
   if (tokens.length === 0) return false;
@@ -65,11 +83,22 @@ function isAcknowledgement(text: string): boolean {
 
 export interface FilterConfig {
   micRmsThresholdDb: number;
+  // P1: mic tokens covered by the sys {N-1,N,N+1} neighbourhood at or above
+  // this fraction are dropped as echo (asymmetric coverage, not Jaccard).
+  micEchoCoverageThreshold?: number;
+  // P2: mic.micEchoScore (echoFraction at the best-correlated lag) at or
+  // above this fraction is dropped as echo. Only set when final-pass.ts's
+  // correlation gate (micEchoCorrelationThreshold) already passed.
+  micEchoFractionThreshold?: number;
 }
+
+const DEFAULT_COVERAGE_THRESHOLD = 0.75;
+const DEFAULT_ECHO_FRACTION_THRESHOLD = 0.9;
 
 export function filterEntries(
   results: FinalChunkResult[],
-  config: FilterConfig
+  config: FilterConfig,
+  droppedEcho?: FinalChunkResult[]
 ): FinalChunkResult[] {
   const byIndex = new Map<number, FinalChunkResult[]>();
   for (const r of results) {
@@ -77,6 +106,15 @@ export function filterEntries(
     list.push(r);
     byIndex.set(r.index, list);
   }
+
+  const sysTokensByIndex = new Map<number, string[]>();
+  for (const [idx, chunks] of byIndex) {
+    const sys = chunks.find((c) => c.source === "sys");
+    if (sys && sys.text) sysTokensByIndex.set(idx, tokenize(sys.text));
+  }
+
+  const coverageThreshold = config.micEchoCoverageThreshold ?? DEFAULT_COVERAGE_THRESHOLD;
+  const echoFractionThreshold = config.micEchoFractionThreshold ?? DEFAULT_ECHO_FRACTION_THRESHOLD;
 
   const kept: FinalChunkResult[] = [];
 
@@ -94,12 +132,27 @@ export function filterEntries(
 
     if (mic.rmsDb < config.micRmsThresholdDb) continue;
 
-    if (sys && sys.text && isDuplicate(mic.text, sys.text)) continue;
-
-    if (sys && sys.text && isAcknowledgement(mic.text)) continue;
+    if (mic.micEchoScore !== undefined && mic.micEchoScore >= echoFractionThreshold) {
+      droppedEcho?.push(mic);
+      continue;
+    }
 
     if (sys && sys.text) {
+      if (isDuplicate(mic.text, sys.text)) continue;
+
+      const neighbourhood = new Set<string>();
+      for (const n of [idx - 1, idx, idx + 1]) {
+        const tokens = sysTokensByIndex.get(n);
+        if (tokens) for (const t of tokens) neighbourhood.add(t);
+      }
       const micTokens = tokenize(mic.text);
+      if (coverageRatio(micTokens, neighbourhood) >= coverageThreshold) {
+        droppedEcho?.push(mic);
+        continue;
+      }
+
+      if (isAcknowledgement(mic.text)) continue;
+
       if (micTokens.length <= 3) continue;
     }
 
@@ -109,4 +162,4 @@ export function filterEntries(
   return kept;
 }
 
-export { normalizeForComparison, tokenize, jaccardSimilarity, isDuplicate, isAcknowledgement };
+export { normalizeForComparison, tokenize, jaccardSimilarity, isDuplicate, isAcknowledgement, coverageRatio };

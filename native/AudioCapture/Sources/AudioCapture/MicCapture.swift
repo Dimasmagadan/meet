@@ -18,6 +18,13 @@ class MicCapture {
     private var lastRestartTime: Date = Date.distantPast
     var paused = false
 
+    // Phase-carrying resampler state (P0, SPEC_MIC_ECHO_FILTERING_2026-08-05
+    // root cause B.3) — carried across buffers instead of restarting at 0
+    // each call, which drops the fractional remainder every time.
+    private var resampleSrcPos: Double = 0.0
+    private var resamplePrevSample: Int16 = 0
+    private var resampleHasPrev: Bool = false
+
     init(outputDir: URL, chunkDurationSeconds: Int, voiceProcessing: Bool = false, onChunkFinalized: @escaping (String) -> Void) {
         self.wavWriter = WAVWriter(outputDir: outputDir, prefix: "mic", chunkDurationSeconds: chunkDurationSeconds)
         self.voiceProcessing = voiceProcessing
@@ -198,23 +205,31 @@ class MicCapture {
 
     private func linearInterpolate(_ samples: [Int16], ratio: Double) -> [Int16] {
         guard ratio > 1.0, !samples.isEmpty else { return samples }
-        let outputCount = Int(Double(samples.count) / ratio)
-        guard outputCount > 0 else { return samples }
 
         var result = [Int16]()
-        result.reserveCapacity(outputCount)
-        for i in 0..<outputCount {
-            let srcPos = Double(i) * ratio
-            let index = Int(srcPos)
+        var srcPos = resampleSrcPos
+        while true {
+            let index = Int(srcPos.rounded(.down))
             let frac = srcPos - Double(index)
-            if index + 1 < samples.count {
-                let s0 = Double(samples[index])
-                let s1 = Double(samples[index + 1])
-                result.append(Int16(s0 + frac * (s1 - s0)))
-            } else if index < samples.count {
-                result.append(samples[index])
+            let s0: Double
+            let s1: Double
+            if index == -1 {
+                guard resampleHasPrev else { break }
+                s0 = Double(resamplePrevSample)
+                s1 = Double(samples[0])
+            } else if index >= 0, index + 1 < samples.count {
+                s0 = Double(samples[index])
+                s1 = Double(samples[index + 1])
+            } else {
+                break
             }
+            result.append(Int16(s0 + frac * (s1 - s0)))
+            srcPos += ratio
         }
+
+        resampleSrcPos = srcPos - Double(samples.count)
+        resamplePrevSample = samples[samples.count - 1]
+        resampleHasPrev = true
         return result
     }
 

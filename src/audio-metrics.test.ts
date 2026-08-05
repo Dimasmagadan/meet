@@ -8,6 +8,12 @@ import {
   isBelowSpeechThreshold,
   makeSilentWav,
   makeSineWav,
+  makeBurstWav,
+  frameSizeForRate,
+  frameRmsDb,
+  pearsonCorrelation,
+  computeMicEchoScore,
+  analyzeWavFileWithSamples,
   type AudioMetrics,
 } from "./audio-metrics.js";
 
@@ -175,5 +181,114 @@ describe("makeSilentWav / makeSineWav", () => {
     assert.ok(Number.isFinite(computeRmsDb(samples)));
     assert.ok(Number.isFinite(computePeakDb(samples)));
     assert.strictEqual(samples.length, 240000);
+  });
+});
+
+describe("analyzeWavFileWithSamples", () => {
+  it("returns digital silence + empty samples for a missing file", async () => {
+    const result = await analyzeWavFileWithSamples("/tmp/does-not-exist-meet-test.wav");
+    assert.strictEqual(result.metrics.rmsDb, -Infinity);
+    assert.strictEqual(result.samples.length, 0);
+  });
+});
+
+describe("frameRmsDb", () => {
+  it("splits samples into per-frame RMS in dB", () => {
+    const wav = makeBurstWav([1, 1, 0, 0], 100, 16000, 440, 0.5);
+    const samples = readPcmSamples(wav);
+    const frames = frameRmsDb(samples, frameSizeForRate(16000));
+    assert.strictEqual(frames.length, 4);
+    // Loud frames finite and near the amplitude, silent frames at the floor.
+    assert.ok(frames[0] > -20);
+    assert.ok(frames[1] > -20);
+    assert.ok(frames[2] < -60);
+    assert.ok(frames[3] < -60);
+  });
+
+  it("returns an empty array for empty samples", () => {
+    assert.deepStrictEqual(frameRmsDb(new Int16Array(0), 1600), []);
+  });
+});
+
+describe("pearsonCorrelation", () => {
+  it("returns ~1 for identical modulated envelopes", () => {
+    const a = [1, 5, 1, 5, 1, 5];
+    const r = pearsonCorrelation(a, a);
+    assert.ok(Math.abs(r - 1) < 1e-9);
+  });
+
+  it("returns ~0 for uncorrelated envelopes", () => {
+    const a = [1, 1, 1, 1, 5, 5, 5, 5];
+    const b = [5, 5, 5, 5, 1, 1, 1, 1];
+    // perfectly anti-correlated, not uncorrelated — sanity check it's -1
+    assert.ok(Math.abs(pearsonCorrelation(a, b) - -1) < 1e-9);
+  });
+
+  it("returns 0 for a flat (zero-variance) signal — degenerate case makeSineWav would hit", () => {
+    assert.strictEqual(pearsonCorrelation([3, 3, 3], [1, 2, 3]), 0);
+  });
+
+  it("returns 0 for empty input", () => {
+    assert.strictEqual(pearsonCorrelation([], []), 0);
+  });
+});
+
+describe("computeMicEchoScore", () => {
+  const frameMs = 100;
+  const sampleRate = 16000;
+  const frameSize = frameSizeForRate(sampleRate, frameMs);
+  const speechThreshold = -40;
+
+  function framesOf(pattern: number[]): number[] {
+    const wav = makeBurstWav(pattern, frameMs, sampleRate, 440, 0.5);
+    return frameRmsDb(readPcmSamples(wav), frameSize);
+  }
+
+  it("identical envelope at zero lag: r ≈ 1, echoFraction ≈ 1", () => {
+    const pattern = [0, 1, 1, 0, 1, 0, 1, 1];
+    const micFrames = framesOf(pattern);
+    const sysWindow = framesOf(pattern);
+    const { correlation, echoFraction } = computeMicEchoScore(micFrames, sysWindow, speechThreshold, speechThreshold);
+    assert.ok(correlation > 0.99, `expected r≈1, got ${correlation}`);
+    assert.ok(echoFraction > 0.99, `expected echoFraction≈1, got ${echoFraction}`);
+  });
+
+  it("finds a delayed copy beyond a naive tens-of-ms window (wide lag search)", () => {
+    const pattern = [0, 1, 1, 0, 1, 0, 1, 1, 0, 0];
+    const micFrames = framesOf(pattern);
+    // Sys neighbourhood: mic's chunk is delayed by 3 frames (300ms) relative
+    // to where it "should" be — well beyond a tens-of-ms window, well within
+    // the ±1-chunk window this function searches over.
+    const delayedPattern = [0, 0, 0, ...pattern];
+    const sysWindow = framesOf(delayedPattern);
+    const { correlation, echoFraction } = computeMicEchoScore(micFrames, sysWindow, speechThreshold, speechThreshold);
+    assert.ok(correlation > 0.99, `expected r≈1 at the found lag, got ${correlation}`);
+    assert.ok(echoFraction > 0.99, `expected echoFraction≈1, got ${echoFraction}`);
+  });
+
+  it("uncorrelated bursts: r ≈ 0", () => {
+    const micFrames = framesOf([1, 0, 1, 0, 1, 0, 1, 0]);
+    const sysWindow = framesOf([1, 1, 0, 0, 1, 1, 0, 0]);
+    const { correlation } = computeMicEchoScore(micFrames, sysWindow, speechThreshold, speechThreshold);
+    assert.ok(Math.abs(correlation) < 0.1, `expected r≈0, got ${correlation}`);
+  });
+
+  it("mic = sys echo + extra bursts in sys-silent frames: high r but echoFraction stays low (overlap safety)", () => {
+    // Sys neighbourhood: only frames 0 and 4 are loud (the far-end speech).
+    const sysPattern = [1, 0, 0, 0, 1, 0, 0, 0];
+    // Mic: same two echoed frames PLUS the user talking over frames 1-3 and
+    // 5-7, where sys is silent — a real "Me" utterance overlapping the echo.
+    const micPattern = [1, 1, 1, 1, 1, 1, 1, 1];
+    const micFrames = framesOf(micPattern);
+    const sysWindow = framesOf(sysPattern);
+    const { echoFraction } = computeMicEchoScore(micFrames, sysWindow, speechThreshold, speechThreshold);
+    // Only 2 of the 8 audible mic frames have an audible aligned sys frame.
+    assert.ok(echoFraction < 0.9, `expected echoFraction below fMin, got ${echoFraction}`);
+  });
+
+  it("returns zero score when the sys window is shorter than the mic frames", () => {
+    const micFrames = framesOf([1, 1, 1, 1]);
+    const result = computeMicEchoScore(micFrames, [1, 1], speechThreshold, speechThreshold);
+    assert.deepStrictEqual(result, { correlation: 0, echoFraction: 0 });
   });
 });

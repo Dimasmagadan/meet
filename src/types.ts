@@ -84,6 +84,18 @@ export interface Config {
   vadTimeoutMs: number;
   diarizationEnabled: boolean;
   diarizationMinOverlap: number;
+  // Cross-channel echo filtering (final pass only, SPEC_MIC_ECHO_FILTERING_2026-08-05).
+  // P1: mic tokens covered by the sys {N-1,N,N+1} neighbourhood at/above this
+  // fraction are dropped as echo (asymmetric coverage, not symmetric Jaccard).
+  micEchoCoverageThreshold: number;
+  // P2: minimum envelope correlation (best lag over the sys neighbourhood)
+  // for a mic chunk to even be considered for the audio echo gate.
+  micEchoCorrelationThreshold: number;
+  // P2: minimum echoFraction (share of audible mic frames explained by an
+  // aligned sys frame) to drop the chunk. Conservative by design — a chunk
+  // where the user talks over the far end keeps some sys-silent mic frames,
+  // which pulls this below the threshold and keeps the entry.
+  micEchoFractionThreshold: number;
   // S2: opt-in parallel offline-VBx diarization pass for A/B comparison
   // against the primary online pipeline. Writes diarization-ab-report.json;
   // never touches transcript.md.
@@ -205,6 +217,9 @@ export const DEFAULT_CONFIG: Config = {
   vadTimeoutMs: 30_000,
   diarizationEnabled: true,
   diarizationMinOverlap: 0.3,
+  micEchoCoverageThreshold: 0.75,
+  micEchoCorrelationThreshold: 0.6,
+  micEchoFractionThreshold: 0.9,
   diarizationAbPass: false,
   analysisBin: "",
   parakeetComparePass: true,

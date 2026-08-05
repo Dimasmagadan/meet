@@ -6,6 +6,7 @@ import {
   isAcknowledgement,
   normalizeForComparison,
   jaccardSimilarity,
+  coverageRatio,
   tokenize,
   type FinalChunkResult,
 } from "./filters.js";
@@ -77,6 +78,27 @@ describe("isDuplicate", () => {
 
   it("rejects different text", () => {
     assert.strictEqual(isDuplicate("новый проект стартует", "старые задачи закрыты"), false);
+  });
+});
+
+describe("coverageRatio", () => {
+  it("returns 1 when all mic tokens are covered", () => {
+    assert.strictEqual(coverageRatio(["а", "б"], new Set(["а", "б", "в"])), 1);
+  });
+
+  it("returns 0 for an empty neighbourhood", () => {
+    assert.strictEqual(coverageRatio(["а", "б"], new Set()), 0);
+  });
+
+  it("returns 0 for empty mic tokens", () => {
+    assert.strictEqual(coverageRatio([], new Set(["а"])), 0);
+  });
+
+  it("is not dragged down by neighbourhood-only tokens (asymmetric)", () => {
+    // sys neighbourhood has lots of extra material mic never said — coverage
+    // stays 1 as long as every mic token is present, unlike symmetric Jaccard.
+    const sysNeighbourhood = new Set(["а", "б", "в", "г", "д", "е", "ж", "з"]);
+    assert.strictEqual(coverageRatio(["а", "б"], sysNeighbourhood), 1);
   });
 });
 
@@ -164,6 +186,73 @@ describe("filterEntries", () => {
     const filtered = filterEntries(results, config);
     assert.strictEqual(filtered.length, 1);
     assert.strictEqual(filtered[0].source, "sys");
+  });
+
+  it("drops mic echo whose leading sentence lives in sys N-1 (row 2)", () => {
+    // Signature of window misalignment: mic-2 carries a leading sentence that
+    // sys already emitted in chunk 1, which tanks symmetric Jaccard against
+    // sys-2 alone but is fully covered by the {N-1,N,N+1} neighbourhood.
+    const results = [
+      makeResult("sys", 1, "У нас он разделялась по правильным источникам"),
+      makeResult("sys", 2, "У нас есть мероприятие FUN мероприятие онлайн ХАП сейчас приходит"),
+      makeResult(
+        "mic",
+        2,
+        "У нас он разделялась по правильным источникам У нас есть мероприятие онлайн ХАП сейчас приходит",
+        -30
+      ),
+    ];
+    const filtered = filterEntries(results, config);
+    assert.strictEqual(filtered.filter((r) => r.source === "mic").length, 0);
+  });
+
+  it("keeps a genuinely distinct mic topic even with neighbourhood text present (row 4)", () => {
+    const results = [
+      makeResult("sys", 1, "Или по какому-то другому и ты там передаешь отдельно"),
+      makeResult("mic", 1, "Сейчас разделения на онлайн офлайн в коде нет вообще никакого", -30),
+    ];
+    const filtered = filterEntries(results, config);
+    assert.strictEqual(filtered.length, 2);
+  });
+
+  it("drops mic entries flagged by micEchoScore (P2) even without text overlap", () => {
+    const results = [
+      makeResult("sys", 1, "Что-то сказанное в динамики"),
+      { ...makeResult("mic", 1, "Совершенно другой текст без пересечения слов", -30), micEchoScore: 0.95 },
+    ];
+    const filtered = filterEntries(results, config);
+    assert.strictEqual(filtered.filter((r) => r.source === "mic").length, 0);
+  });
+
+  it("keeps mic entries when micEchoScore is below the fraction threshold", () => {
+    const results = [
+      makeResult("sys", 1, "Что-то сказанное в динамики"),
+      { ...makeResult("mic", 1, "Я лично добавил кое-что важное сюда", -30), micEchoScore: 0.2 },
+    ];
+    const filtered = filterEntries(results, config);
+    assert.strictEqual(filtered.filter((r) => r.source === "mic").length, 1);
+  });
+
+  it("populates the droppedEcho accumulator for a coverage drop (row 1: Jaccard just misses, coverage catches it)", () => {
+    const droppedEcho: FinalChunkResult[] = [];
+    const results = [
+      makeResult("sys", 1, "Привет Здорово Мы хотели уточнить у тебя по разделу мероприятия"),
+      makeResult("mic", 1, "Всем привет Мы хотели уточнить тебя по разделу мероприятия", -30),
+    ];
+    filterEntries(results, config, droppedEcho);
+    assert.strictEqual(droppedEcho.length, 1);
+    assert.strictEqual(droppedEcho[0].source, "mic");
+  });
+
+  it("populates the droppedEcho accumulator for a micEchoScore drop", () => {
+    const droppedEcho: FinalChunkResult[] = [];
+    const results = [
+      makeResult("sys", 1, "Что-то сказанное в динамики"),
+      { ...makeResult("mic", 1, "Совершенно другой текст без пересечения слов", -30), micEchoScore: 0.95 },
+    ];
+    filterEntries(results, config, droppedEcho);
+    assert.strictEqual(droppedEcho.length, 1);
+    assert.strictEqual(droppedEcho[0].source, "mic");
   });
 
   it("handles multiple indices in order", () => {

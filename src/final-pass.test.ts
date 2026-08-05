@@ -68,7 +68,7 @@ test("runFinalPass — batch gate", async (t) => {
         return makePressure({ overloaded: true, reason: "cpu 9.0/8c" });
       };
       const t0 = Date.now();
-      const entries = await runFinalPass(session, config, undefined, undefined, undefined, sensor);
+      const { entries } = await runFinalPass(session, config, undefined, undefined, undefined, sensor);
       const elapsed = Date.now() - t0;
 
       // Gate was invoked at least once (proves the pass wires it in).
