@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let permission = PermissionController()
     let loginItem = LoginItemController()
     let notchPanelController = NotchPanelController()
+    let settingsWindowController = SettingsWindowController()
     lazy var calendarAutoStart = CalendarAutoStartController(recordingController: recordingController, permission: permission)
 
     private let lastTitleKey = "MeetMenuBar.lastTitle"
@@ -117,6 +118,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(NSMenuItem.separator())
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
 
         statusItem.menu = menu
@@ -231,6 +235,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleCalendarAutoStart() {
         calendarAutoStart.setEnabled(!calendarAutoStart.isEnabled)
         rebuildMenu()
+    }
+
+    @objc func openSettings() {
+        settingsWindowController.show()
     }
 
     @objc func openMeetings() {
