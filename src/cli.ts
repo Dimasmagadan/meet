@@ -42,7 +42,7 @@ export function createProgram(): Command {
     .option("--silence <seconds>", "Silence timeout for audio capture (0 = disabled)", parseInt, 0)
     .option("--max-duration <minutes>", "Auto-stop after N minutes (0 = disabled)", parseInt)
     .option("--no-text-timeout <minutes>", "Auto-stop after N processed minutes without transcript (0 = disabled)", parseInt)
-    .option("--voice-processing", "Force-enable VoiceProcessing IO echo cancellation (defaults to config.micVoiceProcessing, on by default)")
+    .option("--voice-processing", "Enable VoiceProcessing IO echo cancellation (default: off — conflicts with the call app's own AEC/AGC on the same mic and can drop your volume for other participants; verify before relying on it)")
     .option("--headless", "Run without terminal interaction (for menu bar app / automation)")
     .option("--no-summary", "Disable live extractive summary during recording")
     .option("--repo <path>", "Attach git repo context from <path> (default: current working directory)")

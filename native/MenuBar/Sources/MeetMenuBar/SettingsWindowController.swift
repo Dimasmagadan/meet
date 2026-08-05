@@ -43,7 +43,7 @@ final class SettingsWindowController: NSWindowController {
 
     private func loadIntoFields() {
         config = ConfigStore.load()
-        voiceProcessingCheckbox.state = ConfigStore.bool(config, "micVoiceProcessing", default: true) ? .on : .off
+        voiceProcessingCheckbox.state = ConfigStore.bool(config, "micVoiceProcessing", default: false) ? .on : .off
         diarizationCheckbox.state = ConfigStore.bool(config, "diarizationEnabled", default: true) ? .on : .off
         speakerRegistryCheckbox.state = ConfigStore.bool(config, "speakerRegistryEnabled", default: false) ? .on : .off
         attentionCheckbox.state = ConfigStore.bool(config, "attentionAlerts", default: true) ? .on : .off
@@ -108,7 +108,7 @@ final class SettingsWindowController: NSWindowController {
             hint("Код языка распознавания речи (ru, en, ...)."),
             labeledRow("Chunk Duration (seconds):", chunkDurationField),
             hint("Короче — быстрее живой транскрипт, но меньше контекста на chunk для точности. 15с — разумный баланс."),
-            withHint(voiceProcessingCheckbox, "Включай, если пишешь без наушников: иначе звук собеседника из динамиков попадёт обратно в твой микрофон и его слова будут подписаны как «Me». С наушниками можно выключить — AEC иногда слегка просаживает громкость микрофона."),
+            withHint(voiceProcessingCheckbox, "Выкл. по умолчанию: конфликтует с AEC/AGC самого приложения звонка на том же микрофоне — собеседникам становится еле слышно тебя в реальном звонке (не только в записи). Уменьшает эхо в транскрипте («Me» вместо чужих реплик), но включай только если проверил, что громкость для собеседников не проседает."),
             separator(),
             sectionLabel("Speakers"),
             withHint(diarizationCheckbox, "Различать голоса в системном аудио и подписывать их Speaker 1/2/... Выключи, если митинг всегда 1-на-1 и разбивка по спикерам не нужна."),
