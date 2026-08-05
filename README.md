@@ -132,6 +132,7 @@ open native/MenuBar/.build/Meet.app    # NOT the raw binary — LaunchServices m
 - Mic/Screen TCC prompts are pre-requested from the app before capture starts; granting them lets the spawned `AudioCapture` record.
 - **Launch at Login** toggle (via `SMAppService`) so the app survives reboots — foundation for the future scheduler/calendar features.
 - **Notch transcript panel** (14"/16" MacBook Pro, M1 Pro+ only) — while recording, hover the physical notch to reveal a scrollable live tail of the transcript; moves away to hide again. See `specs/SPEC_NOTCH_TRANSCRIPT_PANEL_2026-08-03.md`.
+- **Auto-Record Calendar Calls** toggle — polls Calendar every 20s and auto-starts recording when a scheduled event with a Zoom/Meet/Teams/Webex/Whereby/Telemost/Jazz/Kontur link begins, no confirmation dialog (menu bar icon + notch panel are the only signals). Auto-stops at the event's scheduled end (+ grace). Non-attendee participant names from the event are folded into the whisper prompt and saved to `speakers.json` so `meet speakers suggest <dir>` can propose name assignments after finalize. See `specs/SPEC_CALENDAR_AUTOSTART_2026-08-04.md`. Participants are **not** notified that the meeting is being recorded — disclose it yourself if your jurisdiction requires it, and note that attendee names are PII that lands in `speakers.json`/the transcript text, local-only but shared if you share the transcript.
 - `meet bin-path` prints the resolved `{node, main, meet}` paths the app uses; set `menuBarMeetBin` in config to override the runner.
 - Ad-hoc signature: keep the bundle at a stable path (e.g. `cp -R native/MenuBar/.build/Meet.app ~/Applications/Meet.app`) — moving or rebuilding it re-prompts TCC.
 
@@ -197,6 +198,12 @@ meet rename ~/Meetings/2026-07-23_14-30-standup "Speaker 1" "Женя"
 ```
 
 This patches every `transcript*.md` (body + Talk Time footer) and `index.md` in the meeting directory, and persists the mapping in `speakers.json` so a second rename re-targets the name you last set, not the stale `Speaker N` id.
+
+If the meeting was auto-started from a calendar event (see Menu bar app above), `meet speakers suggest <dir>` prints talk time per speaker, any cross-session registry match, the calendar's attendee list, and a copy-pasteable `meet rename` line for each still-unnamed speaker — it never renames anything on its own.
+
+```bash
+meet speakers suggest ~/Meetings/2026-08-05_10-00-weekly-sync
+```
 
 ### Parakeet A/B pass
 

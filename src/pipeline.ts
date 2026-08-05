@@ -191,6 +191,7 @@ export class Pipeline {
 
       const result = await transcribeChunk(wavPath, config, item.index, item.source, {
         pass: "live",
+        attendees: this.session.attendees,
       });
       const key = `${result.source}-${String(result.chunkIndex).padStart(3, "0")}`;
       this.results.set(key, result.text);

@@ -77,6 +77,7 @@ export interface WhisperArgsOptions {
   format: "txt" | "json";
   pass: "live" | "final";
   noTimestamps?: boolean;
+  attendees?: string[];
 }
 
 export function buildWhisperArgs(config: Config, opts: WhisperArgsOptions): string[] {
@@ -94,7 +95,7 @@ export function buildWhisperArgs(config: Config, opts: WhisperArgsOptions): stri
     "--logprob-thold", String(isFinal ? config.finalLogprobThreshold : config.whisperLogprobThreshold),
     "--no-speech-thold", String(isFinal ? config.finalNoSpeechThreshold : config.whisperNoSpeechThreshold),
     "--no-prints",
-    "--prompt", config.prompt + getVocabulary(config).toPromptSuffix(config.prompt),
+    "--prompt", config.prompt + getVocabulary(config).toPromptSuffix(config.prompt, undefined, opts.attendees),
   ];
 
   if (opts.noTimestamps) {
@@ -195,6 +196,7 @@ export async function transcribeChunk(
     format: "txt",
     pass: options?.pass ?? "live",
     noTimestamps: !isFinal,
+    attendees: options?.attendees,
   });
 
   // P3: lower whisper-cli's QoS so the Swift audio capture (default priority)

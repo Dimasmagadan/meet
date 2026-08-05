@@ -61,8 +61,12 @@ export class Vocabulary {
     return this._terms.length;
   }
 
-  toPromptSuffix(basePrompt: string, maxTotalChars: number = DEFAULT_MAX_TOTAL_CHARS): string {
-    if (this._terms.length === 0) return "";
+  // extraTerms (e.g. calendar attendee names, SPEC_CALENDAR_AUTOSTART §6.2) share the same
+  // char budget as file-based terms and are sized after them, so a long phrasebook never
+  // gets silently starved by a long attendee list.
+  toPromptSuffix(basePrompt: string, maxTotalChars: number = DEFAULT_MAX_TOTAL_CHARS, extraTerms: string[] = []): string {
+    const allTerms = [...this._terms, ...extraTerms];
+    if (allTerms.length === 0) return "";
     if (basePrompt.length >= maxTotalChars) return "";
 
     const budget = maxTotalChars - basePrompt.length;
@@ -70,7 +74,7 @@ export class Vocabulary {
 
     let remaining = budget - SUFFIX_PREFIX.length;
     const parts: string[] = [];
-    for (const term of this._terms) {
+    for (const term of allTerms) {
       const sep = parts.length === 0 ? "" : TERM_SEPARATOR;
       const added = sep.length + term.length;
       if (added > remaining) break;

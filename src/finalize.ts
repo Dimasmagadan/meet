@@ -213,6 +213,11 @@ export async function runDiarizationStep(
     sessionId: session.id,
     diarization: { ok: false },
   };
+  // §6.1 — the calendar-supplied attendee list, so `meet speakers suggest` (§6.3)
+  // has a candidate name list even when diarization itself is disabled/failed.
+  if (session.attendees && session.attendees.length > 0) {
+    speakersRecord.calendarAttendees = session.attendees;
+  }
 
   if (!config.diarizationEnabled) return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
   if (session.mode !== "full") return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
@@ -332,9 +337,9 @@ async function applySpeakerRegistry(
       speakersRecord.speakerNames = speakerNames;
     }
 
-    const speakerRegistry: Record<string, { globalSpeakerId: string; matchedName: string | null }> = {};
+    const speakerRegistry: Record<string, { globalSpeakerId: string; matchedName: string | null; score: number }> = {};
     for (const [label, meta] of speakerMeta) {
-      speakerRegistry[label] = { globalSpeakerId: meta.globalSpeakerId, matchedName: meta.matchedName };
+      speakerRegistry[label] = { globalSpeakerId: meta.globalSpeakerId, matchedName: meta.matchedName, score: meta.score };
     }
     speakersRecord.speakerRegistry = speakerRegistry;
 

@@ -100,6 +100,7 @@ export async function runFinalPass(
       const result = await transcribeChunk(chunk.wavPath, config, chunk.index, chunk.source, {
         modelPath: finalModelPath,
         pass: "final",
+        attendees: session.attendees,
       });
 
       results.push({

@@ -8,6 +8,7 @@ import { showStatus } from "./status.js";
 import { isActiveRecording, readActiveRecordingLock, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock } from "./locks.js";
 import { transcribeImport, type ImportOptions } from "./import.js";
 import { renameSpeaker } from "./speaker-rename.js";
+import { runSpeakersSuggest } from "./speakers-suggest.js";
 import { loadRegistry, saveRegistry, forgetSpeaker, matchesLogPath } from "./speaker-registry.js";
 import { detectGitContext, linkRepoToMeeting } from "./git-context.js";
 import { detectWhisperCompute } from "./compute-device.js";
@@ -45,9 +46,10 @@ export function createProgram(): Command {
     .option("--headless", "Run without terminal interaction (for menu bar app / automation)")
     .option("--no-summary", "Disable live extractive summary during recording")
     .option("--repo <path>", "Attach git repo context from <path> (default: current working directory)")
-    .action(async (title: string | undefined, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string }) => {
+    .option("--attendees <names>", "Comma-separated attendee names (from calendar auto-start)")
+    .action(async (title: string | undefined, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string; attendees?: string }) => {
       const mode = opts.mic ? "mic" as const : "full" as const;
-      await startSessionLoop(title ?? "meeting", mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing, opts.headless, opts.summary, opts.repo);
+      await startSessionLoop(title ?? "meeting", mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing, opts.headless, opts.summary, opts.repo, opts.attendees);
     });
 
   program
@@ -155,6 +157,13 @@ export function createProgram(): Command {
     .action(async (globalId: string) => {
       await runSpeakersForget(globalId);
     });
+  speakers
+    .command("suggest")
+    .description("Suggest speaker-name assignments from calendar attendees + registry matches")
+    .argument("<meetingDir>", "Meeting output directory path")
+    .action(async (meetingDir: string) => {
+      await runSpeakersSuggestCommand(meetingDir);
+    });
 
   program
     .command("status")
@@ -199,11 +208,11 @@ export function createProgram(): Command {
   return program;
 }
 
-async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string) {
+async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string) {
   let title = initialTitle;
 
   while (true) {
-    const result = await startSession(title, mode, silenceTimeout, maxDurationMinutes, noTextTimeoutMinutes, voiceProcessing, headless, summary, repoOverride);
+    const result = await startSession(title, mode, silenceTimeout, maxDurationMinutes, noTextTimeoutMinutes, voiceProcessing, headless, summary, repoOverride, attendeesOverride);
     if (!result.startNextMeeting) {
       break;
     }
@@ -212,7 +221,7 @@ async function startSessionLoop(initialTitle: string, mode: "full" | "mic", sile
   }
 }
 
-async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string): Promise<{ startNextMeeting: boolean }> {
+async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string): Promise<{ startNextMeeting: boolean }> {
   const summaryEnabled = summary === false ? false : true;
   const config = loadConfig({ ...(summaryEnabled ? {} : { summaryEnabled: false }) });
 
@@ -269,6 +278,10 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     console.log(chalk.yellow(`--repo: not a git repository: ${repoOverride}`));
   }
 
+  const attendees = attendeesOverride
+    ? attendeesOverride.split(",").map((s) => s.trim()).filter((s) => s.length > 0)
+    : undefined;
+
   const session: Session = {
     id,
     title,
@@ -287,6 +300,7 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     hasMeaningfulText: false,
     tags: [],
     gitContext,
+    attendees,
   };
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
@@ -736,6 +750,17 @@ async function runSpeakersList() {
         for (const line of lines) console.log(chalk.gray(`  ${line}`));
       }
     } catch {}
+  }
+}
+
+async function runSpeakersSuggestCommand(meetingDir: string) {
+  const dir = expandPath(meetingDir);
+  try {
+    const lines = await runSpeakersSuggest(dir);
+    for (const line of lines) console.log(line);
+  } catch (err) {
+    console.log(chalk.red(err instanceof Error ? err.message : String(err)));
+    process.exit(1);
   }
 }
 

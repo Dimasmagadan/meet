@@ -41,6 +41,7 @@ export interface Session {
   hasMeaningfulText: boolean;
   tags?: string[];
   gitContext?: GitContext | null; // captured at `meet start` (--repo or cwd); persisted into meta.md as a "- Repo:" line
+  attendees?: string[]; // captured at `meet start` (--attendees, from calendar auto-start); folded into whisper prompt + speakers.json
   finalize?: FinalizeProgress;
 }
 
@@ -125,6 +126,7 @@ export interface Config {
 export interface TranscribeOptions {
   modelPath?: string;
   pass?: "live" | "final";
+  attendees?: string[];
 }
 
 export interface MeetingStats {

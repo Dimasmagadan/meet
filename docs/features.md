@@ -13,6 +13,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 
 - **Menu bar app** — `native/MenuBar/` builds a Dock-less `Meet.app` that drives `meet` headlessly from the menu bar: click the icon, enter a title, start/stop/pause/extend without a terminal. Optional launch-at-login; reuses the full pipeline via shell-out + POSIX signals.
 - **Notch transcript panel** (14"/16" MacBook Pro, M1 Pro+) — while recording, hover the physical notch to reveal a scrollable live tail of the transcript; hides again when you move away.
+- **Calendar auto-start** — enable "Auto-Record Calendar Calls" in the menu bar to auto-start recording the moment a scheduled event with a Zoom/Meet/Teams/Webex/Whereby/Telemost/Jazz/Kontur link begins. No confirmation dialog; declined events, all-day events, and Free/OOO blocks are skipped. Auto-stops at the event's scheduled end (+ grace, trimmed for back-to-back meetings). The idle menu shows the next qualifying event so the feature stays observable.
 - **Foreground meeting recording** — `meet start "Title"` records mic + system audio, transcribes chunks live, and blocks the terminal until you stop.
 - **Mic-only mode** — `meet start --mic "Title"` for in-person meetings, interviews, or a phone on speaker.
 - **Dual-channel capture** — Swift `AudioCapture` records mic (AVAudioEngine + VoiceProcessing IO) and system audio (ScreenCaptureKit) in parallel into atomic 15s WAV chunks; `excludesCurrentProcessAudio` prevents feedback loops.
@@ -43,6 +44,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 - **Speaker rename** — `meet rename <dir> "Speaker 1" "Женя"` patches the label across `transcript*.md`, `index.md`, and `speakers.json` (idempotent).
 - **Cross-session speaker registry** (opt-in, biometric) — stores voice embeddings; cosine-matches known voices across meetings so the same person is auto-labeled.
 - **Talk-time statistics** — per-speaker duration & percentage, rendered as a `## Talk Time` footer on every finalized transcript.
+- **Speaker-name suggestions** — `meet speakers suggest <dir>` prints talk time, registry match confidence, and (for calendar-auto-started meetings) the attendee list against still-unnamed speakers, with copy-pasteable `meet rename` lines. Never renames on its own.
 <!-- /FEATURES:speaker-identification -->
 
 <!-- FEATURES:ab-comparison -->
@@ -118,6 +120,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `meet rename <dir> <id> <name>` | Rename a diarized speaker label |
 | `meet link <dir> <repoPath>` | Attach/replace git repo context |
 | `meet speakers list / forget` | Cross-session speaker registry management |
+| `meet speakers suggest <dir>` | Suggest speaker names from calendar attendees + registry matches |
 | `meet dashboard` | Generate HTML dashboard |
 | `meet bin-path` | Print resolved runner paths (used by the menu bar app) |
 
@@ -136,6 +139,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `--voice-processing` | Enable VoiceProcessing IO echo cancellation | off |
 | `--no-summary` | Disable live extractive summary | off |
 | `--repo <path>` | Attach git repo context from `<path>` | cwd |
+| `--attendees <names>` | Comma-separated attendee names (from calendar auto-start) | none |
 
 </div>
 <!-- /FEATURES:cli-reference -->

@@ -5,6 +5,11 @@ if CommandLine.arguments.contains("--self-test-notch") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--self-test-calendar") {
+    CalendarMatch.selfCheck()
+    exit(0)
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let delegate = AppDelegate()

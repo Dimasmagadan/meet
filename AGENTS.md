@@ -26,8 +26,9 @@ meet start "Title"
 ├── src/talk-time.ts         — per-speaker talk-time stats, renders the "## Talk Time" transcript footer
 ├── src/parakeet-pass.ts     — optional Parakeet-TDT A/B pass (AudioAnalysis transcribe) → transcript.parakeet.md, ab-report.json
 ├── src/speaker-rename.ts    — meet rename: patches a diarized "Speaker N" label to a real name across a finalized meeting's transcript*.md/index.md/speakers.json
+├── src/speakers-suggest.ts  — meet speakers suggest (SPEC_CALENDAR_AUTOSTART_2026-08-04 §6.3): read-only formatter over speakers.json — talk time, registry matches/scores, calendarAttendees, copy-pasteable `meet rename` lines per unnamed speaker; never writes anything itself
 ├── src/git-context.ts       — local-only git repo detect (`detectGitContext`) + `meet link` rewriter; captured at `meet start` (--repo/cwd), persisted as a `- Repo:` line in meta.md
-├── src/vocabulary.ts        — hot-reloadable custom whisper vocabulary (./vocabulary.json), folded into --prompt for live and final passes
+├── src/vocabulary.ts        — hot-reloadable custom whisper vocabulary (./vocabulary.json), folded into --prompt for live and final passes; `toPromptSuffix()` also accepts calendar-attendee `extraTerms`, sized in after file terms
 ├── src/regex-utils.ts       — shared escapeRegex(), used by phrasebook.ts/attention.ts/speaker-rename.ts
 ├── src/tags.ts              — interactive tag picker with custom tag support
 ├── src/opencode.ts          — opencode CLI integration for index generation and Q&A
@@ -53,14 +54,16 @@ meet start "Title"
 │   └── Logger.swift            — structured JSON logging
 └── native/MenuBar/         — Swift menu-bar .app (SPEC_MENUBAR_UI_2026-07-30): spawns `meet start --headless`, controls via SIGINT/SIGUSR1/SIGUSR2/SIGWINCH; ad-hoc signed, Dock-less, optional launch-at-login
     ├── main.swift              — NSApplication; setActivationPolicy(.accessory) (no Dock icon)
-    ├── AppDelegate.swift       — status item + menu (start/pause/stop/extend, Launch-at-Login), title modal, TCC preflight before spawn
-    ├── RecordingController.swift — headless meet spawn + POSIX signal control + attach-to-existing-session
+    ├── AppDelegate.swift       — status item + menu (start/pause/stop/extend, Launch-at-Login, Auto-Record Calendar Calls toggle + live "Next: … in Nm" line), title modal, TCC preflight before spawn
+    ├── RecordingController.swift — headless meet spawn + POSIX signal control + attach-to-existing-session; `start(title:maxDurationMinutes:attendees:)` — manual Start omits both (CLI defaults apply), calendar auto-start passes both
     ├── RunnerResolver.swift    — shells out to `meet bin-path` (PATH augmented with /opt/homebrew/bin,/usr/local/bin) → cached Runner{node,[main.js]}
     ├── PermissionController.swift — TCC baseline: ensureMic() gated synchronously; no screen/system-audio preflight (SPEC_TCC_SCREEN_REPROMPT_2026-07-31 §6 — Core Audio process taps have no public preflight API; AudioCapture raises the "System Audio Recording Only" prompt itself as the responsible process), openPrivacySettings() deep-link
     ├── LoginItemController.swift — SMAppService.mainApp launch-at-login wrapper (macOS 13+)
     ├── SessionMonitor.swift    — polls active-recording.lock every 5s → attaches to CLI-started sessions
     ├── NotchPanelController.swift — SPEC_NOTCH_TRANSCRIPT_PANEL_2026-08-03: single NSPanel, collapsed frame = physical notch rect, grows on hover to show a scrollable tail of the active recording's transcript.md (polled while revealed); armed only while recording/paused
-    ├── Info.plist              — LSUIElement, NSMicrophoneUsageDescription, bundle id com.dimasmagadan.meet.menubar (NSScreenCaptureDescription dropped — not a real TCC key; Phase 2 adds NSAudioCaptureUsageDescription)
+    ├── CalendarAutoStartController.swift — SPEC_CALENDAR_AUTOSTART_2026-08-04: EKEventStore poll (20s Timer, dedicated fetch queue), permission split (Calendar requested at toggle-enable, mic checked synchronously at auto-start — never prompts from a timer callback), sleep/wake + `.EKEventStoreChanged` observers, occurrence-key dedup (per-occurrence, not per-series — the original bug), deterministic overlap resolution (no blocking alert), non-self attendees → `RecordingController.start(attendees:)`
+    ├── CalendarMatch.swift     — pure logic behind the controller, no EventKit/AppKit imports so it's directly unit-testable: `hasCallLink()`, `isLive()` (lateness gate), `occurrenceKey()`, `capMinutes()` (back-to-back grace trimming, never 0), `rankCandidates()`; `selfCheck()` run via `MeetMenuBar --self-test-calendar`
+    ├── Info.plist              — LSUIElement, NSMicrophoneUsageDescription, bundle id com.dimasmagadan.meet.menubar (NSScreenCaptureDescription dropped — not a real TCC key; Phase 2 adds NSAudioCaptureUsageDescription), NSCalendarsUsageDescription + NSCalendarsFullAccessUsageDescription (macOS 13/14+ split)
     └── scripts/build-app.sh    — swift build → assemble Meet.app → ad-hoc codesign (-s -)
 ```
 

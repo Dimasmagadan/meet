@@ -34,7 +34,10 @@ class RecordingController {
 
     private let resolver = RunnerResolver()
 
-    func start(title: String) {
+    // maxDurationMinutes/attendees: calendar auto-start (SPEC_CALENDAR_AUTOSTART_2026-08-04
+    // §2.6/§3/§6.1). Manual Start keeps calling this with defaults, so nil/[] preserves
+    // today's behavior (config.maxDurationMinutes via the CLI's own default, no --attendees).
+    func start(title: String, maxDurationMinutes: Int? = nil, attendees: [String] = []) {
         guard state == .idle else { return }
 
         guard let runner = resolver.resolve() else {
@@ -42,9 +45,17 @@ class RecordingController {
             return
         }
 
+        var args = runner.args + ["start", title, "--headless"]
+        if let maxDurationMinutes {
+            args += ["--max-duration", "\(maxDurationMinutes)"]
+        }
+        if !attendees.isEmpty {
+            args += ["--attendees", attendees.joined(separator: ",")]
+        }
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: runner.executable)
-        proc.arguments = runner.args + ["start", title, "--headless"]
+        proc.arguments = args
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
 

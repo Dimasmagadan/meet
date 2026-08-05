@@ -56,6 +56,8 @@ meet start "Title"
 - `doctor` — 12-second audio health check
 - `list` / `status` / `finalize` — session management
 - `rename <meetingDir> <speakerId> <newName>` — patch a diarized `Speaker N` label to a real name across a finalized meeting's output (see `src/speaker-rename.ts`)
+- `speakers suggest <meetingDir>` — read-only formatter over `speakers.json` (talk time, registry matches, calendar attendees); prints copy-pasteable `meet rename` lines, never renames on its own (see `src/speakers-suggest.ts`)
+- `start --attendees "Name A,Name B"` — comma-separated attendee names (from calendar auto-start, `native/MenuBar/`); folded into the whisper prompt and persisted to `speakers.json` as `calendarAttendees`
 
 **src/pipeline.ts** — Core event loop
 - Watches WAV files with chokidar
@@ -125,9 +127,13 @@ meet start "Title"
 
 **src/vocabulary.ts** — Custom whisper vocabulary (hot-reload)
 - Structural clone of `triggers.ts`/`phrasebook.ts`: `Vocabulary.load()`, `maybeReload()`, module singleton `getVocabulary()`
-- `toPromptSuffix(basePrompt, maxTotalChars = 200)` — sizes against the **combined** `config.prompt` + suffix (not the suffix alone), appends `. Термины: a, b, c` in file order until the budget is hit
+- `toPromptSuffix(basePrompt, maxTotalChars = 200, extraTerms = [])` — sizes against the **combined** `config.prompt` + suffix (not the suffix alone), appends `. Термины: a, b, c` in file order until the budget is hit; `extraTerms` (calendar attendee names, see `speakers-suggest.ts`) are sized in *after* file terms, so a long phrasebook is never starved by a long attendee list
 - Wired into `buildWhisperArgs()` in `transcriber.ts` for both live and final passes
 - `./vocabulary.json`: `{ "terms": ["Acme", "Smith"] }`, missing/invalid file → identity mode
+
+**src/speakers-suggest.ts** — `meet speakers suggest <meetingDir>` (read-only)
+- `buildSuggestion()` — pure formatter over an already-finalized meeting's `speakers.json`: per-speaker talk time, registry match + confidence score (or `← unnamed`), the calendar's `calendarAttendees` list, which of them are still unassigned, and one suggested `meet rename` line per unnamed speaker/unassigned attendee pair
+- Deliberately never writes anything — a wrong auto-assignment would mislabel a voice in the cross-session registry for every future meeting, so it only ever prints a suggestion for a human to copy-paste
 
 **src/regex-utils.ts** — Shared `escapeRegex()`, extracted from byte-identical private copies previously in `phrasebook.ts`/`attention.ts`; also used by `speaker-rename.ts`
 

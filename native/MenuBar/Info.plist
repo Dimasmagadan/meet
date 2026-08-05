@@ -15,5 +15,9 @@
   <string>Meet records meetings locally and needs microphone access.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>Meet captures system audio (other participants) via a Core Audio process tap.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>Meet checks your calendar for scheduled video calls to auto-start recording.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Meet checks your calendar for scheduled video calls to auto-start recording.</string>
 </dict>
 </plist>

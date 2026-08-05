@@ -63,7 +63,7 @@ export function computeTalkTime(params: ComputeTalkTimeParams): TalkTimeStats {
   return { totalSeconds, speakers };
 }
 
-function formatDuration(seconds: number): string {
+export function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.round(seconds % 60);
   return `${m}m ${String(s).padStart(2, "0")}s`;

@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let permission = PermissionController()
     let loginItem = LoginItemController()
     let notchPanelController = NotchPanelController()
+    lazy var calendarAutoStart = CalendarAutoStartController(recordingController: recordingController, permission: permission)
 
     private let lastTitleKey = "MeetMenuBar.lastTitle"
 
@@ -47,6 +48,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        calendarAutoStart.onCalendarPermissionDenied = { [weak self] in
+            DispatchQueue.main.async {
+                self?.showAlert(
+                    title: "Calendar access denied",
+                    message: "Meet needs Calendar access to auto-record scheduled calls. Grant it in System Settings → Privacy & Security → Calendars, then re-enable \"Auto-Record Calendar Calls\"."
+                )
+                self?.rebuildMenu()
+            }
+        }
+        calendarAutoStart.onMicPermissionDenied = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.showAlert(
+                    title: "Microphone access required",
+                    message: "Meet needs microphone access to auto-record calendar calls. Grant it in System Settings → Privacy & Security → Microphone — auto-start will work once granted."
+                )
+                openPrivacySettings(.microphone)
+            }
+        }
+        calendarAutoStart.onNextEventChanged = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self, self.recordingController.currentDisplayState() == .idle else { return }
+                self.rebuildMenu()
+            }
+        }
+
         sessionMonitor.start()
         updateStatusItem(state: .idle)
     }
@@ -60,6 +87,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(NSMenuItem(title: "Start Recording", action: #selector(startRecording), keyEquivalent: "r"))
             menu.addItem(NSMenuItem.separator())
             addLoginItem(to: menu)
+            addCalendarAutoStart(to: menu)
             menu.addItem(NSMenuItem(title: "Open Meetings Folder", action: #selector(openMeetings), keyEquivalent: "o"))
 
         case .recording:
@@ -99,6 +127,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         item.target = self
         item.state = loginItem.isEnabled ? .on : .off
         menu.addItem(item)
+    }
+
+    // SPEC_CALENDAR_AUTOSTART_2026-08-04 §2.8 — checkable toggle plus a disabled "Next: …"
+    // line so a silent, confirmation-free feature stays observable from the menu alone.
+    private func addCalendarAutoStart(to menu: NSMenu) {
+        let item = NSMenuItem(title: "Auto-Record Calendar Calls", action: #selector(toggleCalendarAutoStart), keyEquivalent: "")
+        item.target = self
+        item.state = calendarAutoStart.isEnabled ? .on : .off
+        menu.addItem(item)
+
+        if let summary = calendarAutoStart.nextEventSummary() {
+            let nextItem = NSMenuItem(title: "Next: \(summary)", action: nil, keyEquivalent: "")
+            nextItem.isEnabled = false
+            menu.addItem(nextItem)
+        }
     }
 
     // Recording starts under the default title "meeting" the instant the mic gate clears —
@@ -182,6 +225,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 message: "Open System Settings → General → Login Items to manage Meet manually. (\(error.localizedDescription))"
             )
         }
+        rebuildMenu()
+    }
+
+    @objc func toggleCalendarAutoStart() {
+        calendarAutoStart.setEnabled(!calendarAutoStart.isEnabled)
         rebuildMenu()
     }
 

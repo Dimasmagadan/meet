@@ -74,6 +74,32 @@ describe("Vocabulary", () => {
     assert.strictEqual(v.toPromptSuffix("base"), "");
   });
 
+  it("toPromptSuffix folds extraTerms (calendar attendees) in after file terms", () => {
+    const path = join(tmpDir, "v.json");
+    writeTerms(path, ["Acme"]);
+    const v = Vocabulary.load(path);
+    assert.strictEqual(
+      v.toPromptSuffix("base", 200, ["Anna Petrova", "Ivan S."]),
+      ". Термины: Acme, Anna Petrova, Ivan S.",
+    );
+  });
+
+  it("toPromptSuffix uses extraTerms alone when the vocabulary file has no terms", () => {
+    const path = join(tmpDir, "v.json");
+    writeTerms(path, []);
+    const v = Vocabulary.load(path);
+    assert.strictEqual(v.toPromptSuffix("base", 200, ["Anna Petrova"]), ". Термины: Anna Petrova");
+  });
+
+  it("toPromptSuffix truncates extraTerms once the shared budget runs out, file terms first", () => {
+    const path = join(tmpDir, "v.json");
+    writeTerms(path, ["ааа"]);
+    const v = Vocabulary.load(path);
+    // budget only fits the prefix + file term, not the attendee that follows.
+    const suffix = v.toPromptSuffix("x".repeat(10), 10 + ". Термины: ".length + "ааа".length, ["очень-длинное-имя-участника"]);
+    assert.strictEqual(suffix, ". Термины: ааа");
+  });
+
   it("toPromptSuffix returns '' when basePrompt alone meets budget", () => {
     const path = join(tmpDir, "v.json");
     writeTerms(path, ["Дим"]);
