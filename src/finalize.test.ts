@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildBaseResults, runDiarizationStep, applyLabelOverridesToTalkTime } from "./finalize.js";
+import { buildBaseResults, runDiarizationStep, runMicDiarizationStep, applyLabelOverridesToTalkTime } from "./finalize.js";
 import { appendPostFinalizeNote } from "./summary.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import type { EntryRecord, TranscriptEntry, Session, Config } from "./types.js";
@@ -144,6 +144,99 @@ test("runDiarizationStep", async (t) => {
       const config: Config = { ...DEFAULT_CONFIG };
       const { entries: result } = await runDiarizationStep(session, config, entries, noop, noop);
       assert.deepStrictEqual(result, entries);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("runMicDiarizationStep", async (t) => {
+  const makeSession = (sessionDir: string): Session => ({
+    id: "test-session",
+    title: "Test",
+    mode: "full",
+    startedAt: "2026-05-13T14:30:00.000Z",
+    chunkDurationSeconds: 15,
+    sessionDir,
+    outputFile: join(sessionDir, "transcript.md"),
+    capturePid: null,
+    status: "finalizing",
+    processedChunks: [],
+    lastError: null,
+    autoStopReason: null,
+    latestProcessedOffsetSeconds: 0,
+    lastMeaningfulTextAtOffsetSeconds: null,
+    hasMeaningfulText: false,
+    tags: [],
+  });
+
+  const entries: TranscriptEntry[] = [
+    { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "hello" },
+  ];
+
+  const noop = () => {};
+  // Enable both gates that are off by default, so each test below exercises
+  // exactly one remaining gate.
+  const enabledConfig: Config = { ...DEFAULT_CONFIG, micDiarizationEnabled: true, speakerRegistryEnabled: true };
+
+  await t.test("skips when micDiarizationEnabled is off (the default)", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-mic-diarize-"));
+    try {
+      const session = makeSession(sessionDir);
+      const config: Config = { ...DEFAULT_CONFIG, speakerRegistryEnabled: true };
+      const result = await runMicDiarizationStep(session, config, entries, 0, {}, noop, noop);
+      assert.deepStrictEqual(result.entries, entries);
+      assert.deepStrictEqual(result.micDiarSegments, []);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("skips when speakerRegistryEnabled is off", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-mic-diarize-"));
+    try {
+      const session = makeSession(sessionDir);
+      const config: Config = { ...DEFAULT_CONFIG, micDiarizationEnabled: true };
+      const result = await runMicDiarizationStep(session, config, entries, 0, {}, noop, noop);
+      assert.deepStrictEqual(result.entries, entries);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("skips when sys diarization already found speakers (sysSegmentCount > 0)", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-mic-diarize-"));
+    try {
+      const session = makeSession(sessionDir);
+      const result = await runMicDiarizationStep(session, enabledConfig, entries, 2, {}, noop, noop);
+      assert.deepStrictEqual(result.entries, entries);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("skips and fails open when AudioAnalysis binary is missing", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-mic-diarize-"));
+    try {
+      const session = makeSession(sessionDir);
+      const config: Config = { ...enabledConfig, analysisBin: join(sessionDir, "nonexistent-binary") };
+      const result = await runMicDiarizationStep(session, config, entries, 0, {}, noop, noop);
+      assert.deepStrictEqual(result.entries, entries);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("skips when there are no mic wav files in the session dir", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-mic-diarize-"));
+    try {
+      const session = makeSession(sessionDir);
+      // enabledConfig.analysisBin ("") resolves via resolveAnalysisBin's default
+      // lookup, which may or may not exist on this machine — the mic-file-count
+      // gate must be reached (and fire) regardless, since no mic-*.wav exists.
+      const result = await runMicDiarizationStep(session, enabledConfig, entries, 0, {}, noop, noop);
+      assert.deepStrictEqual(result.entries, entries);
+      assert.deepStrictEqual(result.labelOverrides, new Map());
     } finally {
       rmSync(sessionDir, { recursive: true, force: true });
     }

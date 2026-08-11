@@ -8,6 +8,7 @@ import {
   saveRegistry,
   cosineSimilarity,
   matchSpeaker,
+  matchSelf,
   registerSpeaker,
   applyRegistryToSpeakers,
   forgetSpeaker,
@@ -131,6 +132,43 @@ describe("registerSpeaker", () => {
     assert.equal(s.matchCount, 0);
     assert.ok(s.id.length > 0);
     assert.equal(s.embedding, emb);
+    assert.equal(s.isSelf, undefined);
+  });
+
+  it("sets isSelf: true only when explicitly requested, omitting the field otherwise", () => {
+    const registry = emptyRegistry();
+    const s = registerSpeaker(normalize(vec(3)), "meet-abc", registry, "diarizer-manager", () => new Date(), true);
+    assert.equal(s.isSelf, true);
+  });
+});
+
+describe("matchSelf", () => {
+  it("matches only isSelf-flagged entries, ignoring regular ones above the same threshold", () => {
+    const target = normalize(vec(1));
+    const near = normalize(vec(1).map((x) => x + 0.01));
+    const registry: SpeakerRegistry = {
+      version: 1,
+      speakers: [
+        { id: "regular", name: null, embedding: near, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m0", matchCount: 0 },
+      ],
+    };
+    assert.equal(matchSelf(target, registry, 0.75, "diarizer-manager"), null);
+
+    registry.speakers.push({ id: "self", name: null, embedding: near, isSelf: true, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m0", matchCount: 0 });
+    const m = matchSelf(target, registry, 0.75, "diarizer-manager");
+    assert.equal(m?.speaker.id, "self");
+  });
+
+  it("is backend-scoped and never matches a quarantined self entry", () => {
+    const v = normalize(vec(1));
+    const registry: SpeakerRegistry = {
+      version: 1,
+      speakers: [
+        { id: "self-other-backend", name: null, embedding: v, isSelf: true, backend: "vbx-offline", createdAt: "x", sourceMeetingId: "m0", matchCount: 0 },
+        { id: "self-quarantined", name: null, embedding: v, isSelf: true, quarantined: true, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m0", matchCount: 0 },
+      ],
+    };
+    assert.equal(matchSelf(v, registry, 0.5, "diarizer-manager"), null);
   });
 });
 
@@ -230,6 +268,22 @@ describe("applyRegistryToSpeakers", () => {
     assert.equal(registry.speakers.length, 2);
   });
 
+  it("seedExcludeIds keeps a cluster from matching a pre-excluded entry (e.g. the recording user's own isSelf voiceprint)", () => {
+    // Mirrors runMicDiarizationStep: the "other speaker" matching pass must
+    // never be able to match the self entry, even if cosine clears threshold
+    // (which shouldn't normally happen, but defense in depth).
+    const registry = emptyRegistry();
+    const selfEntry = registerSpeaker(normalize(vec(1)), "meet-a", registry, "diarizer-manager", () => new Date(), true);
+    const closeToSelf = normalize(vec(1).map((x) => x + 0.001)); // cos ≈ 1.0 with selfEntry
+    const embs = new Map([["Speaker 1", closeToSelf]]);
+
+    const res = applyRegistryToSpeakers(embs, "meet-b", registry, 0.75, "diarizer-manager", () => new Date(), new Set([selfEntry.id]));
+
+    assert.equal(res.speakerMeta.get("Speaker 1")!.fresh, true);
+    assert.notEqual(res.speakerMeta.get("Speaker 1")!.globalSpeakerId, selfEntry.id);
+    assert.equal(registry.speakers.length, 2);
+  });
+
   it("does not match a speaker against a fresh same-run registration", () => {
     // Empty registry, two near-identical embeddings (cos > threshold). Without
     // the guard, Speaker 2 would match Speaker 1's just-registered entry. The
@@ -305,6 +359,15 @@ describe("registry persistence", () => {
     const loaded = loadRegistry(path);
     assert.equal(loaded.speakers.length, 1);
     assert.equal(loaded.speakers[0].backend, "diarizer-manager");
+  });
+
+  it("saveRegistry -> loadRegistry round-trips isSelf", async () => {
+    const path = join(dir, "registry.json");
+    const reg = emptyRegistry();
+    registerSpeaker(normalize(vec(1)), "m1", reg, "diarizer-manager", () => new Date(), true);
+    await saveRegistry(reg, path);
+    const loaded = loadRegistry(path);
+    assert.equal(loaded.speakers[0].isSelf, true);
   });
 
   it("saveRegistry is idempotent on re-run (atomic write, no duplication)", async () => {

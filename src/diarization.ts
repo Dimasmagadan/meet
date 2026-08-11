@@ -29,20 +29,22 @@ export interface ChunkOffset {
   end: number;
 }
 
-// Concatenates sys-NNN.wav chunks (in index order) into a single WAV, streaming
-// each chunk's PCM data section directly to disk. Returns an offset map giving
-// each chunk's [start, end] position in the concatenated audio's timeline —
-// missing indices are simply skipped, so gaps never desync later chunks.
-export async function concatSysChunks(
+// Concatenates <prefix>-NNN.wav chunks (in index order) into a single WAV,
+// streaming each chunk's PCM data section directly to disk. Returns an offset
+// map giving each chunk's [start, end] position in the concatenated audio's
+// timeline — missing indices are simply skipped, so gaps never desync later
+// chunks. Shared by concatSysChunks and concatMicChunks.
+async function concatChunksImpl(
   sessionDir: string,
+  prefix: "sys" | "mic",
+  outName: string,
 ): Promise<{ wavPath: string; offsets: Map<number, ChunkOffset> }> {
   const files = await readdir(sessionDir);
-  const sysFiles = files
-    .filter((f) => /^sys-\d{3}\.wav$/.test(f))
-    .sort();
+  const chunkRe = new RegExp(`^${prefix}-\\d{3}\\.wav$`);
+  const chunkFiles = files.filter((f) => chunkRe.test(f)).sort();
 
   const offsets = new Map<number, ChunkOffset>();
-  const outPath = join(sessionDir, "sys-concat.wav");
+  const outPath = join(sessionDir, outName);
   const tmpPath = `${outPath}.tmp`;
 
   let cursorSeconds = 0;
@@ -52,9 +54,10 @@ export async function concatSysChunks(
   // Placeholder header, rewritten with the final size once all data is copied.
   out.write(makeWavHeader(0, SAMPLE_RATE, 1, 16));
 
+  const indexRe = new RegExp(`^${prefix}-(\\d{3})\\.wav$`);
   try {
-    for (const file of sysFiles) {
-      const match = /^sys-(\d{3})\.wav$/.exec(file);
+    for (const file of chunkFiles) {
+      const match = indexRe.exec(file);
       if (!match) continue;
       const index = parseInt(match[1], 10);
       const filePath = join(sessionDir, file);
@@ -79,6 +82,21 @@ export async function concatSysChunks(
   await rename(tmpPath, outPath);
 
   return { wavPath: outPath, offsets };
+}
+
+export async function concatSysChunks(
+  sessionDir: string,
+): Promise<{ wavPath: string; offsets: Map<number, ChunkOffset> }> {
+  return concatChunksImpl(sessionDir, "sys", "sys-concat.wav");
+}
+
+// Mic-channel counterpart, used when sys diarization found nobody (a call
+// that never went through this Mac lands entirely on the mic channel) — see
+// runMicDiarizationStep in finalize.ts.
+export async function concatMicChunks(
+  sessionDir: string,
+): Promise<{ wavPath: string; offsets: Map<number, ChunkOffset> }> {
+  return concatChunksImpl(sessionDir, "mic", "mic-concat.wav");
 }
 
 async function copyWavData(filePath: string, out: NodeJS.WritableStream): Promise<number> {
@@ -145,6 +163,10 @@ export async function cleanupSysConcat(sessionDir: string): Promise<void> {
   await unlink(join(sessionDir, "sys-concat.wav")).catch(() => {});
 }
 
+export async function cleanupMicConcat(sessionDir: string): Promise<void> {
+  await unlink(join(sessionDir, "mic-concat.wav")).catch(() => {});
+}
+
 // Renumbers raw diarizer speaker IDs ("1", "2", ...) to "Speaker 1", "Speaker 2",
 // ... by first appearance in time across all segments. Exported so the registry
 // can map raw embedding keys to their relabeled canonical "Speaker N" labels.
@@ -183,23 +205,22 @@ export function relabelSegments(segments: DiarSegment[]): DiarSegment[] {
   return segments.map((s) => ({ ...s, speaker: labelMap.get(s.speaker)! }));
 }
 
-// Assigns a speaker label to each sys entry via majority time-overlap between
-// the entry's chunk span (translated through `offsets`) and diarizer segments.
-// Entries below `minOverlapRatio` of their chunk duration keep no label
-// (renders as "Others"). Mic entries and entries for chunks missing from
-// `offsets` (e.g. silence-gated) pass through unchanged.
-export function assignSpeakers(
+// Shared overlap-scoring loop for `source`-channel entries: majority
+// time-overlap between the entry's chunk span (translated through `offsets`)
+// and diarizer segments, resolved to a display label via `resolveLabel`.
+// Entries below `minOverlapRatio` of their chunk duration keep no label.
+// Entries on the other channel and entries for chunks missing from `offsets`
+// (e.g. silence-gated) pass through unchanged.
+function assignSpeakersCore(
   entries: TranscriptEntry[],
   segments: DiarSegment[],
   offsets: Map<number, ChunkOffset>,
-  minOverlapRatio: number = 0.3,
+  minOverlapRatio: number,
+  source: "mic" | "sys",
+  resolveLabel: (rawSpeaker: string) => string | undefined,
 ): TranscriptEntry[] {
-  if (segments.length === 0) return entries;
-
-  const labelMap = buildSpeakerLabelMap(segments);
-
   return entries.map((entry) => {
-    if (entry.source !== "sys") return entry;
+    if (entry.source !== source) return entry;
     const chunkRange = offsets.get(entry.chunkIndex);
     if (!chunkRange) return entry;
 
@@ -226,6 +247,35 @@ export function assignSpeakers(
       return entry;
     }
 
-    return { ...entry, speaker: labelMap.get(bestSpeaker) };
+    const label = resolveLabel(bestSpeaker);
+    return label ? { ...entry, speaker: label } : entry;
   });
+}
+
+// Assigns a speaker label to each sys entry, deriving canonical "Speaker N"
+// labels itself from raw diarizer ids via buildSpeakerLabelMap.
+export function assignSpeakers(
+  entries: TranscriptEntry[],
+  segments: DiarSegment[],
+  offsets: Map<number, ChunkOffset>,
+  minOverlapRatio: number = 0.3,
+): TranscriptEntry[] {
+  if (segments.length === 0) return entries;
+  const labelMap = buildSpeakerLabelMap(segments);
+  return assignSpeakersCore(entries, segments, offsets, minOverlapRatio, "sys", (raw) => labelMap.get(raw));
+}
+
+// Mic-channel counterpart for the self/other split (runMicDiarizationStep in
+// finalize.ts): `segments` already carry their final label ("Me" or
+// "Speaker N", assigned by the caller from a self-voiceprint match) — used
+// as-is instead of re-derived, since buildSpeakerLabelMap would treat "Me" as
+// a fresh raw id and renumber everything from scratch.
+export function assignLabeledSpeakers(
+  entries: TranscriptEntry[],
+  segments: DiarSegment[],
+  offsets: Map<number, ChunkOffset>,
+  minOverlapRatio: number = 0.3,
+): TranscriptEntry[] {
+  if (segments.length === 0) return entries;
+  return assignSpeakersCore(entries, segments, offsets, minOverlapRatio, "mic", (raw) => raw);
 }

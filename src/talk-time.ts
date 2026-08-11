@@ -28,6 +28,7 @@ function activeChunkSeconds(
 }
 
 function speakerSortKey(label: string): number {
+  if (label === "Me") return -1;
   const m = /^Speaker (\d+)$/.exec(label);
   return m ? parseInt(m[1], 10) : Infinity;
 }
@@ -35,9 +36,14 @@ function speakerSortKey(label: string): number {
 export function computeTalkTime(params: ComputeTalkTimeParams): TalkTimeStats {
   const { entryRecords, chunkDurationSeconds, micRmsThresholdDb, sysRmsThresholdDb, diarSegments } = params;
 
-  const meSeconds = activeChunkSeconds(entryRecords, "mic", micRmsThresholdDb, chunkDurationSeconds);
-
-  const rows: Array<{ label: string; seconds: number }> = [{ label: "Me", seconds: meSeconds }];
+  // Mic-diarization (runMicDiarizationStep) already produced a diarization-derived
+  // "Me" row among diarSegments when it split the mic channel into self/other —
+  // using that instead of the raw chunk count avoids counting the other party's
+  // mic time as "Me".
+  const micWasDiarized = diarSegments.some((s) => s.speaker === "Me");
+  const rows: Array<{ label: string; seconds: number }> = micWasDiarized
+    ? []
+    : [{ label: "Me", seconds: activeChunkSeconds(entryRecords, "mic", micRmsThresholdDb, chunkDurationSeconds) }];
 
   if (diarSegments.length > 0) {
     const bySpeaker = new Map<string, number>();

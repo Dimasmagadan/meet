@@ -124,6 +124,12 @@ export interface Config {
   speakerRegistryEnabled: boolean;
   speakerMatchThreshold: number;
   speakerRegistryPath: string;
+  // Diarizes the mic channel too, but only when sys diarization found nobody
+  // (the phone-call signature: a call that never went through this Mac lands
+  // entirely on mic). Splits mic clusters into "Me" vs "Speaker N" using the
+  // speaker registry's isSelf-flagged voiceprint. Opt-in: an extra CoreML pass
+  // per meeting, same convention as diarizationAbPass.
+  micDiarizationEnabled: boolean;
   // P3: spawn whisper-cli / AudioAnalysis under `taskpolicy -c utility` so the
   // Swift audio capture (which keeps default priority) never starves during a
   // live recording. Fail-opens to no wrapping when taskpolicy is unavailable.
@@ -245,6 +251,7 @@ export const DEFAULT_CONFIG: Config = {
   speakerRegistryEnabled: false,
   speakerMatchThreshold: 0.75,
   speakerRegistryPath: "~/.meet/speakers/registry.json",
+  micDiarizationEnabled: false,
   lowerProcessPriority: true,
   liveQueueLagWarnChunks: 8,
   menuBarMeetBin: "",

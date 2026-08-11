@@ -10,7 +10,7 @@ import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcript
 import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock, readGlobalFinalPassLock } from "./locks.js";
 import { analyzeWavFile } from "./audio-metrics.js";
 import { readEntryRecords } from "./entries-store.js";
-import { concatSysChunks, runDiarizer, assignSpeakers, relabelSegments, cleanupSysConcat, buildSpeakerLabelMap, buildEmbeddingsByLabel, type DiarSegment } from "./diarization.js";
+import { concatSysChunks, concatMicChunks, runDiarizer, assignSpeakers, assignLabeledSpeakers, relabelSegments, cleanupSysConcat, cleanupMicConcat, buildSpeakerLabelMap, buildEmbeddingsByLabel, type DiarSegment } from "./diarization.js";
 import { runDiarizationAbPass } from "./diarization-ab.js";
 import { computeTalkTime } from "./talk-time.js";
 import type { TalkTimeStats } from "./talk-time.js";
@@ -37,7 +37,7 @@ import { runParakeetPass } from "./parakeet-pass.js";
 import { appendPostFinalizeNote } from "./summary.js";
 import { runOpencodeIndex } from "./opencode.js";
 import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
-import { loadRegistry, saveRegistry, applyRegistryToSpeakers, appendMatchesLog, matchesLogPath } from "./speaker-registry.js";
+import { loadRegistry, saveRegistry, applyRegistryToSpeakers, appendMatchesLog, matchesLogPath, matchSelf, registerSpeaker, type SpeakerBackend } from "./speaker-registry.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
 
@@ -351,6 +351,181 @@ async function applySpeakerRegistry(
   }
 }
 
+interface MicDiarizationOutcome {
+  entries: TranscriptEntry[];
+  micDiarSegments: DiarSegment[];
+  labelOverrides: Map<string, string>;
+}
+
+// Diarizes the mic channel when sys diarization found nobody — the signature
+// of a call that never went through this Mac (e.g. a phone call on speaker):
+// both the user and the other party land entirely on the mic channel, and
+// without this step every mic entry defaults to "Me" (assembler.ts). Splits
+// mic clusters into "Me" (matched against an isSelf-flagged registry
+// voiceprint) vs. "Speaker N" (matched/registered like sys speakers, same
+// cross-session registry). Bootstraps the self voiceprint automatically the
+// first time a normal (single-voice) mic channel is diarized — `meet speakers
+// enroll-self` is the on-demand path. Mutates `speakersRecord` in place with
+// the same shape the sys path writes, so `meet rename` / `meet speakers
+// suggest` work on mic-derived speakers for free. Fails open: any error
+// leaves entries unmodified, mirrors runDiarizationStep.
+export async function runMicDiarizationStep(
+  session: Session,
+  config: Config,
+  entries: TranscriptEntry[],
+  sysSegmentCount: number,
+  speakersRecord: Record<string, unknown>,
+  warn: (msg: string) => void,
+  log: (msg: string) => void,
+  sensor?: PressureSensor,
+): Promise<MicDiarizationOutcome> {
+  const none: MicDiarizationOutcome = { entries, micDiarSegments: [], labelOverrides: new Map() };
+
+  if (!config.diarizationEnabled || !config.micDiarizationEnabled || !config.speakerRegistryEnabled) return none;
+  // Sys already found real speakers this meeting — a genuine multi-party call
+  // through this Mac. Splitting mic too would need a second numbering space;
+  // out of scope, and mic already correctly holds only the user in that case.
+  if (sysSegmentCount > 0) return none;
+
+  const analysisBin = resolveAnalysisBin(config);
+  if (!existsSync(analysisBin)) return none;
+
+  let micFileCount = 0;
+  try {
+    const files = await readdir(session.sessionDir);
+    micFileCount = files.filter((f) => /^mic-\d{3}\.wav$/.test(f)).length;
+  } catch {
+    return none;
+  }
+  if (micFileCount === 0) return none;
+
+  const backend: SpeakerBackend = "diarizer-manager";
+  const threshold = config.speakerMatchThreshold;
+
+  try {
+    log("Mic diarization pass...");
+    const { wavPath, offsets } = await concatMicChunks(session.sessionDir);
+    try {
+      if (config.gateHeavyPasses) {
+        await whenNotOverloaded(makeDeadline(config.gateBudgetMs), sensor);
+      }
+      const { segments: rawSegments, embeddings: rawEmbeddings } = await runDiarizer(config, wavPath);
+      if (rawSegments.length === 0) return none;
+
+      const rawIds = [...new Set(rawSegments.map((s) => s.speaker))];
+      const registry = loadRegistry(config.speakerRegistryPath);
+
+      if (rawIds.length === 1) {
+        // Whole mic channel is one voice — safe ground truth for "me".
+        const emb = rawEmbeddings[rawIds[0]];
+        if (Array.isArray(emb) && emb.length > 0) {
+          const existing = matchSelf(emb, registry, threshold, backend);
+          if (existing) {
+            existing.speaker.matchCount += 1;
+          } else if (!registry.speakers.some((s) => s.isSelf && s.backend === backend && !s.quarantined)) {
+            registerSpeaker(emb, session.id, registry, backend, () => new Date(), true);
+            log("Enrolled self voice from this meeting's mic channel");
+          }
+          await saveRegistry(registry, config.speakerRegistryPath);
+        }
+        return none;
+      }
+
+      // Multiple raw clusters on mic — need a known self voiceprint to split them.
+      const hasSelf = registry.speakers.some((s) => s.isSelf && s.backend === backend && !s.quarantined);
+      if (!hasSelf) {
+        warn("Mic channel has multiple voices but no enrolled self voice yet — run `meet speakers enroll-self`, keeping all mic entries as \"Me\" for now");
+        return none;
+      }
+
+      const selfRawIds = new Set<string>();
+      for (const rawId of rawIds) {
+        const emb = rawEmbeddings[rawId];
+        if (Array.isArray(emb) && emb.length > 0 && matchSelf(emb, registry, threshold, backend)) {
+          selfRawIds.add(rawId);
+        }
+      }
+      if (selfRawIds.size === 0) {
+        warn("Mic channel has multiple voices but none matched the enrolled self voice, keeping all mic entries as \"Me\"");
+        return none;
+      }
+
+      // Relabel: self ids -> "Me"; everyone else -> "Speaker N" by first
+      // appearance in time (self ids don't consume the counter).
+      const sorted = [...rawSegments].sort((a, b) => a.start - b.start);
+      const rawToLabel = new Map<string, string>();
+      let otherCounter = 0;
+      for (const seg of sorted) {
+        if (rawToLabel.has(seg.speaker)) continue;
+        if (selfRawIds.has(seg.speaker)) {
+          rawToLabel.set(seg.speaker, "Me");
+        } else {
+          otherCounter += 1;
+          rawToLabel.set(seg.speaker, `Speaker ${otherCounter}`);
+        }
+      }
+
+      const relabeledSegments: DiarSegment[] = rawSegments.map((s) => ({ ...s, speaker: rawToLabel.get(s.speaker)! }));
+      let micEntries = assignLabeledSpeakers(entries, relabeledSegments, offsets, config.diarizationMinOverlap);
+
+      // Cross-session registry naming for the "other" clusters only, excluding
+      // self entries from the matching pool (defense in depth).
+      const selfRegistryIds = new Set(registry.speakers.filter((s) => s.isSelf).map((s) => s.id));
+      const otherEmbeddingsByLabel = new Map<string, number[]>();
+      for (const rawId of rawIds) {
+        if (selfRawIds.has(rawId)) continue;
+        const emb = rawEmbeddings[rawId];
+        const label = rawToLabel.get(rawId);
+        if (label && Array.isArray(emb) && emb.length > 0) otherEmbeddingsByLabel.set(label, emb);
+      }
+
+      let labelOverrides = new Map<string, string>();
+      if (otherEmbeddingsByLabel.size > 0) {
+        const applied = applyRegistryToSpeakers(
+          otherEmbeddingsByLabel, session.id, registry, threshold, backend, () => new Date(), selfRegistryIds,
+        );
+        labelOverrides = applied.labelOverrides;
+        await appendMatchesLog(matchesLogPath(config.speakerRegistryPath), applied.matches).catch(() => {});
+
+        if (labelOverrides.size > 0) {
+          micEntries = micEntries.map((e) =>
+            e.source === "mic" && e.speaker && labelOverrides.has(e.speaker)
+              ? { ...e, speaker: labelOverrides.get(e.speaker)! }
+              : e,
+          );
+          const speakerNames: Record<string, string> = {};
+          for (const [label, name] of labelOverrides) speakerNames[label] = name;
+          speakersRecord.speakerNames = speakerNames;
+        }
+
+        const speakerRegistryRecord: Record<string, { globalSpeakerId: string; matchedName: string | null; score: number }> = {};
+        for (const [label, meta] of applied.speakerMeta) {
+          speakerRegistryRecord[label] = { globalSpeakerId: meta.globalSpeakerId, matchedName: meta.matchedName, score: meta.score };
+        }
+        speakersRecord.speakerRegistry = speakerRegistryRecord;
+      }
+
+      await saveRegistry(registry, config.speakerRegistryPath);
+
+      // Same shape runDiarizationStep writes for sys, so meet rename / meet
+      // speakers suggest work uniformly regardless of which channel split.
+      speakersRecord.diarization = { ok: true, speakerCount: rawToLabel.size };
+      speakersRecord.segments = relabeledSegments;
+      speakersRecord.entryAssignments = micEntries
+        .filter((e) => e.source === "mic")
+        .map((e) => ({ chunkIndex: e.chunkIndex, speaker: e.speaker ?? null }));
+
+      return { entries: micEntries, micDiarSegments: relabeledSegments, labelOverrides };
+    } finally {
+      await cleanupMicConcat(session.sessionDir);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    warn(`Mic diarization failed: ${message}, keeping Me labels`);
+    return none;
+  }
+}
+
 // Re-diarizes sys-concat.wav with the offline VBx pipeline for a measured A/B
 // against the primary online result, writing diarization-ab-report.json (S2).
 // Runs while sys-concat.wav is still on disk (caller cleans it up right after
@@ -589,15 +764,20 @@ export async function finalizeSession(
         const { entries: diarizedEntries, segments, speakersRecord, labelOverrides } = await runDiarizationStep(session, config, entries, warn, log);
         entries = diarizedEntries;
 
+        const micOutcome = await runMicDiarizationStep(session, config, entries, segments.length, speakersRecord, warn, log);
+        entries = micOutcome.entries;
+        const talkTimeDiarSegments = micOutcome.micDiarSegments.length > 0 ? micOutcome.micDiarSegments : segments;
+        const mergedLabelOverrides = new Map([...labelOverrides, ...micOutcome.labelOverrides]);
+
         const talkTime = applyLabelOverridesToTalkTime(
           computeTalkTime({
             entryRecords: storedRecords,
             chunkDurationSeconds: session.chunkDurationSeconds,
             micRmsThresholdDb: config.micRmsThresholdDb,
             sysRmsThresholdDb: config.sysRmsThresholdDb,
-            diarSegments: segments,
+            diarSegments: talkTimeDiarSegments,
           }),
-          labelOverrides,
+          mergedLabelOverrides,
         );
         speakersRecord.talkTime = talkTime;
 

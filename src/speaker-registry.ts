@@ -17,6 +17,7 @@ export interface RegistrySpeaker {
   embedding: number[];        // 256-d, L2-normalized WeSpeaker
   backend: SpeakerBackend;
   quarantined?: boolean;      // set when a backend flip retires this entry (kept for audit, never matched)
+  isSelf?: boolean;           // the recording user's own voiceprint (see matchSelf) — never carries a display name
   createdAt: string;          // ISO
   sourceMeetingId: string;    // first meeting that produced this voice
   matchCount: number;         // how many meetings matched it since creation
@@ -120,12 +121,36 @@ export function matchSpeaker(
   return null;
 }
 
+// Nearest isSelf entry whose cosine is >= threshold, else null. Used to split
+// a mic-channel diarization cluster into "me" vs. "someone else" (a call that
+// never went through this Mac lands entirely on the mic channel).
+export function matchSelf(
+  emb: number[],
+  registry: SpeakerRegistry,
+  threshold: number,
+  backend: SpeakerBackend,
+): { speaker: RegistrySpeaker; score: number } | null {
+  let best: RegistrySpeaker | null = null;
+  let bestScore = -Infinity;
+  for (const s of registry.speakers) {
+    if (s.quarantined || !s.isSelf || s.backend !== backend) continue;
+    const score = cosineSimilarity(emb, s.embedding);
+    if (score > bestScore) {
+      bestScore = score;
+      best = s;
+    }
+  }
+  if (best && bestScore >= threshold) return { speaker: best, score: bestScore };
+  return null;
+}
+
 export function registerSpeaker(
   emb: number[],
   meetingId: string,
   registry: SpeakerRegistry,
   backend: SpeakerBackend,
   now: () => Date = () => new Date(),
+  isSelf: boolean = false,
 ): RegistrySpeaker {
   const speaker: RegistrySpeaker = {
     id: nanoid(12),
@@ -135,6 +160,7 @@ export function registerSpeaker(
     createdAt: now().toISOString(),
     sourceMeetingId: meetingId,
     matchCount: 0,
+    ...(isSelf ? { isSelf: true } : {}),
   };
   registry.speakers.push(speaker);
   return speaker;
@@ -151,6 +177,10 @@ export function applyRegistryToSpeakers(
   threshold: number,
   backend: SpeakerBackend,
   now: () => Date = () => new Date(),
+  // Pre-seeds claimedThisRun — e.g. the mic-diarization self/other split passes
+  // the isSelf entry ids here so a non-self cluster can never be matched (or
+  // audited as "nearest") against the recording user's own voiceprint.
+  seedExcludeIds?: Set<string>,
 ): ApplyRegistryResult {
   const labelOverrides = new Map<string, string>();
   const speakerMeta = new Map<string, AppliedSpeaker>();
@@ -161,7 +191,7 @@ export function applyRegistryToSpeakers(
   // Speaker 2 from matching Speaker 1's just-registered entry, or two labels
   // both clearing threshold against one pre-existing entry (diarization already
   // asserts these are different people, so a same-run collision is wrong).
-  const claimedThisRun = new Set<string>();
+  const claimedThisRun = new Set<string>(seedExcludeIds ?? []);
 
   for (const [label, emb] of embeddingsByLabel) {
     const m = matchSpeaker(emb, registry, threshold, backend, claimedThisRun);

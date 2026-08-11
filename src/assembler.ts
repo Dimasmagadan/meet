@@ -37,7 +37,10 @@ function formatEntry(entry: TranscriptEntry): string {
   if (entry.source === "file") {
     return `**[${entry.timestamp}]** ${entry.text}\n`;
   }
-  const label = entry.source === "mic" ? "Me" : (entry.speaker ?? "Others");
+  // Mic entries default to "Me", but runMicDiarizationStep (finalize.ts) can
+  // assign a real speaker label when the mic channel held more than one voice
+  // (a call that never went through this Mac) — entry.speaker wins when set.
+  const label = entry.speaker ?? (entry.source === "mic" ? "Me" : "Others");
   return `**[${entry.timestamp}] ${label}:** ${entry.text}\n`;
 }
 

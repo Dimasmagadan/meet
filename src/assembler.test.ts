@@ -129,6 +129,18 @@ describe("assembleMarkdown", () => {
     assert.ok(md.includes("Others:** Без метки"));
   });
 
+  it("renders a mic entry's diarized speaker instead of Me (mic-diarization self/other split)", () => {
+    const entries: TranscriptEntry[] = [
+      { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "Я", speaker: "Me" },
+      { source: "mic", chunkIndex: 2, timestamp: "14:30:15", text: "Собеседник", speaker: "Speaker 1" },
+      { source: "mic", chunkIndex: 3, timestamp: "14:30:30", text: "По умолчанию" },
+    ];
+    const md = assembleMarkdown("Test", "2026-05-13T14:30:00.000Z", entries);
+    assert.ok(md.includes("Me:** Я"));
+    assert.ok(md.includes("Speaker 1:** Собеседник"));
+    assert.ok(md.includes("Me:** По умолчанию"));
+  });
+
   it("formats file source without speaker label", () => {
     const entries: TranscriptEntry[] = [
       { source: "file", chunkIndex: 0, timestamp: "00:00:00", text: "Вступление" },

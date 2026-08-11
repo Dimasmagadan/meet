@@ -9,7 +9,8 @@ import { isActiveRecording, readActiveRecordingLock, acquireGlobalFinalPassLock,
 import { transcribeImport, type ImportOptions } from "./import.js";
 import { renameSpeaker } from "./speaker-rename.js";
 import { runSpeakersSuggest } from "./speakers-suggest.js";
-import { loadRegistry, saveRegistry, forgetSpeaker, matchesLogPath } from "./speaker-registry.js";
+import { loadRegistry, saveRegistry, forgetSpeaker, registerSpeaker, matchesLogPath } from "./speaker-registry.js";
+import { concatMicChunks, cleanupMicConcat, runDiarizer } from "./diarization.js";
 import { detectGitContext, linkRepoToMeeting } from "./git-context.js";
 import { detectWhisperCompute } from "./compute-device.js";
 import { isTaskpolicyAvailable } from "./process-priority.js";
@@ -163,6 +164,13 @@ export function createProgram(): Command {
     .argument("<meetingDir>", "Meeting output directory path")
     .action(async (meetingDir: string) => {
       await runSpeakersSuggestCommand(meetingDir);
+    });
+  speakers
+    .command("enroll-self")
+    .description("Record a short clip of your own voice and save it as your self voiceprint (for splitting \"Me\" from other speakers on mic-only recordings, e.g. phone calls)")
+    .option("--seconds <n>", "Recording length in seconds", (v) => parseInt(v, 10), 20)
+    .action(async (opts: { seconds?: number }) => {
+      await runSpeakersEnrollSelf(opts.seconds ?? 20);
     });
 
   program
@@ -734,7 +742,7 @@ async function runSpeakersList() {
 
   console.log(chalk.cyan(`${speakers.length} speaker(s) in registry:\n`));
   for (const s of speakers) {
-    const name = s.name ? chalk.green(s.name) : chalk.gray("(unnamed)");
+    const name = s.name ? chalk.green(s.name) : (s.isSelf ? chalk.cyan("[self]") : chalk.gray("(unnamed)"));
     const flagged = s.quarantined ? chalk.yellow(" [quarantined]") : "";
     console.log(`  ${chalk.bold(s.id)}  ${name}${flagged}`);
     console.log(chalk.gray(`    matches: ${s.matchCount} | backend: ${s.backend} | first: ${s.sourceMeetingId} | ${s.createdAt}`));
@@ -789,6 +797,100 @@ async function runSpeakersForget(globalId: string) {
     console.log(chalk.green(`Forgot ${globalId}; its voice will re-register fresh in the next meeting.`));
   } finally {
     releaseGlobalFinalPassLock();
+  }
+}
+
+// Records a short mic-only clip, diarizes it, and stores the resulting
+// voiceprint as an isSelf registry entry (see speaker-registry.ts). Used by
+// runMicDiarizationStep (finalize.ts) to split "Me" from other speakers when
+// a call never went through this Mac and everyone lands on the mic channel.
+// Chunk duration stays short (5s) regardless of --seconds so a few finalized
+// chunks always survive the kill, even if the process is killed mid-chunk.
+async function runSpeakersEnrollSelf(seconds: number) {
+  const config = loadConfig();
+  if (!config.speakerRegistryEnabled) {
+    console.log(chalk.yellow("Speaker registry is disabled. Set speakerRegistryEnabled: true in ~/.meet/config.json"));
+    process.exit(1);
+  }
+
+  const captureBin = getCaptureBinPath(config);
+  if (!existsSync(captureBin)) {
+    console.log(chalk.red(`AudioCapture not built: ${captureBin}. Run: ./native/AudioCapture/scripts/build.sh`));
+    process.exit(1);
+  }
+  const analysisBin = resolveAnalysisBin(config);
+  if (!existsSync(analysisBin)) {
+    console.log(chalk.red(`AudioAnalysis not built: ${analysisBin}. Run: cd native/AudioCapture && swift build --product AudioAnalysis -c release`));
+    process.exit(1);
+  }
+
+  const sessionDir = await mkdtemp(join(tmpdir(), "meet-enroll-self-"));
+  const captureArgs = [
+    "--output-dir", sessionDir,
+    "--chunk-duration", "5",
+    "--mode", "mic",
+    "--silence-timeout", "0",
+  ];
+
+  console.log(chalk.cyan(`Recording ~${seconds}s of your voice — speak alone, in a quiet room...`));
+  const captureProcess = spawn(captureBin, captureArgs, { stdio: ["ignore", "ignore", "pipe"] });
+  captureProcess.stderr?.on("data", () => {});
+
+  await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+  captureProcess.kill("SIGINT");
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => { captureProcess.kill("SIGKILL"); resolve(); }, 5_000);
+    captureProcess.once("exit", () => { clearTimeout(timer); resolve(); });
+  });
+
+  try {
+    const files = await readdir(sessionDir);
+    const micFiles = files.filter((f) => /^mic-\d{3}\.wav$/.test(f));
+    if (micFiles.length === 0) {
+      console.log(chalk.red("No mic audio captured."));
+      process.exit(1);
+    }
+
+    const { wavPath } = await concatMicChunks(sessionDir);
+    let segments, embeddings;
+    try {
+      ({ segments, embeddings } = await runDiarizer(config, wavPath));
+    } finally {
+      await cleanupMicConcat(sessionDir);
+    }
+
+    const rawIds = [...new Set(segments.map((s) => s.speaker))];
+    if (rawIds.length === 0) {
+      console.log(chalk.red("No speech detected — try again, closer to the mic."));
+      process.exit(1);
+    }
+    if (rawIds.length > 1) {
+      console.log(chalk.red(`Multiple voices detected (${rawIds.length}) — record alone in a quiet room.`));
+      process.exit(1);
+    }
+
+    const emb = embeddings[rawIds[0]];
+    if (!Array.isArray(emb) || emb.length === 0) {
+      console.log(chalk.red("Diarizer produced no voiceprint for this recording — try again."));
+      process.exit(1);
+    }
+
+    const locked = acquireGlobalFinalPassLock("<registry-mutation>");
+    if (!locked) {
+      console.log(chalk.red("Registry busy: a final pass is running, retry in a moment."));
+      process.exit(1);
+    }
+    try {
+      const registry = loadRegistry(config.speakerRegistryPath);
+      const speaker = registerSpeaker(emb, "<enroll-self>", registry, "diarizer-manager", () => new Date(), true);
+      await saveRegistry(registry, config.speakerRegistryPath);
+      console.log(chalk.green(`Enrolled self voice: ${speaker.id}`));
+      console.log(chalk.gray("Mic-only recordings with more than one voice will now split \"Me\" from other speakers (set micDiarizationEnabled: true in ~/.meet/config.json)."));
+    } finally {
+      releaseGlobalFinalPassLock();
+    }
+  } finally {
+    await rm(sessionDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
