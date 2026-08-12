@@ -30,6 +30,7 @@ export function writeActiveRecordingLock(session: Session): void {
     title: session.title,
     startedAt: session.startedAt,
     updatedAt: new Date().toISOString(),
+    attendees: session.attendees ?? [],
   }), "utf-8");
 }
 
@@ -44,6 +45,7 @@ export interface ActiveRecordingLock {
   title: string;
   startedAt: string;
   updatedAt: string;
+  attendees?: string[];
 }
 
 export function readActiveRecordingLock(): ActiveRecordingLock | null {

@@ -18,13 +18,8 @@ class SessionMonitor {
     }
 
     private func checkForActiveSession() {
-        let lockPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".meet/sessions/active-recording.lock")
-
-        guard let data = FileManager.default.contents(atPath: lockPath.path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let json = ActiveLock.read(),
               let sessionDir = json["sessionDir"] as? String else { return }
-
         onRecordingDetected?(sessionDir)
     }
 }

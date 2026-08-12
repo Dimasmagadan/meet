@@ -9,7 +9,7 @@ macOS (Apple Silicon) CLI. Records mic + system audio, transcribes locally with 
 ```
 meet start "Title"
 ├── src/main.ts              — entry, dispatches CLI commands
-├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, tag, status, rename, link, speakers, dashboard, bin-path
+├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, tag, status, rename, link, speakers, dashboard, bin-path, retitle, ask
 ├── src/recorder.ts          — session orchestration: spawns Swift capture, wires Pipeline, handles stdin hotkeys
 ├── src/types.ts             — shared types: Session, Chunk, Config, TranscriptEntry
 ├── src/pipeline.ts          — chokidar watches *.wav, sequential whisper queue, dedup, durable state
@@ -60,7 +60,8 @@ meet start "Title"
     ├── PermissionController.swift — TCC baseline: ensureMic() gated synchronously; no screen/system-audio preflight (SPEC_TCC_SCREEN_REPROMPT_2026-07-31 §6 — Core Audio process taps have no public preflight API; AudioCapture raises the "System Audio Recording Only" prompt itself as the responsible process), openPrivacySettings() deep-link
     ├── LoginItemController.swift — SMAppService.mainApp launch-at-login wrapper (macOS 13+)
     ├── SessionMonitor.swift    — polls active-recording.lock every 5s → attaches to CLI-started sessions
-    ├── NotchPanelController.swift — SPEC_NOTCH_TRANSCRIPT_PANEL_2026-08-03: single NSPanel, collapsed frame = physical notch rect, grows on hover to show a scrollable tail of the active recording's transcript.md (polled while revealed); armed only while recording/paused
+    ├── NotchPanelController.swift — SPEC_NOTCH_TRANSCRIPT_PANEL_2026-08-03 + SPEC_NOTCH_TABS_2026-08-12: single `KeyPanel` (canBecomeKey=true subclass) anchored at physical notch rect, grows on hover to show a scrollable tail of the active recording's transcript.md (polled while revealed); Ask AI mode (`meet ask` marker round trip) forces bigFrame, reuses the text view for the answer, suppresses hover-hide while typing; armed only while recording/paused
+    ├── ActiveLock.swift        — shared reader for `~/.meet/sessions/active-recording.lock` JSON; collapsed from hand-rolled copies in NotchPanelController/RecordingController/SessionMonitor
     ├── CalendarAutoStartController.swift — SPEC_CALENDAR_AUTOSTART_2026-08-04: EKEventStore poll (20s Timer, dedicated fetch queue), permission split (Calendar requested at toggle-enable, mic checked synchronously at auto-start — never prompts from a timer callback), sleep/wake + `.EKEventStoreChanged` observers, occurrence-key dedup (per-occurrence, not per-series — the original bug), deterministic overlap resolution (no blocking alert), non-self attendees → `RecordingController.start(attendees:)`
     ├── CalendarMatch.swift     — pure logic behind the controller, no EventKit/AppKit imports so it's directly unit-testable: `hasCallLink()`, `isLive()` (lateness gate), `occurrenceKey()`, `capMinutes()` (back-to-back grace trimming, never 0), `rankCandidates()`; `selfCheck()` run via `MeetMenuBar --self-test-calendar`
     ├── Info.plist              — LSUIElement, NSMicrophoneUsageDescription, bundle id com.dimasmagadan.meet.menubar (NSScreenCaptureDescription dropped — not a real TCC key; Phase 2 adds NSAudioCaptureUsageDescription), NSCalendarsUsageDescription + NSCalendarsFullAccessUsageDescription (macOS 13/14+ split)

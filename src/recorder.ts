@@ -384,6 +384,39 @@ export class Recorder {
     process.stdout.write(`\n${chalk.green(`Renamed to "${marker.title}"`)}\n`);
   }
 
+  // Applies a pending `meet ask` request dropped by the notch panel's Ask AI mode
+  // (mirrors applyPendingRetitle's marker-file handoff). Fire-and-forget: the
+  // surrounding 5s status tick is synchronous and must not block for up to 60s.
+  // If opencodeRunning (interactive `a` hotkey or a prior ask) or shuttingDown,
+  // leave the marker in place — next tick picks it up (Rev 1's read-delete-run
+  // bug silently ate any question that arrived while the guard was held).
+  private applyPendingAskQuestion(): void {
+    if (this.opencodeRunning || this.shuttingDown) return;
+
+    const marker = readAskMarker(this.session.sessionDir);
+    if (!marker) return;
+
+    // Read + delete the marker, set the guard, run fire-and-forget.
+    const markerPath = join(this.session.sessionDir, "ask-request.json");
+    try { unlinkSync(markerPath); } catch {}
+
+    this.opencodeRunning = true;
+    const responsePath = join(this.session.sessionDir, "ask-response.json");
+
+    runOpencodeQuestion(this.config, this.outputFile, this.session.title, marker.question)
+      .then((answer) => {
+        writeAtomic(responsePath, JSON.stringify({ id: marker.id, answer }))
+          .catch((err) => this.warn("ask-response write failed", err));
+      })
+      .catch((err) => {
+        writeAtomic(responsePath, JSON.stringify({ id: marker.id, error: formatError(err) }))
+          .catch((e) => this.warn("ask-response write failed", e));
+      })
+      .finally(() => {
+        this.opencodeRunning = false;
+      });
+  }
+
   private spawnBackgroundFinalizer(): void {
     const binPath = process.argv[1];
     const child = spawn(process.execPath, [binPath, "finalize", this.session.sessionDir], {
@@ -575,6 +608,7 @@ export class Recorder {
 
       this.applyPendingTags();
       this.applyPendingRetitle();
+      this.applyPendingAskQuestion();
       this.checkAutoStop();
     }, 5000);
   }
@@ -742,6 +776,30 @@ export function planRetitle(
     return { noop: true, newOutputFile: currentOutputFile };
   }
   return { noop: false, newOutputFile: join(marker.newOutputDir, basename(currentOutputFile)) };
+}
+
+export interface AskMarker {
+  id: string;
+  question: string;
+}
+
+// Reads + validates ask-request.json. Returns null if missing, invalid JSON,
+// or missing id/question fields. Does NOT delete the marker — the caller decides
+// whether to proceed (opencodeRunning/shuttingDown guard) and deletes it only then.
+export function readAskMarker(sessionDir: string): AskMarker | null {
+  const markerPath = join(sessionDir, "ask-request.json");
+  if (!existsSync(markerPath)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(markerPath, "utf-8")) as Partial<AskMarker>;
+    if (!raw.id || !raw.question) {
+      try { unlinkSync(markerPath); } catch {}
+      return null;
+    }
+    return { id: raw.id, question: raw.question };
+  } catch {
+    try { unlinkSync(markerPath); } catch {}
+    return null;
+  }
 }
 
 export function formatLagStatus(

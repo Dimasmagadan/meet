@@ -136,6 +136,15 @@ export function createProgram(): Command {
     });
 
   program
+    .command("ask")
+    .description("Ask a question about a live recording's transcript (notch panel Ask AI mode)")
+    .argument("<sessionDir>", "Session directory path")
+    .argument("<question>", "Question text")
+    .action(async (sessionDir: string, question: string) => {
+      await runAsk(sessionDir, question);
+    });
+
+  program
     .command("link")
     .description("Attach or replace git repo context in a finalized meeting's meta.md")
     .argument("<meetingDir>", "Meeting output directory path")
@@ -709,6 +718,25 @@ async function runRetitle(sessionDir: string, newTitle: string) {
   await writeAtomic(
     join(dir, "retitle-request.json"),
     JSON.stringify({ title: newTitle, newOutputDir }),
+  );
+}
+
+// Spawned synchronously by the menu bar's notch panel (mirrors `meet retitle`).
+// Only drops the ask-request.json marker — the live Recorder runs the actual
+// opencode question on its 5s tick (see recorder.ts:applyPendingAskQuestion),
+// since it owns the opencodeRunning guard shared with the interactive `a` hotkey.
+async function runAsk(sessionDir: string, question: string) {
+  const dir = expandPath(sessionDir);
+  const lock = readActiveRecordingLock();
+  if (!lock || lock.sessionDir !== dir) {
+    console.log(chalk.red("No active recording for this session."));
+    process.exit(1);
+  }
+
+  const id = nanoid(12);
+  await writeAtomic(
+    join(dir, "ask-request.json"),
+    JSON.stringify({ id, question }),
   );
 }
 

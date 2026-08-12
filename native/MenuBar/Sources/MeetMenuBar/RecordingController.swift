@@ -158,6 +158,31 @@ class RecordingController {
         return proc.terminationStatus == 0
     }
 
+    // Mirrors retitle(title:) exactly: guards on live state, resolves the runner,
+    // spawns `meet ask` synchronously (the marker write must land before the panel
+    // polls for the id), returns terminationStatus == 0. The actual opencode question
+    // runs in the live Recorder process (recorder.ts:applyPendingAskQuestion).
+    @discardableResult
+    func ask(question: String) -> Bool {
+        guard state == .recording || state == .paused else { return false }
+        guard let runner = resolver.resolve(), let sessionDir = currentSessionDir() else { return false }
+        let trimmed = question.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: runner.executable)
+        proc.arguments = runner.args + ["ask", sessionDir, trimmed]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return false
+        }
+        return proc.terminationStatus == 0
+    }
+
     // Synchronous `meet tags` spawn (Node cold start, same cost as setTags) — called only
     // when a tag-picker dialog is about to open, not on a hot path.
     func fetchAvailableTags() -> [String] {
@@ -192,11 +217,8 @@ class RecordingController {
 
     func attachToExistingSession(sessionDir: String) {
         guard state == .idle else { return }
-        let lockPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".meet/sessions/active-recording.lock")
 
-        guard let data = FileManager.default.contents(atPath: lockPath.path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let json = ActiveLock.read(),
               let pid = json["pid"] as? Int32,
               isPidAlive(pid) else { return }
 
@@ -238,12 +260,7 @@ class RecordingController {
     }
 
     private func currentSessionDir() -> String? {
-        let lockPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".meet/sessions/active-recording.lock")
-        guard let data = FileManager.default.contents(atPath: lockPath.path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let sessionDir = json["sessionDir"] as? String else { return nil }
-        return sessionDir
+        ActiveLock.read()?["sessionDir"] as? String
     }
 
     private func handleTermination() {
@@ -296,10 +313,7 @@ class RecordingController {
     }
 
     private func checkSessionState() {
-        let lockPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".meet/sessions/active-recording.lock")
-
-        if !FileManager.default.fileExists(atPath: lockPath.path) {
+        if !ActiveLock.exists() {
             if state != .idle {
                 handleTermination()
             }

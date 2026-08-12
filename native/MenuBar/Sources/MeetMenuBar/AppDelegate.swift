@@ -27,6 +27,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.notchPanelController.setArmed(state == .recording || state == .paused)
             }
         }
+        notchPanelController.onAsk = { [weak self] question in
+            self?.recordingController.ask(question: question) ?? false
+        }
         recordingController.onStartFailed = { [weak self] message in
             DispatchQueue.main.async {
                 self?.showAlert(title: "Cannot start recording", message: message)
