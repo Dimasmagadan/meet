@@ -285,7 +285,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // (after NSAlert's own show/layout), so it doesn't fight that layout pass the way
         // calling makeKeyAndOrderFront/makeFirstResponder before runModal() did.
         DispatchQueue.main.async { alert.window.makeFirstResponder(input) }
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        // The app runs as .accessory (Dock-less). A Dock-less app is never the "true"
+        // frontmost app from the input-method system's point of view, so the keyboard
+        // layout shortcut (Ctrl+Space / Caps Lock / fn) doesn't switch inside the field —
+        // it stays pinned to whatever was last active. Temporarily becoming a regular app
+        // for the duration of the modal makes layout switching work, then we restore.
+        NSApp.setActivationPolicy(.regular)
+        let result = alert.runModal()
+        NSApp.setActivationPolicy(.accessory)
+        guard result == .alertFirstButtonReturn else { return nil }
         return input.stringValue
     }
 
@@ -325,7 +333,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.window.initialFirstResponder = newTagField
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async { alert.window.makeFirstResponder(newTagField) }
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        // See promptText(): the .accessory policy breaks keyboard layout switching in the
+        // new-tag field, so become a regular app for the duration of the modal.
+        NSApp.setActivationPolicy(.regular)
+        let result = alert.runModal()
+        NSApp.setActivationPolicy(.accessory)
+        guard result == .alertFirstButtonReturn else { return nil }
 
         var selected = checkboxes.filter { $0.state == .on }.map { $0.title }
         let newTag = newTagField.stringValue.trimmingCharacters(in: .whitespaces)
