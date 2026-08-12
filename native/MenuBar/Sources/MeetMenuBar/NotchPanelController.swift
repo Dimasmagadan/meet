@@ -98,13 +98,13 @@ final class NotchPanelController: NSObject {
     }
 
     private func disarm() {
+        stopPolling()
         hideWorkItem?.cancel()
         askInFlight = false
         pendingAskId = nil
         lastAnswer = nil
         askTicks = 0
         setMode(.transcript, animated: false)
-        stopPolling()
         panel?.orderOut(nil)
     }
 
@@ -242,13 +242,12 @@ final class NotchPanelController: NSObject {
     private func collapse() {
         // §2.3: resets the mode to Транскрипт but keeps pendingAskId and the last answer.
         // Re-entering Ask AI shows the last answer, or resumes polling if the question is
-        // still outstanding. stopPolling must come AFTER setMode — setMode calls
-        // startPolling() unconditionally, so stopping first would be immediately undone.
+        // still outstanding.
+        stopPolling()
         setMode(.transcript, animated: false)
         isBigExpanded = false
         expandButton?.title = "Раскрыть"
         animate(to: collapsedFrame)
-        stopPolling()
     }
 
     // Toggles the reading-size panel (50% screen height) on and off; resets to the
@@ -315,7 +314,6 @@ final class NotchPanelController: NSObject {
                 panel?.makeFirstResponder(askField)
             }
         }
-        startPolling()
     }
 
     // MARK: - Ask AI submit (SPEC_NOTCH_TABS_2026-08-12 §3.2)

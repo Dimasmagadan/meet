@@ -675,7 +675,7 @@ export class Recorder {
   }
 
   private askQuestion(): void {
-    if (this.opencodeRunning || this.shuttingDown) return;
+    if (this.shuttingDown || this.opencodeBusy()) return;
     this.opencodeRunning = true;
     this.stopStatus();
     process.stdout.write("\n");
