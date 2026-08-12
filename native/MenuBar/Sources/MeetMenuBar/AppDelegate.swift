@@ -267,7 +267,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = title
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
+        // The app may have just been bounced back to .accessory by a preceding prompt's
+        // policy restore, which makes macOS hand activation to another app; this alert can
+        // then surface behind its window. Force frontmost so it's always seen.
+        NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
+    }
+
+    // The app runs as .accessory (Dock-less). A Dock-less app is never the "true"
+    // frontmost app from the input-method system, so the keyboard layout shortcut
+    // (Ctrl+Space / Caps Lock / fn) doesn't switch inside the field — it stays pinned to
+    // whatever was last active. Become a regular app for the duration of the modal, then
+    // restore. Order matters: .regular first so activate() lifts us as a real frontmost
+    // app, not an accessory one (which is what caused the flaky layout switching).
+    // defer covers any future guard/return between runModal and the restore so the Dock
+    // icon never gets stranded.
+    private func runModalAsRegularApp(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        defer { NSApp.setActivationPolicy(.accessory) }
+        return alert.runModal()
     }
 
     private func promptText(message: String, info: String, ok: String, default def: String = "") -> String? {
@@ -280,19 +299,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: ok)
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = input
-        NSApp.activate(ignoringOtherApps: true)
         // Queued, not called directly: fires once the modal run loop is already pumping
         // (after NSAlert's own show/layout), so it doesn't fight that layout pass the way
         // calling makeKeyAndOrderFront/makeFirstResponder before runModal() did.
         DispatchQueue.main.async { alert.window.makeFirstResponder(input) }
-        // The app runs as .accessory (Dock-less). A Dock-less app is never the "true"
-        // frontmost app from the input-method system's point of view, so the keyboard
-        // layout shortcut (Ctrl+Space / Caps Lock / fn) doesn't switch inside the field —
-        // it stays pinned to whatever was last active. Temporarily becoming a regular app
-        // for the duration of the modal makes layout switching work, then we restore.
-        NSApp.setActivationPolicy(.regular)
-        let result = alert.runModal()
-        NSApp.setActivationPolicy(.accessory)
+        let result = runModalAsRegularApp(alert)
         guard result == .alertFirstButtonReturn else { return nil }
         return input.stringValue
     }
@@ -331,13 +342,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: ok)
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = newTagField
-        NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async { alert.window.makeFirstResponder(newTagField) }
-        // See promptText(): the .accessory policy breaks keyboard layout switching in the
-        // new-tag field, so become a regular app for the duration of the modal.
-        NSApp.setActivationPolicy(.regular)
-        let result = alert.runModal()
-        NSApp.setActivationPolicy(.accessory)
+        let result = runModalAsRegularApp(alert)
         guard result == .alertFirstButtonReturn else { return nil }
 
         var selected = checkboxes.filter { $0.state == .on }.map { $0.title }
