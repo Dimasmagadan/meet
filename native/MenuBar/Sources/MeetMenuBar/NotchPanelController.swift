@@ -55,6 +55,7 @@ final class NotchPanelController: NSObject {
     private var pendingAskId: String?
     private var askInFlight = false
     private var lastAnswer: String?
+    private var askTicks = 0
 
     // Wired by AppDelegate — calls RecordingController.ask(question:), which spawns
     // `meet ask` synchronously. The panel itself stays a lock-file/marker reader.
@@ -97,8 +98,13 @@ final class NotchPanelController: NSObject {
     }
 
     private func disarm() {
-        stopPolling()
         hideWorkItem?.cancel()
+        askInFlight = false
+        pendingAskId = nil
+        lastAnswer = nil
+        askTicks = 0
+        setMode(.transcript, animated: false)
+        stopPolling()
         panel?.orderOut(nil)
     }
 
@@ -234,14 +240,15 @@ final class NotchPanelController: NSObject {
     }
 
     private func collapse() {
-        stopPolling()
         // §2.3: resets the mode to Транскрипт but keeps pendingAskId and the last answer.
         // Re-entering Ask AI shows the last answer, or resumes polling if the question is
-        // still outstanding.
+        // still outstanding. stopPolling must come AFTER setMode — setMode calls
+        // startPolling() unconditionally, so stopping first would be immediately undone.
         setMode(.transcript, animated: false)
         isBigExpanded = false
         expandButton?.title = "Раскрыть"
         animate(to: collapsedFrame)
+        stopPolling()
     }
 
     // Toggles the reading-size panel (50% screen height) on and off; resets to the
@@ -274,6 +281,12 @@ final class NotchPanelController: NSObject {
             expandButton?.isHidden = false
             askField?.isHidden = true
             askSubmitButton?.isHidden = true
+            // Release key focus so keystrokes return to the app underneath (Zoom, Meet,
+            // terminal). The panel stays non-activating throughout.
+            if let keyPanel = panel as? KeyPanel {
+                keyPanel.allowsKey = false
+                keyPanel.resignKey()
+            }
             if animated { animate(to: currentTargetFrame()) }
             updateTranscript()
 
@@ -285,6 +298,8 @@ final class NotchPanelController: NSObject {
             // Force bigFrame — the 160pt hover height can't hold a field, an answer,
             // and two button rows.
             if animated { animate(to: bigFrame) }
+            // Flip allowsKey before makeKey so the dynamic canBecomeKey returns true.
+            (panel as? KeyPanel)?.allowsKey = true
             panel?.makeKey()
 
             if askInFlight {
@@ -325,6 +340,7 @@ final class NotchPanelController: NSObject {
         // Read the id written by `meet ask` so we can distinguish a fresh response from a stale one.
         pendingAskId = readAskRequestId()
         askInFlight = true
+        askTicks = 0
 
         askField?.stringValue = ""
         askField?.isEnabled = false
@@ -406,6 +422,24 @@ final class NotchPanelController: NSObject {
 
     private func pollAskResponse() {
         guard askInFlight else { return }
+        askTicks += 1
+
+        // Deadline: opencode has a 60s timeout (opencode.ts), so a response should land
+        // within ~62s (60s + file write + one poll tick). 90s gives margin for scheduling
+        // jitter; if it still hasn't arrived the Recorder likely died before writing the
+        // marker, so we unlock the field rather than hanging forever.
+        if askTicks > 90 {
+            askInFlight = false
+            pendingAskId = nil
+            textView?.string = "Ответ не пришёл."
+            askField?.isEnabled = true
+            askSubmitButton?.isEnabled = true
+            if let panel = panel, let field = askField {
+                panel.makeFirstResponder(field)
+            }
+            return
+        }
+
         guard let sessionDir = Self.currentSessionDir() else { return }
         let responsePath = "\(sessionDir)/ask-response.json"
         guard FileManager.default.fileExists(atPath: responsePath) else { return }
@@ -596,7 +630,11 @@ private final class FirstMouseButton: NSButton {
 }
 
 // A borderless NSPanel returns canBecomeKey == false by default, so an NSTextField in
-// it can never take keyboard input. The override flips that (SPEC_NOTCH_TABS_2026-08-12 §2.3).
+// it can never take keyboard input. allowsKey is flipped to true only while Ask AI mode
+// is active, so leaving the mode (or collapsing) releases key focus back to the app
+// underneath (Zoom, Meet, terminal) instead of trapping keystrokes in a hidden panel
+// (SPEC_NOTCH_TABS_2026-08-12 §2.3).
 private final class KeyPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
+    var allowsKey = false
+    override var canBecomeKey: Bool { allowsKey }
 }

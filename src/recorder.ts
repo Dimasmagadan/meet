@@ -450,9 +450,20 @@ export class Recorder {
     }
   }
 
+  // Shared by s/n/p hotkeys: the notch panel's Ask AI mode lifts opencodeRunning for
+  // up to 60s, during which these hotkeys silently no-op'd. Print a visible reason
+  // instead of leaving the user wondering why nothing happened.
+  private opencodeBusy(): boolean {
+    if (this.opencodeRunning) {
+      process.stdout.write(`\n${chalk.gray("opencode is running, wait…")}\n`);
+      return true;
+    }
+    return false;
+  }
+
   // s: drain small model inline, then background big-model pass.
   private async stopAndFinalizeForeground(): Promise<void> {
-    if (this.opencodeRunning || this.shuttingDown) return;
+    if (this.shuttingDown || this.opencodeBusy()) return;
     this.shuttingDown = true;
 
     try {
@@ -487,7 +498,7 @@ export class Recorder {
 
   // n: background everything, clean up listeners, return to start next meeting.
   private async nextMeeting(): Promise<void> {
-    if (this.opencodeRunning || this.shuttingDown) return;
+    if (this.shuttingDown || this.opencodeBusy()) return;
     this.shuttingDown = true;
     this.startNextMeeting = true;
 
@@ -626,7 +637,7 @@ export class Recorder {
   }
 
   private async togglePause(): Promise<void> {
-    if (this.shuttingDown || this.opencodeRunning) return;
+    if (this.shuttingDown || this.opencodeBusy()) return;
 
     if (this.paused) {
       this.captureProcess?.kill("SIGUSR2");
