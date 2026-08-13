@@ -126,6 +126,10 @@ final class NotchPanelController: NSObject {
         // the rounding entirely. Only the content layer should paint black.
         panel.backgroundColor = .clear
         panel.hasShadow = false
+        // Content is always painted black (line below), independent of system light/dark
+        // mode — force dark appearance so button/text labels render light-on-dark instead
+        // of inheriting the system's light-mode dark label color onto a black background.
+        panel.appearance = NSAppearance(named: .darkAqua)
 
         let initialSize = NSSize(width: Self.panelWidth, height: Self.expandedHeight)
 
