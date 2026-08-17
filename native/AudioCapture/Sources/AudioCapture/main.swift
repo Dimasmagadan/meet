@@ -1,4 +1,5 @@
 import ArgumentParser
+import Dispatch
 import Foundation
 
 @main
@@ -20,8 +21,11 @@ struct AudioCaptureCLI: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable VoiceProcessing IO for mic echo cancellation")
     var voiceProcessing: Bool = false
 
+    @Flag(name: .long, help: "In full mode, keep running if mic or system audio fails to start instead of exiting")
+    var allowDegraded: Bool = false
+
     func run() async throws {
-        let runner = CaptureRunner(outputDir: outputDir, chunkDuration: chunkDuration, mode: mode, silenceTimeout: silenceTimeout, voiceProcessing: voiceProcessing)
+        let runner = CaptureRunner(outputDir: outputDir, chunkDuration: chunkDuration, mode: mode, silenceTimeout: silenceTimeout, voiceProcessing: voiceProcessing, allowDegraded: allowDegraded)
         try await runner.run()
     }
 }
@@ -33,29 +37,47 @@ class CaptureRunner {
     let mode: String
     let silenceTimeout: Int
     let voiceProcessing: Bool
+    let allowDegraded: Bool
     var micCapture: MicCapture?
     // Typed as Any? because SystemAudioCapture requires macOS 14.2+ while CaptureRunner (used for
     // mic-only mode too) targets 14.0+; cast at each use site instead of raising this class's
     // availability floor for a feature only the "full" mode needs.
     var systemCapture: Any?
     var shouldStop = false
+    // Retained for the process lifetime — a DispatchSourceSignal is cancelled/torn down
+    // if it's deallocated, so these must outlive `run()`'s signal-handling loop.
+    var signalSources: [DispatchSourceSignal] = []
 
-    init(outputDir: String, chunkDuration: Int, mode: String, silenceTimeout: Int, voiceProcessing: Bool) {
+    init(outputDir: String, chunkDuration: Int, mode: String, silenceTimeout: Int, voiceProcessing: Bool, allowDegraded: Bool) {
         self.outputDir = outputDir
         self.chunkDuration = chunkDuration
         self.mode = mode
         self.silenceTimeout = silenceTimeout
         self.voiceProcessing = voiceProcessing
+        self.allowDegraded = allowDegraded
     }
 
     func run() async throws {
         let dir = URL(fileURLWithPath: outputDir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        signal(SIGINT) { _ in CaptureRunnerSignalRelay.shared.trigger() }
-        signal(SIGTERM) { _ in CaptureRunnerSignalRelay.shared.trigger() }
-        signal(SIGUSR1) { _ in CaptureRunnerSignalRelay.shared.setPaused(true) }
-        signal(SIGUSR2) { _ in CaptureRunnerSignalRelay.shared.setPaused(false) }
+        // Raw signal() handlers run in signal-handler context on an arbitrary
+        // thread, where touching Swift objects (ARC retain/release, lazy
+        // singleton init) is not async-signal-safe. SIG_IGN the default
+        // disposition, then let a DispatchSourceSignal on a dedicated serial
+        // queue deliver the notification as an ordinary closure call instead.
+        let controlQueue = DispatchQueue(label: "audiocapture.signals")
+        func installSignalSource(_ sig: Int32, _ handler: @escaping () -> Void) {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: controlQueue)
+            source.setEventHandler(handler: handler)
+            source.resume()
+            signalSources.append(source)
+        }
+        installSignalSource(SIGINT) { CaptureRunnerSignalRelay.shared.trigger() }
+        installSignalSource(SIGTERM) { CaptureRunnerSignalRelay.shared.trigger() }
+        installSignalSource(SIGUSR1) { CaptureRunnerSignalRelay.shared.setPaused(true) }
+        installSignalSource(SIGUSR2) { CaptureRunnerSignalRelay.shared.setPaused(false) }
 
         fputs("AudioCapture started: mode=\(mode) dir=\(outputDir) silence=\(silenceTimeout)s\n", stderr)
         logJSON("info", "capture_started", ["mode": mode, "dir": outputDir, "silence": silenceTimeout])
@@ -73,7 +95,10 @@ class CaptureRunner {
             } catch {
                 fputs("Mic capture failed: \(error)\n", stderr)
                 logJSON("error", "stream_error", ["source": "mic", "message": String(describing: error)])
-                if mode == "mic" { throw error }
+                // Full mode silently continuing on one failed stream can record
+                // nothing (or only the other channel) with no visible signal to
+                // the caller. Fail startup unless degraded mode is opted into.
+                if mode == "mic" || !allowDegraded { throw error }
             }
         }
 
@@ -91,10 +116,18 @@ class CaptureRunner {
                 } catch {
                     fputs("System audio capture failed: \(error)\n", stderr)
                     logJSON("error", "stream_error", ["source": "sys", "message": String(describing: error)])
+                    if !allowDegraded {
+                        stopAll() // mic may already be recording; close its WAV before exiting
+                        throw error
+                    }
                 }
             } else {
                 fputs("System audio capture requires macOS 14.2+ (Core Audio process taps)\n", stderr)
                 logJSON("error", "stream_error", ["source": "sys", "message": "macOS 14.2+ required"])
+                if !allowDegraded {
+                    stopAll()
+                    throw NSError(domain: "AudioCapture", code: 1, userInfo: [NSLocalizedDescriptionKey: "System audio capture requires macOS 14.2+"])
+                }
             }
         }
 
