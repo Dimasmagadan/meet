@@ -14,7 +14,7 @@ import { concatMicChunks, cleanupMicConcat, runDiarizer } from "./diarization.js
 import { detectGitContext, linkRepoToMeeting } from "./git-context.js";
 import { detectWhisperCompute } from "./compute-device.js";
 import { isTaskpolicyAvailable } from "./process-priority.js";
-import { spawn, execSync } from "node:child_process";
+import { spawn, execSync, execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
@@ -444,7 +444,7 @@ async function runSetup() {
     console.log(chalk.green("  AudioAnalysis: ") + analysisBin);
     console.log(chalk.gray("    Downloading diarization + Parakeet CoreML models, one-time, ~1 GB..."));
     try {
-      execSync(`"${analysisBin}" models --ensure`, { stdio: "inherit" });
+      execFileSync(analysisBin, ["models", "--ensure"], { stdio: "inherit" });
     } catch {
       console.log(chalk.yellow("    Model download/verify failed (speaker diarization and Parakeet A/B pass will be skipped until fixed)"));
     }
