@@ -268,7 +268,7 @@ export async function runDiarizationStep(
 
       speakersRecord.entryAssignments = diarizedEntries
         .filter((e) => e.source === "sys")
-        .map((e) => ({ chunkIndex: e.chunkIndex, speaker: e.speaker ?? null }));
+        .map((e) => ({ source: e.source, chunkIndex: e.chunkIndex, speaker: e.speaker ?? null }));
 
       if (config.diarizationAbPass) {
         await runDiarizationAbStep(session, config, wavPath, segments, rawSegments, rawEmbeddings, warn, log, sensor);
@@ -512,9 +512,21 @@ export async function runMicDiarizationStep(
       // speakers suggest work uniformly regardless of which channel split.
       speakersRecord.diarization = { ok: true, speakerCount: rawToLabel.size };
       speakersRecord.segments = relabeledSegments;
-      speakersRecord.entryAssignments = micEntries
+      // Merge with (not replace) sys diarization's entryAssignments — both run
+      // in the same finalize pass, and each covers only its own channel. Keying
+      // by chunkIndex alone previously let a mic assignment overwrite a sys
+      // assignment at the same index (or vice versa) since every chunk has
+      // both a mic-N and sys-N entry; `source` now disambiguates them.
+      const existingAssignments = (speakersRecord.entryAssignments as
+        | Array<{ source?: "mic" | "sys"; chunkIndex: number; speaker: string | null }>
+        | undefined) ?? [];
+      const micAssignments = micEntries
         .filter((e) => e.source === "mic")
-        .map((e) => ({ chunkIndex: e.chunkIndex, speaker: e.speaker ?? null }));
+        .map((e) => ({ source: e.source, chunkIndex: e.chunkIndex, speaker: e.speaker ?? null }));
+      speakersRecord.entryAssignments = [
+        ...existingAssignments.filter((a) => a.source !== "mic"),
+        ...micAssignments,
+      ];
 
       return { entries: micEntries, micDiarSegments: relabeledSegments, labelOverrides };
     } finally {
@@ -575,12 +587,15 @@ async function runParakeetComparisonStep(
     log("Parakeet A/B pass...");
     await progressWriter.update(makeProgress("ab", 0, 0));
 
-    const speakerByChunk = new Map<number, string>();
+    // Keyed by "${source}-${chunkIndex}" — every chunk has both a mic-N and
+    // sys-N entry, and keying by chunkIndex alone let a mic assignment
+    // overwrite the sys assignment at the same index (or vice versa).
+    const speakerByChunk = new Map<string, string>();
     const entryAssignments = speakersRecord.entryAssignments as
-      | Array<{ chunkIndex: number; speaker: string | null }>
+      | Array<{ source?: "mic" | "sys"; chunkIndex: number; speaker: string | null }>
       | undefined;
     for (const assignment of entryAssignments ?? []) {
-      if (assignment.speaker) speakerByChunk.set(assignment.chunkIndex, assignment.speaker);
+      if (assignment.speaker) speakerByChunk.set(`${assignment.source ?? "sys"}-${assignment.chunkIndex}`, assignment.speaker);
     }
 
     const result = await runParakeetPass(session, config, speakerByChunk, (done, total) => {

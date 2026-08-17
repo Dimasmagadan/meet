@@ -48,7 +48,7 @@ export interface ParakeetPassResult {
 export async function runParakeetPass(
   session: Session,
   config: Config,
-  speakerByChunk: Map<number, string>,
+  speakerByChunk: Map<string, string>,
   onProgress?: (done: number, total: number) => void,
   sensor?: PressureSensor,
 ): Promise<ParakeetPassResult> {
@@ -83,7 +83,7 @@ export async function runParakeetPass(
     if (!text) return;
 
     const timestamp = chunkToTimestamp(chunk.index, session.chunkDurationSeconds, session.startedAt);
-    const speaker = chunk.source === "sys" ? speakerByChunk.get(chunk.index) : undefined;
+    const speaker = chunk.source === "sys" ? speakerByChunk.get(`sys-${chunk.index}`) : undefined;
     entries.push({
       source: chunk.source,
       chunkIndex: chunk.index,
