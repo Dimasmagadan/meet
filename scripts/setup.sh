@@ -10,7 +10,13 @@ ok() { echo -e "${GREEN}✓${NC} $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; }
 warn() { echo -e "${YELLOW}!${NC} $1"; }
 
-echo "=== meet setup ==="
+# Resolve relative to the script's own location, not the caller's cwd — this
+# script is meant to be runnable from anywhere (`bash /path/to/meet/scripts/setup.sh`),
+# and `$(pwd)`-based paths silently resolved to the wrong repo (or nothing).
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+echo "=== meet setup ($REPO_ROOT) ==="
 
 if [[ "$(uname)" != "Darwin" ]]; then
     fail "macOS required"
@@ -44,11 +50,16 @@ else
     ok "model downloaded: $MODEL_FILE"
 fi
 
-SWIFT_BIN="$(pwd)/native/AudioCapture/.build/release/AudioCapture"
+SWIFT_BIN="$REPO_ROOT/native/AudioCapture/.build/release/AudioCapture"
 if [[ -f "$SWIFT_BIN" ]]; then
     ok "AudioCapture: $SWIFT_BIN"
 else
-    warn "AudioCapture not built. Run: ./native/AudioCapture/scripts/build.sh"
+    warn "AudioCapture not built, building now..."
+    if "$REPO_ROOT/native/AudioCapture/scripts/build.sh"; then
+        ok "AudioCapture built: $SWIFT_BIN"
+    else
+        fail "AudioCapture build failed"
+    fi
 fi
 
 OUTPUT_DIR="$HOME/Meetings"
@@ -60,4 +71,8 @@ mkdir -p "$CONFIG_DIR"
 ok "config dir: $CONFIG_DIR"
 
 echo ""
+if [[ ! -f "$SWIFT_BIN" ]]; then
+    fail "Setup incomplete: AudioCapture is not built, meet start would fail."
+    exit 1
+fi
 echo "Setup complete. Run: meet start \"My Meeting\""
