@@ -207,6 +207,7 @@ export class Recorder {
       });
     } catch (err) {
       console.log(chalk.red(`Failed to start AudioCapture: ${err}`));
+      clearActiveRecordingLock();
       process.exit(1);
     }
   }

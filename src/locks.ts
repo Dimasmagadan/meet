@@ -22,8 +22,8 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-export function writeActiveRecordingLock(session: Session): void {
-  writeFileSync(activeLockPath(), JSON.stringify({
+function activeLockData(session: Session): string {
+  return JSON.stringify({
     pid: process.pid,
     sessionDir: session.sessionDir,
     outputFile: session.outputFile,
@@ -31,10 +31,45 @@ export function writeActiveRecordingLock(session: Session): void {
     startedAt: session.startedAt,
     updatedAt: new Date().toISOString(),
     attendees: session.attendees ?? [],
-  }), "utf-8");
+  });
 }
 
+// Refreshes an already-owned lock (e.g. after a retitle changes outputFile).
+// Not for acquiring a new lock — use acquireActiveRecordingLock for that.
+export function writeActiveRecordingLock(session: Session): void {
+  writeFileSync(activeLockPath(), activeLockData(session), "utf-8");
+}
+
+// Exclusive create (`wx`) closes the check-then-write race between
+// isActiveRecording() and writing the lock: two concurrent `meet start`
+// calls can no longer both pass the check and both spawn capture. A lock
+// left by a dead PID is stale — readActiveRecordingLock() clears it as a
+// side effect, so one retry after that reclaims it.
+export function acquireActiveRecordingLock(session: Session): boolean {
+  const lockPath = activeLockPath();
+  const data = activeLockData(session);
+
+  const tryCreate = (): boolean => {
+    try {
+      const fd = openSync(lockPath, "wx");
+      writeFileSync(fd, data, "utf-8");
+      closeSync(fd);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (tryCreate()) return true;
+  if (readActiveRecordingLock() !== null) return false;
+  return tryCreate();
+}
+
+// Only the owning PID may release the lock, so a process can't clear a lock
+// acquired by a different concurrent recording it lost the race against.
 export function clearActiveRecordingLock(): void {
+  const existing = readActiveRecordingLock();
+  if (existing && existing.pid !== process.pid) return;
   try { unlinkSync(activeLockPath()); } catch {}
 }
 

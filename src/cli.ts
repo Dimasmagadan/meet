@@ -5,7 +5,7 @@ import { Recorder } from "./recorder.js";
 import { makeHeader } from "./assembler.js";
 import { finalizeSession } from "./finalize.js";
 import { showStatus } from "./status.js";
-import { isActiveRecording, readActiveRecordingLock, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock } from "./locks.js";
+import { isActiveRecording, readActiveRecordingLock, acquireActiveRecordingLock, clearActiveRecordingLock, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock } from "./locks.js";
 import { transcribeImport, type ImportOptions } from "./import.js";
 import { renameSpeaker } from "./speaker-rename.js";
 import { runSpeakersSuggest } from "./speakers-suggest.js";
@@ -317,6 +317,20 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     gitContext,
     attendees,
   };
+
+  // Authoritative acquire: the isActiveRecording() check above is only a fast
+  // UX bail — two concurrent `meet start` calls could both pass it. This
+  // exclusive-create is what actually prevents both from spawning capture.
+  if (!acquireActiveRecordingLock(session)) {
+    const lock = readActiveRecordingLock();
+    console.log(chalk.red("Another recording is already active."));
+    if (lock) {
+      console.log(chalk.gray(`  Title: ${lock.title}`));
+      console.log(chalk.gray(`  PID: ${lock.pid}`));
+      console.log(chalk.gray(`  Session: ${lock.sessionDir}`));
+    }
+    process.exit(1);
+  }
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
