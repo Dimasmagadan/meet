@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { generateSlug, formatStartTime, getOutputDir, getOutputPath, reserveOutputDir, expandPath, findStaleSessions, getSessionsDir } from "./storage.js";
+import { generateSlug, formatStartTime, getOutputDir, getOutputPath, reserveOutputDir, expandPath, findStaleSessions, getSessionsDir, sanitizeFileConfig } from "./storage.js";
+import { DEFAULT_CONFIG } from "./types.js";
 import { join } from "node:path";
 import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
@@ -112,6 +113,34 @@ describe("reserveOutputDir", () => {
     assert.ok(existsSync(second));
 
     rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe("sanitizeFileConfig", () => {
+  it("keeps values matching the default type", () => {
+    const clean = sanitizeFileConfig({ micRmsThresholdDb: -55, finalRetranscribe: false, language: "en" });
+    assert.deepStrictEqual(clean, { micRmsThresholdDb: -55, finalRetranscribe: false, language: "en" });
+  });
+
+  it("drops a value whose type doesn't match the default (string instead of number)", () => {
+    const clean = sanitizeFileConfig({ micRmsThresholdDb: "very quiet" });
+    assert.strictEqual(clean.micRmsThresholdDb, undefined);
+  });
+
+  it("drops non-finite numbers (NaN, Infinity)", () => {
+    const clean = sanitizeFileConfig({ chunkDurationSeconds: NaN, maxDurationMinutes: Infinity });
+    assert.strictEqual(clean.chunkDurationSeconds, undefined);
+    assert.strictEqual(clean.maxDurationMinutes, undefined);
+  });
+
+  it("drops unknown keys not present in DEFAULT_CONFIG", () => {
+    const clean = sanitizeFileConfig({ notARealSetting: 42 } as any);
+    assert.deepStrictEqual(clean, {});
+  });
+
+  it("passes every field of DEFAULT_CONFIG itself through unchanged", () => {
+    const clean = sanitizeFileConfig(DEFAULT_CONFIG as any);
+    assert.deepStrictEqual(clean, DEFAULT_CONFIG);
   });
 });
 

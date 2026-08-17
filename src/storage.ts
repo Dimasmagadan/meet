@@ -33,14 +33,49 @@ export function getSessionsDir(): string {
   return dir;
 }
 
+// loadConfig() runs per-chunk (pipeline.ts's processNext) — a malformed
+// config.json used to throw there, failing every chunk until fixed. This
+// caches the last successfully validated config so a bad edit degrades to
+// "keep using what worked" instead of crashing the live pipeline.
+let lastValidFileConfig: Partial<Config> = {};
+const configWarn = createWarnOnce();
+
+// Drops any key whose value isn't the same primitive type as its DEFAULT_CONFIG
+// counterpart (or, for numbers, isn't finite) instead of letting a garbage
+// value (e.g. a string where a threshold number is expected, or NaN) flow
+// unvalidated into VAD/filtering/diarization comparisons.
+export function sanitizeFileConfig(raw: Record<string, unknown>): Partial<Config> {
+  const clean: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const defaultValue = (DEFAULT_CONFIG as unknown as Record<string, unknown>)[key];
+    if (defaultValue === undefined) continue; // unknown key, ignore
+    const expectedType = typeof defaultValue;
+    const actualType = typeof value;
+    if (actualType !== expectedType) {
+      configWarn(`config:${key}:type`, `~/.meet/config.json: "${key}" expected ${expectedType}, got ${actualType} — using default`);
+      continue;
+    }
+    if (expectedType === "number" && !Number.isFinite(value as number)) {
+      configWarn(`config:${key}:finite`, `~/.meet/config.json: "${key}" is not a finite number — using default`);
+      continue;
+    }
+    clean[key] = value;
+  }
+  return clean as Partial<Config>;
+}
+
 export function loadConfig(overrides?: Partial<Config>): Config {
   const configPath = expandPath("~/.meet/config.json");
-  let fileConfig: Partial<Config> = {};
   if (existsSync(configPath)) {
-    const raw = readFileSync(configPath, "utf-8");
-    fileConfig = JSON.parse(raw);
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      lastValidFileConfig = sanitizeFileConfig(parsed);
+    } catch (err) {
+      configWarn("config:parse", `~/.meet/config.json is invalid (${err instanceof Error ? err.message : String(err)}) — keeping last known-good config`);
+    }
   }
-  return { ...DEFAULT_CONFIG, ...fileConfig, ...overrides };
+  return { ...DEFAULT_CONFIG, ...lastValidFileConfig, ...overrides };
 }
 
 // Returns a function that logs each distinct error `key` to stderr once,
