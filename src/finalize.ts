@@ -683,9 +683,12 @@ export async function finalizeSession(
 
     let fallbackEntries: TranscriptEntry[] = [];
     try {
-      // Fallback: try to parse transcript.md if entries.jsonl is missing/incomplete
+      // Always parse transcript.md when present, not just when entries.jsonl is
+      // completely empty — a crashed/interrupted run can leave entries.jsonl
+      // non-empty but missing entries markdown still has (buildBaseResults'
+      // JSONL-over-markdown precedence makes this a safe merge either way).
       const existing = await readFile(session.outputFile, "utf-8").catch(() => "");
-      if (existing && storedRecords.length === 0) {
+      if (existing) {
         fallbackEntries = parseTranscriptEntries(existing, { chunkDurationSeconds: session.chunkDurationSeconds, startedAt: session.startedAt });
       }
     } catch {}
