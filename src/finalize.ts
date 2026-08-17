@@ -751,15 +751,19 @@ export async function finalizeSession(
       await progressWriter.update(makeProgress("write", entries.length, entries.length));
       await progressWriter.forceFlush();
 
-      if (entries.length > 0) {
-        const effectiveBaseEntries = droppedEchoKeys.size > 0
-          ? baseEntries.filter((e) => !droppedEchoKeys.has(`${e.source}-${String(e.chunkIndex).padStart(3, "0")}`))
-          : baseEntries;
-        if (effectiveBaseEntries.length > 0 && entries.length < effectiveBaseEntries.length) {
-          warn(`Final pass produced ${entries.length} entries vs ${effectiveBaseEntries.length} non-silent live/stored entries (excluding ${droppedEchoKeys.size} echo-filtered), keeping live`);
-          entries = baseEntries;
-        }
+      // Safety net runs even when the final pass returned zero entries (total
+      // failure) — previously scoped inside `if (entries.length > 0)`, so the
+      // worst case it exists to catch was exactly the one case it never ran for,
+      // and a total final-pass failure fell straight through to WAV cleanup.
+      const effectiveBaseEntries = droppedEchoKeys.size > 0
+        ? baseEntries.filter((e) => !droppedEchoKeys.has(`${e.source}-${String(e.chunkIndex).padStart(3, "0")}`))
+        : baseEntries;
+      if (effectiveBaseEntries.length > 0 && entries.length < effectiveBaseEntries.length) {
+        warn(`Final pass produced ${entries.length} entries vs ${effectiveBaseEntries.length} non-silent live/stored entries (excluding ${droppedEchoKeys.size} echo-filtered), keeping live`);
+        entries = baseEntries;
+      }
 
+      if (entries.length > 0) {
         await progressWriter.update(makeProgress("diarize", 0, 0));
         const { entries: diarizedEntries, segments, speakersRecord, labelOverrides } = await runDiarizationStep(session, config, entries, warn, log);
         entries = diarizedEntries;
