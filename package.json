@@ -1,5 +1,5 @@
 {
-  "name": "meet",
+  "name": "@dimasmagadan/meet",
   "version": "0.1.0",
   "description": "Local meeting transcription tool for macOS (Apple Silicon) — records mic + system audio, transcribes with whisper.cpp, outputs timestamped markdown",
   "author": "Dmitrii Diakonov",
