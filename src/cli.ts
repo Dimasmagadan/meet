@@ -196,13 +196,13 @@ export function createProgram(): Command {
     .argument("<files...>", "Audio/video files to transcribe")
     .option("--title <title>", "Meeting title (single file only)")
     .option("--model <model>", "Model: small or medium", "medium")
-    .option("--no-index", "Skip index generation")
+    .option("--index", "Generate index.md via opencode (sends the full transcript to your configured opencode provider, which may be remote)")
     .option("--date <date>", "Recording date (YYYY-MM-DD)")
     .action(async (files: string[], opts: { title?: string; model?: string; index?: boolean; date?: string }) => {
       const importOpts: ImportOptions = {
         title: opts.title,
         model: opts.model === "small" ? "small" : "medium",
-        noIndex: opts.index === false,
+        index: opts.index === true,
         date: opts.date,
       };
       await transcribeImport(files, importOpts);

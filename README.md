@@ -108,7 +108,7 @@ meet bin-path                   Print resolved runner paths as JSON (used by the
 |--------|-------------|---------|
 | `--title <title>` | Meeting title (single file only) | from filename |
 | `--model <model>` | Model: `small` or `medium` | `medium` |
-| `--no-index` | Skip index.md generation | off |
+| `--index` | Generate index.md via opencode (sends the full transcript to your configured opencode provider, which may be remote) | off |
 | `--date <date>` | Recording date (YYYY-MM-DD) | file mtime |
 
 ```bash

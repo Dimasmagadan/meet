@@ -15,7 +15,9 @@ import { runOpencodeIndex } from "./opencode.js";
 export interface ImportOptions {
   title?: string;
   model?: "small" | "medium";
-  noIndex?: boolean;
+  // Opt-in (default off): index generation sends the full transcript to the
+  // user's configured opencode provider, which may be a remote LLM.
+  index?: boolean;
   date?: string;
 }
 
@@ -204,9 +206,9 @@ async function processFile(
       console.log(chalk.gray(`${prefix}Tags: batch-transcription`));
     }
 
-    if (!isBatch && !options.noIndex && entries.length > 0) {
+    if (!isBatch && options.index && entries.length > 0) {
       try {
-        console.log(chalk.cyan(`${prefix}Creating index.md...`));
+        console.log(chalk.cyan(`${prefix}Creating index.md — sending transcript to opencode (${config.opencodeBin})...`));
         const indexMarkdown = await runOpencodeIndex(config, outputFile, title);
         const indexPath = join(meetingDir, "index.md");
         await writeFile(indexPath, indexMarkdown, "utf-8");

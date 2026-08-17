@@ -86,7 +86,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 
 - **File import** — `meet transcribe <files...>` converts m4a/mp4/wav/etc. via ffmpeg and transcribes the whole file for better context.
 - **Batch** — `meet transcribe *.m4a` transcribes many files; titles from filenames; auto-tagged `batch-transcription`.
-- **Import-side index** — `index.md` (Summary / Decisions / Action Items) for imports; skip with `--no-index`.
+- **Import-side index** — `index.md` (Summary / Decisions / Action Items) for imports; opt in with `--index` (sends the transcript to your configured opencode provider, which may be remote — off by default).
 <!-- /FEATURES:import-batch -->
 
 <!-- FEATURES:reliability -->
