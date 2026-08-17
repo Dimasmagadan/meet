@@ -56,9 +56,10 @@ export function createProgram(): Command {
 
   program
     .command("setup")
-    .description("Check dependencies and configuration")
-    .action(async () => {
-      await runSetup();
+    .description("Check dependencies and configuration (read-only; use --enhanced to also install optional ~1GB diarization/Parakeet models)")
+    .option("--enhanced", "Also download the optional diarization + Parakeet CoreML models (~1 GB, one-time)")
+    .action(async (opts: { enhanced?: boolean }) => {
+      await runSetup({ enhanced: opts.enhanced ?? false });
     });
 
   program
@@ -396,7 +397,7 @@ function checkSetup(config: Config, mode: string): string[] {
   return errors;
 }
 
-async function runSetup() {
+async function runSetup(opts: { enhanced: boolean } = { enhanced: false }) {
   const config = loadConfig();
 
   console.log("Checking dependencies...\n");
@@ -443,11 +444,15 @@ async function runSetup() {
   const analysisBin = resolveAnalysisBin(config);
   if (existsSync(analysisBin)) {
     console.log(chalk.green("  AudioAnalysis: ") + analysisBin);
-    console.log(chalk.gray("    Downloading diarization + Parakeet CoreML models, one-time, ~1 GB..."));
-    try {
-      execFileSync(analysisBin, ["models", "--ensure"], { stdio: "inherit" });
-    } catch {
-      console.log(chalk.yellow("    Model download/verify failed (speaker diarization and Parakeet A/B pass will be skipped until fixed)"));
+    if (opts.enhanced) {
+      console.log(chalk.gray("    Downloading diarization + Parakeet CoreML models, one-time, ~1 GB..."));
+      try {
+        execFileSync(analysisBin, ["models", "--ensure"], { stdio: "inherit" });
+      } catch {
+        console.log(chalk.yellow("    Model download/verify failed (speaker diarization and Parakeet A/B pass will be skipped until fixed)"));
+      }
+    } else {
+      console.log(chalk.gray("    Diarization + Parakeet CoreML models not verified — read-only check. Run: meet setup --enhanced (downloads ~1 GB)"));
     }
   } else {
     console.log(chalk.yellow("  AudioAnalysis: NOT BUILT (speaker diarization and Parakeet A/B pass disabled, optional)"));
@@ -491,7 +496,7 @@ async function runDoctor(mode: "mic" | "full") {
     const cacheDir = join(homedir(), "Library", "Application Support", "FluidAudio");
     console.log(existsSync(cacheDir)
       ? chalk.green(`  models cache: ${cacheDir}`)
-      : chalk.yellow("  models cache: not found (run meet setup to download, ~1 GB)"));
+      : chalk.yellow("  models cache: not found (run meet setup --enhanced to download, ~1 GB)"));
   } else {
     console.log(chalk.yellow("AudioAnalysis: not built (speaker diarization and Parakeet A/B pass disabled)"));
   }
