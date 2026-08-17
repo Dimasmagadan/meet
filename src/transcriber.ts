@@ -217,18 +217,24 @@ export async function transcribeChunk(
         return;
       }
 
+      let raw: string;
       try {
-        const raw = (await readFile(outFile, "utf-8")).trim();
-        await unlink(outFile).catch(() => {});
-        let text = cleanText(raw);
-        if (text) {
-          const pb = getPhrasebook(config);
-          text = pb.apply(text);
-        }
-        resolve({ chunkIndex, source, text, metrics });
-      } catch {
-        resolve({ chunkIndex, source, text: "", metrics });
+        raw = (await readFile(outFile, "utf-8")).trim();
+      } catch (readErr) {
+        // whisper-cli exited 0 but its output file is missing/unreadable — a
+        // real I/O failure, not silence. Reject so the chunk is tracked as
+        // failed (pipeline.ts marks status "failed") instead of being recorded
+        // as a successful empty transcription and lost from recovery.
+        reject(new Error(`whisper-cli output missing for ${wavPath}: ${readErr instanceof Error ? readErr.message : String(readErr)}`));
+        return;
       }
+      await unlink(outFile).catch(() => {});
+      let text = cleanText(raw);
+      if (text) {
+        const pb = getPhrasebook(config);
+        text = pb.apply(text);
+      }
+      resolve({ chunkIndex, source, text, metrics });
     });
   });
 }
