@@ -264,6 +264,7 @@ All config keys and their defaults live in `DEFAULT_CONFIG` in `src/types.ts` �
 - `opencodeIndexPass` (default `false`) — opt-in since it needs the optional `opencode` CLI and adds up to 180s to finalize
 - `lowerProcessPriority` (default `true`) — fail-opens to no wrapping when `taskpolicy` is absent
 - `liveQueueLagWarnChunks` (default `8`) — visibility only, never drops chunks
+- `phrasebookAllowRegex` (default `false`) — `regex: true` phrasebook rules run unsandboxed with no timeout on the live path; a catastrophic-backtracking pattern can stall transcription. Set `true` to opt back in (e.g. the Bitrix task-URL rule pattern)
 
 **Tags**: Define tags in `tags.md` at project root (used by interactive picker)
 

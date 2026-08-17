@@ -35,17 +35,17 @@ export class Phrasebook {
     this._mtime = mtime;
   }
 
-  static load(path: string): Phrasebook {
+  static load(path: string, allowRegex = false): Phrasebook {
     const expanded = expandPath(path);
     try {
       const stat = statSync(expanded);
-      return Phrasebook._build(expanded, stat.mtimeMs);
+      return Phrasebook._build(expanded, stat.mtimeMs, allowRegex);
     } catch {
       return new Phrasebook(expanded, [], null);
     }
   }
 
-  private static _build(path: string, mtime: number): Phrasebook {
+  private static _build(path: string, mtime: number, allowRegex: boolean): Phrasebook {
     let data: PhrasebookFile;
     try {
       const raw = readFileSync(path, "utf-8");
@@ -63,6 +63,10 @@ export class Phrasebook {
       const flags = entry.caseInsensitive ? "gi" : "g";
       let source: string;
       if (entry.regex) {
+        // Raw regex runs unsandboxed with no timeout in the sequential live
+        // path — a source-length cap alone doesn't stop catastrophic
+        // backtracking, so this stays opt-in (phrasebookAllowRegex).
+        if (!allowRegex) continue;
         if (src.length >= RAW_REGEX_SANITY_CAP) continue;
         source = src;
       } else {
@@ -88,11 +92,11 @@ export class Phrasebook {
     return result;
   }
 
-  maybeReload(): boolean {
+  maybeReload(allowRegex = false): boolean {
     try {
       const stat = statSync(this._path);
       if (this._mtime !== null && stat.mtimeMs === this._mtime) return false;
-      const rebuilt = Phrasebook._build(this._path, stat.mtimeMs);
+      const rebuilt = Phrasebook._build(this._path, stat.mtimeMs, allowRegex);
       this._rules = rebuilt._rules;
       this._mtime = rebuilt._mtime;
       return true;
@@ -113,18 +117,19 @@ function expandPath(p: string): string {
 let _cached: Phrasebook | null = null;
 let _cachedPath: string | null = null;
 
-export function getPhrasebook(config: { phrasebookPath?: string; phrasebookReload?: boolean }): Phrasebook {
+export function getPhrasebook(config: { phrasebookPath?: string; phrasebookReload?: boolean; phrasebookAllowRegex?: boolean }): Phrasebook {
   const path = config.phrasebookPath ?? DEFAULT_PHRASEBOOK_PATH;
   const shouldReload = config.phrasebookReload ?? true;
+  const allowRegex = config.phrasebookAllowRegex ?? false;
 
   if (!_cached || _cachedPath !== path) {
-    _cached = Phrasebook.load(path);
+    _cached = Phrasebook.load(path, allowRegex);
     _cachedPath = path;
     return _cached;
   }
 
   if (shouldReload) {
-    _cached.maybeReload();
+    _cached.maybeReload(allowRegex);
   }
 
   return _cached;

@@ -112,31 +112,39 @@ describe("Phrasebook", () => {
     assert.strictEqual(pb.maybeReload(), false);
   });
 
-  it("regex rule applies raw pattern", () => {
+  it("regex rules are skipped by default (allowRegex not passed) — ReDoS guard", () => {
     const path = join(tmpDir, "p.json");
     writePhrasebook(path, [{ from: "colou?r", to: "COLOR", regex: true }]);
     const pb = Phrasebook.load(path);
+    assert.strictEqual(pb.ruleCount, 0);
+    assert.strictEqual(pb.apply("the colour"), "the colour");
+  });
+
+  it("regex rule applies raw pattern", () => {
+    const path = join(tmpDir, "p.json");
+    writePhrasebook(path, [{ from: "colou?r", to: "COLOR", regex: true }]);
+    const pb = Phrasebook.load(path, true);
     assert.strictEqual(pb.apply("the colour and color"), "the COLOR and COLOR");
   });
 
   it("regex rule resolves $1/$2 backrefs", () => {
     const path = join(tmpDir, "p.json");
     writePhrasebook(path, [{ from: "(foo)\\s+(bar)", to: "$2 $1", regex: true }]);
-    const pb = Phrasebook.load(path);
+    const pb = Phrasebook.load(path, true);
     assert.strictEqual(pb.apply("foo bar here"), "bar foo here");
   });
 
   it("regex rule honors caseInsensitive", () => {
     const path = join(tmpDir, "p.json");
     writePhrasebook(path, [{ from: "hello", to: "HI", regex: true, caseInsensitive: true }]);
-    const pb = Phrasebook.load(path);
+    const pb = Phrasebook.load(path, true);
     assert.strictEqual(pb.apply("HELLO hello HeLLo"), "HI HI HI");
   });
 
   it("regex rule ignores wordBoundary (incompatible with raw pattern)", () => {
     const path = join(tmpDir, "p.json");
     writePhrasebook(path, [{ from: "foo.*bar", to: "X", regex: true, wordBoundary: true }]);
-    const pb = Phrasebook.load(path);
+    const pb = Phrasebook.load(path, true);
     assert.strictEqual(pb.apply("start foobarbaz end"), "start Xbaz end");
   });
 
@@ -146,7 +154,7 @@ describe("Phrasebook", () => {
       { from: "(unclosed", to: "BAD", regex: true },
       { from: "ok", to: "OK", regex: true },
     ]);
-    const pb = Phrasebook.load(path);
+    const pb = Phrasebook.load(path, true);
     assert.strictEqual(pb.ruleCount, 1);
     assert.strictEqual(pb.apply("ok here"), "OK here");
   });
@@ -159,7 +167,7 @@ describe("Phrasebook", () => {
       { from: ok, to: "OK", regex: true },
       { from: tooLong, to: "SKIP", regex: true },
     ]);
-    const pb = Phrasebook.load(path);
+    const pb = Phrasebook.load(path, true);
     assert.strictEqual(pb.ruleCount, 1);
     assert.strictEqual(pb.apply(ok), "OK");
     assert.strictEqual(pb.apply(tooLong), "OKa");
@@ -171,7 +179,7 @@ describe("Phrasebook", () => {
       { from: "a*", to: "X", regex: true },
       { from: "ok", to: "OK", regex: true },
     ]);
-    const pb = Phrasebook.load(path);
+    const pb = Phrasebook.load(path, true);
     assert.strictEqual(pb.ruleCount, 1);
     assert.strictEqual(pb.apply("bcd"), "bcd");
     assert.strictEqual(pb.apply("ok"), "OK");
@@ -180,7 +188,7 @@ describe("Phrasebook", () => {
   it("regex rule with alternation containing empty branch is skipped", () => {
     const path = join(tmpDir, "p.json");
     writePhrasebook(path, [{ from: "foo|", to: "X", regex: true }]);
-    const pb = Phrasebook.load(path);
+    const pb = Phrasebook.load(path, true);
     assert.strictEqual(pb.ruleCount, 0);
     assert.strictEqual(pb.apply("anything"), "anything");
   });
@@ -191,7 +199,7 @@ describe("Phrasebook", () => {
       { from: "join", to: "JOIN", wordBoundary: true },
       { from: "(\\d+)-(\\d+)", to: "$2/$1", regex: true },
     ]);
-    const pb = Phrasebook.load(path);
+    const pb = Phrasebook.load(path, true);
     assert.strictEqual(pb.apply("join 12-34"), "JOIN 34/12");
   });
 
@@ -205,7 +213,7 @@ describe("Phrasebook", () => {
         caseInsensitive: true,
       },
     ]);
-    const pb = Phrasebook.load(path);
+    const pb = Phrasebook.load(path, true);
     const expected = "посмотри номер задачи https://sam.optimacros.com/workgroups/group/64/tasks/task/view/1234/ пожалуйста";
     assert.strictEqual(pb.apply("посмотри номер задачи 1234 пожалуйста"), expected);
   });
@@ -220,7 +228,7 @@ describe("Phrasebook", () => {
         caseInsensitive: true,
       },
     ]);
-    const pb = Phrasebook.load(path);
+    const pb = Phrasebook.load(path, true);
     const out = pb.apply("номер задачи в битриксе 5678 готов");
     assert.match(out, /^номер задачи в битриксе https:\/\/sam\.optimacros\.com.+5678\/ готов$/);
   });

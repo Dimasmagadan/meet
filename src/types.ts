@@ -76,6 +76,11 @@ export interface Config {
   noTextTimeoutMinutes: number;
   phrasebookPath: string;
   phrasebookReload: boolean;
+  // Raw regex rules (entry.regex: true) run unsandboxed on the live
+  // transcription path with no timeout — a catastrophic-backtracking pattern
+  // can stall the whole pipeline. Off by default; literal/word-boundary rules
+  // (escaped, so no backtracking risk) are unaffected by this flag.
+  phrasebookAllowRegex: boolean;
   vadEnabled: boolean;
   vadBin: string;
   vadMinSpeechMs: number;
@@ -215,6 +220,7 @@ export const DEFAULT_CONFIG: Config = {
   noTextTimeoutMinutes: 10,
   phrasebookPath: DEFAULT_PHRASEBOOK_PATH,
   phrasebookReload: true,
+  phrasebookAllowRegex: false,
   vadEnabled: false,
   vadBin: "",
   vadMinSpeechMs: 250,
