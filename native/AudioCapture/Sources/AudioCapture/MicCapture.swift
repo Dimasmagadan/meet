@@ -1,4 +1,5 @@
 import AVFoundation
+import Dispatch
 
 @available(macOS 14.0, *)
 class MicCapture {
@@ -17,6 +18,11 @@ class MicCapture {
     private var restartCount = 0
     private var lastRestartTime: Date = Date.distantPast
     var paused = false
+    // wavWriter is a mutating struct touched from the real-time audio-tap
+    // callback (processBuffer) and from stop()/restart on the control thread.
+    // All access is serialized through this queue instead of racing directly —
+    // file I/O also no longer runs on the real-time thread.
+    private let writerQueue = DispatchQueue(label: "miccapture.writer")
 
     // Phase-carrying resampler state (P0, SPEC_MIC_ECHO_FILTERING_2026-08-05
     // root cause B.3) — carried across buffers instead of restarting at 0
@@ -32,8 +38,10 @@ class MicCapture {
     }
 
     func start() throws {
-        if !wavWriter.isChunkOpen {
-            try wavWriter.startChunk()
+        try writerQueue.sync {
+            if !wavWriter.isChunkOpen {
+                try wavWriter.startChunk()
+            }
         }
         installConfigurationObserverIfNeeded()
         try startEngine(reason: restartCount == 0 ? "initial" : "restart")
@@ -172,16 +180,22 @@ class MicCapture {
 
         let resampled = linearInterpolate(monoSamples, ratio: ratio)
 
-        do {
-            let chunkReady = try wavWriter.appendSamplesIfNeeded(resampled)
-            if chunkReady {
-                if let name = try wavWriter.finalizeChunk() {
-                    onChunkFinalized(name)
+        // File I/O and wavWriter mutation move off the real-time audio thread
+        // and onto the serial writer queue, which also orders this against
+        // stop()'s final flush instead of racing it directly.
+        writerQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let chunkReady = try self.wavWriter.appendSamplesIfNeeded(resampled)
+                if chunkReady {
+                    if let name = try self.wavWriter.finalizeChunk() {
+                        self.onChunkFinalized(name)
+                    }
+                    try self.wavWriter.startChunk()
                 }
-                try wavWriter.startChunk()
+            } catch {
+                fputs("MicCapture write error: \(error)\n", stderr)
             }
-        } catch {
-            fputs("MicCapture write error: \(error)\n", stderr)
         }
     }
 
@@ -242,10 +256,15 @@ class MicCapture {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
 
-        do {
-            return try wavWriter.flushPartial()
-        } catch {
-            return nil
+        // Synchronous dispatch onto the same serial queue drains any append/
+        // finalize/startChunk block a still-in-flight tap callback already
+        // enqueued before flushing, instead of racing it.
+        return writerQueue.sync {
+            do {
+                return try wavWriter.flushPartial()
+            } catch {
+                return nil
+            }
         }
     }
 }

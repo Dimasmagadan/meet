@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import CoreAudio
 import AudioToolbox
 
@@ -25,6 +26,11 @@ class SystemAudioCapture {
     private var lastRestartTime: Date = Date.distantPast
     private(set) var lastBufferTime: Date = Date()
     var paused = false
+    // wavWriter is a mutating struct touched from the real-time IOProc
+    // callback (handleInput) and from stop()/restart on the control thread.
+    // All access is serialized through this queue instead of racing directly —
+    // file I/O also no longer runs on the real-time thread.
+    private let writerQueue = DispatchQueue(label: "sysaudiocapture.writer")
 
     // Phase-carrying resampler state (P0, SPEC_MIC_ECHO_FILTERING_2026-08-05
     // root cause B.3) — carried across buffers instead of restarting at 0
@@ -98,8 +104,10 @@ class SystemAudioCapture {
             formatLogged = true
         }
 
-        if !wavWriter.isChunkOpen {
-            try wavWriter.startChunk()
+        try writerQueue.sync {
+            if !wavWriter.isChunkOpen {
+                try wavWriter.startChunk()
+            }
         }
 
         var newIOProcID: AudioDeviceIOProcID?
@@ -143,16 +151,22 @@ class SystemAudioCapture {
         let ratio = sourceSampleRate / Double(targetSampleRate)
         let resampled = linearInterpolate(monoSamples, ratio: ratio)
 
-        do {
-            let chunkReady = try wavWriter.appendSamplesIfNeeded(resampled)
-            if chunkReady {
-                if let name = try wavWriter.finalizeChunk() {
-                    onChunkFinalized(name)
+        // File I/O and wavWriter mutation move off the real-time IOProc thread
+        // and onto the serial writer queue, which also orders this against
+        // stop()'s final flush instead of racing it directly.
+        writerQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let chunkReady = try self.wavWriter.appendSamplesIfNeeded(resampled)
+                if chunkReady {
+                    if let name = try self.wavWriter.finalizeChunk() {
+                        self.onChunkFinalized(name)
+                    }
+                    try self.wavWriter.startChunk()
                 }
-                try wavWriter.startChunk()
+            } catch {
+                fputs("SystemAudioCapture write error: \(error)\n", stderr)
             }
-        } catch {
-            fputs("SystemAudioCapture write error: \(error)\n", stderr)
         }
     }
 
@@ -239,7 +253,12 @@ class SystemAudioCapture {
     func stop() {
         isRunning = false
         teardownTap()
-        _ = try? wavWriter.flushPartial()
+        // Synchronous dispatch onto the same serial queue drains any append/
+        // finalize/startChunk block a still-in-flight IOProc callback already
+        // enqueued before flushing, instead of racing it.
+        writerQueue.sync {
+            _ = try? wavWriter.flushPartial()
+        }
     }
 
     private static func processObjectID(pid: pid_t) throws -> AudioObjectID {
