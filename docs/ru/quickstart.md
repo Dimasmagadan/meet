@@ -7,7 +7,7 @@ description: Установите meet на macOS (Apple Silicon) и запиш�
 
 # Быстрый старт
 
-<p class="lead">Только macOS на Apple Silicon. Потребуются Homebrew, Xcode Command Line Tools и примерно 500 МБ под live-модель.</p>
+<p class="lead">Только macOS на Apple Silicon — macOS 14.2+ для полного режима (микрофон + системный звук), 14.0+ только для микрофона. Потребуются Homebrew, Xcode Command Line Tools и примерно 500 МБ под live-модель.</p>
 
 ## 1. Установите зависимости
 

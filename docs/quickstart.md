@@ -6,7 +6,7 @@ description: Install meet on macOS (Apple Silicon) and record your first meeting
 
 # Quick Start
 
-<p class="lead">macOS on Apple Silicon only. You'll need Homebrew, the Xcode Command Line Tools, and roughly 500 MB for the live model.</p>
+<p class="lead">macOS on Apple Silicon only — macOS 14.2+ for full mode (mic + system audio), 14.0+ for mic-only. You'll need Homebrew, the Xcode Command Line Tools, and roughly 500 MB for the live model.</p>
 
 ## 1. Install dependencies
 

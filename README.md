@@ -27,7 +27,7 @@ Local meeting transcription for macOS (Apple Silicon). Records mic + system audi
 
 ## Prerequisites
 
-- macOS on Apple Silicon (arm64)
+- macOS on Apple Silicon (arm64) — macOS 14.2+ for full mode (mic + system audio); mic-only mode works on 14.0+
 - [Homebrew](https://brew.sh)
 - Xcode Command Line Tools (`xcode-select --install`)
 
@@ -433,12 +433,13 @@ native/MenuBar/                 Dock-less Meet.app menu-bar UI
 ## Known Limitations
 
 - **macOS Apple Silicon only** — no Intel, no Linux, no Windows
+- **Full mode (mic + system audio) requires macOS 14.2+** — the Core Audio process tap it's built on doesn't exist on older macOS; mic-only mode (`--mic`) works on macOS 14.0+
 - **Per-session speaker identity** — diarization labels "Speaker N" within one meeting only; no cross-meeting voice fingerprinting, so the same person gets renamed per meeting
 - **Diarization is a final-pass feature** — during live recording, system audio is still "Others"; "Speaker N" labels only appear after finalization
 - **Foreground recording** — `meet start` blocks the terminal (background mode planned)
 - **No `meet stop`** — stop with `q` key or Ctrl-C
 - **No `meet recover`** — stale sessions are detected but not auto-recovered
-- **Screen Recording permission required** — for system audio capture in full mode
+- **"System Audio Recording Only" permission required** — for system audio capture in full mode (System Settings → Privacy & Security → Audio Recording; the Core Audio process tap approach needs only this, not Screen Recording)
 
 ## Contributing
 
