@@ -106,6 +106,26 @@ export function getOutputPath(config: Config, title: string, startedAt: Date): s
   return join(getOutputDir(config, title, startedAt), "transcript.md");
 }
 
+// Atomically claims a meeting output directory: minute-precision timestamp +
+// title slug collide whenever two starts/imports land in the same clock
+// minute with the same title. `mkdir` without `recursive` fails EEXIST for
+// an already-claimed path, so each collision just tries the next numeric
+// suffix instead of silently reusing (and overwriting) another meeting's dir.
+export async function reserveOutputDir(config: Config, title: string, startedAt: Date): Promise<string> {
+  const baseDir = expandPath(config.outputDir);
+  await mkdir(baseDir, { recursive: true });
+  const base = `${formatStartTime(startedAt)}-${generateSlug(title)}`;
+  for (let n = 1; ; n++) {
+    const dir = join(baseDir, n === 1 ? base : `${base}-${n}`);
+    try {
+      await mkdir(dir);
+      return dir;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
+    }
+  }
+}
+
 export function getCaptureBinPath(config?: Config): string {
   if (config?.captureBin) return expandPath(config.captureBin);
   const repoRoot = resolve(import.meta.dirname, "..");

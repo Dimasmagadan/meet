@@ -1,8 +1,10 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { generateSlug, formatStartTime, getOutputDir, getOutputPath, expandPath, findStaleSessions, getSessionsDir } from "./storage.js";
+import { generateSlug, formatStartTime, getOutputDir, getOutputPath, reserveOutputDir, expandPath, findStaleSessions, getSessionsDir } from "./storage.js";
 import { join } from "node:path";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import type { Session } from "./types.js";
 
 describe("generateSlug", () => {
@@ -91,6 +93,25 @@ describe("getOutputPath", () => {
     const result = getOutputPath(config, "Meeting", d);
     assert.ok(result.endsWith("/transcript.md"));
     assert.ok(result.includes("2026-05-13_14-30-meeting"));
+  });
+});
+
+describe("reserveOutputDir", () => {
+  it("appends a numeric suffix on collision instead of reusing the dir", async () => {
+    const base = await mkdtemp(join(tmpdir(), "meet-reserve-"));
+    const config = { outputDir: base, chunkDurationSeconds: 30 } as any;
+    const d = new Date(2026, 4, 13, 14, 30);
+
+    const first = await reserveOutputDir(config, "Standup", d);
+    const second = await reserveOutputDir(config, "Standup", d);
+
+    assert.notStrictEqual(first, second);
+    assert.strictEqual(first, join(base, "2026-05-13_14-30-standup"));
+    assert.strictEqual(second, join(base, "2026-05-13_14-30-standup-2"));
+    assert.ok(existsSync(first));
+    assert.ok(existsSync(second));
+
+    rmSync(base, { recursive: true, force: true });
   });
 });
 

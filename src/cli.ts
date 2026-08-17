@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { loadConfig, getOutputPath, getOutputDir, getCaptureBinPath, resolveAnalysisBin, findStaleSessions, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath, readSession } from "./storage.js";
+import { loadConfig, getOutputDir, reserveOutputDir, getCaptureBinPath, resolveAnalysisBin, findStaleSessions, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath, readSession } from "./storage.js";
 import { Recorder } from "./recorder.js";
 import { makeHeader } from "./assembler.js";
 import { finalizeSession } from "./finalize.js";
@@ -277,10 +277,8 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   await mkdir(sessionDir, { recursive: true });
 
   const startedAt = new Date();
-  const meetingDir = getOutputDir(config, title, startedAt);
-  const outputFile = getOutputPath(config, title, startedAt);
-
-  await mkdir(meetingDir, { recursive: true });
+  const meetingDir = await reserveOutputDir(config, title, startedAt);
+  const outputFile = join(meetingDir, "transcript.md");
 
   const header = makeHeader(title, startedAt.toISOString());
   await writeFile(outputFile, header, "utf-8");

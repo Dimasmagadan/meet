@@ -5,7 +5,7 @@ import { join, basename, extname, resolve } from "node:path";
 import chalk from "chalk";
 import { nanoid } from "nanoid";
 import type { Session, Config, TranscriptEntry } from "./types.js";
-import { loadConfig, expandPath, getOutputDir, getOutputPath, getSessionsDir, resolveWhisperBin } from "./storage.js";
+import { loadConfig, expandPath, reserveOutputDir, getSessionsDir, resolveWhisperBin } from "./storage.js";
 import { cleanText, buildWhisperArgs } from "./transcriber.js";
 import { getPhrasebook } from "./phrasebook.js";
 import { assembleMarkdown } from "./assembler.js";
@@ -127,9 +127,8 @@ async function processFile(
       date = info.mtime;
     }
 
-    const meetingDir = getOutputDir(config, title, date);
-    const outputFile = getOutputPath(config, title, date);
-    await mkdir(meetingDir, { recursive: true });
+    const meetingDir = await reserveOutputDir(config, title, date);
+    const outputFile = join(meetingDir, "transcript.md");
 
     console.log(chalk.gray(`${prefix}Converting to WAV...`));
     const wavPath = join(sessionDir, "full.wav");
