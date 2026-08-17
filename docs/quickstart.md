@@ -14,7 +14,7 @@ description: Install meet on macOS (Apple Silicon) and record your first meeting
 brew install whisper-cpp ffmpeg
 ```
 
-## 2. Clone and build
+## 2. Clone, build, and link the `meet` command
 
 ```bash
 git clone https://github.com/Dimasmagadan/meet.git
@@ -22,12 +22,13 @@ cd meet
 npm install
 npm run build
 ./native/AudioCapture/scripts/build.sh
+npm link   # puts `meet` on PATH
 ```
 
 ## 3. Download the model & verify setup
 
 ```bash
-node dist/main.js setup
+meet setup
 # or: bash scripts/setup.sh
 ```
 
@@ -36,7 +37,7 @@ node dist/main.js setup
 ## 4. Record a meeting
 
 ```bash
-node dist/main.js start "Weekly Standup"
+meet start "Weekly Standup"
 ```
 
 Speak into your mic. During the call:

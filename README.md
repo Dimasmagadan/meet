@@ -39,7 +39,7 @@ Local meeting transcription for macOS (Apple Silicon). Records mic + system audi
 brew install whisper-cpp ffmpeg
 ```
 
-### 2. Clone and build
+### 2. Clone, build, and link the `meet` command
 
 ```bash
 git clone https://github.com/Dimasmagadan/meet.git
@@ -47,12 +47,13 @@ cd meet
 npm install
 npm run build
 ./native/AudioCapture/scripts/build.sh
+npm link   # puts `meet` on PATH; re-run after pulling changes that touch package.json
 ```
 
 ### 3. Download model and verify setup
 
 ```bash
-node dist/main.js setup
+meet setup
 # or use the setup script:
 bash scripts/setup.sh
 ```
@@ -60,7 +61,7 @@ bash scripts/setup.sh
 ### 4. Record a meeting
 
 ```bash
-node dist/main.js start "Weekly Standup"
+meet start "Weekly Standup"
 ```
 
 Speak into your mic. Press `q` or `s` to stop, `p` to pause/resume, `e` to extend the cap by 15 minutes, or `a` to ask opencode.
@@ -123,7 +124,7 @@ meet transcribe video.mp4 --date 2026-05-20 # custom date
 
 ```bash
 npm run build                          # the app needs `meet` on PATH
-npm link                               # makes `meet` available globally (GUI apps have a minimal PATH)
+npm link                               # if not already done in Quick Start — GUI apps have a minimal PATH
 sh native/MenuBar/scripts/build-app.sh # swift build → assemble Meet.app → ad-hoc codesign
 open native/MenuBar/.build/Meet.app    # NOT the raw binary — LaunchServices must register the bundle
 ```
