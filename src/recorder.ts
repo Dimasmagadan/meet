@@ -29,6 +29,7 @@ export class Recorder {
   private opts: RecorderOptions;
   private pipeline: Pipeline;
   private captureProcess: ChildProcess | null = null;
+  private captureExited = false;
   private micChunks = 0;
   private sysChunks = 0;
   private autoStopReason: "max_duration" | "no_text_timeout" | null = null;
@@ -199,6 +200,7 @@ export class Recorder {
       });
 
       this.captureProcess.on("exit", (code) => {
+        this.captureExited = true;
         if (code && code !== 0) {
           console.log(chalk.red(`AudioCapture exited with code ${code}`));
         }
@@ -210,7 +212,7 @@ export class Recorder {
   }
 
   private async stopCapture(forceAfterMs = 5000): Promise<void> {
-    if (!this.captureProcess || this.captureProcess.killed) return;
+    if (!this.captureProcess || this.captureExited) return;
     this.captureProcess.kill("SIGINT");
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
