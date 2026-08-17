@@ -94,6 +94,21 @@ function summarizeTalkTime(speakers: Array<{ label: string; seconds: number }>):
   return { me, others, speakerCount };
 }
 
+export function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// JSON.stringify doesn't escape "</script>", so a title/tag containing it
+// could close the surrounding <script> tag early and inject arbitrary HTML.
+export function jsonForScript(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
 function getWeekKey(date: Date): string {
   const d = new Date(date);
   d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
@@ -151,7 +166,7 @@ export function collectMeetings(): MeetingStats[] {
   return meetings;
 }
 
-function generateHTML(meetings: MeetingStats[]): string {
+export function generateHTML(meetings: MeetingStats[]): string {
   const total = meetings.length;
   const withDuration = meetings.filter(m => m.durationSeconds !== null);
   const avgDuration = withDuration.length > 0
@@ -213,10 +228,10 @@ function generateHTML(meetings: MeetingStats[]): string {
       : "—";
     const dateStr = m.date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
     const timeStr = m.date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-    const tags = m.tags.map(t => `<span class="tag">${t}</span>`).join(" ");
+    const tags = m.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
     const speakers = m.talkTime ? String(m.talkTime.speakerCount || 1) : "—";
-    const repo = m.repo ? `${m.repo.repoName}@${m.repo.headSha}` : "—";
-    return `<tr><td>${dateStr} ${timeStr}</td><td>${m.title}</td><td>${dur}</td><td>${m.wordCount}</td><td>${speakers}</td><td>${repo}</td><td>${tags}</td></tr>`;
+    const repo = m.repo ? `${escapeHtml(m.repo.repoName)}@${escapeHtml(m.repo.headSha)}` : "—";
+    return `<tr><td>${dateStr} ${timeStr}</td><td>${escapeHtml(m.title)}</td><td>${dur}</td><td>${m.wordCount}</td><td>${speakers}</td><td>${repo}</td><td>${tags}</td></tr>`;
   }).join("\n");
 
   const allTags = [...tagCounts.keys()].sort();
@@ -278,7 +293,7 @@ function generateHTML(meetings: MeetingStats[]): string {
   <div class="card">
     <div class="label">Tags Used</div>
     <div class="value">${tagCounts.size}</div>
-    <div class="sub">${allTags.join(", ") || "none"}</div>
+    <div class="sub">${allTags.map(escapeHtml).join(", ") || "none"}</div>
   </div>
   <div class="card">
     <div class="label">Talk Ratio (Me / Others)</div>
@@ -321,8 +336,8 @@ function generateHTML(meetings: MeetingStats[]): string {
 <div class="section-title">All Meetings</div>
 <div class="filter-bar">
   <span style="color:#8b949e; font-size:12px;">Filter by tag:</span>
-  <button class="filter-btn active" onclick="filterTable('all')">All</button>
-  ${allTags.map(t => `<button class="filter-btn" onclick="filterTable('${t}')">${t}</button>`).join("\n  ")}
+  <button class="filter-btn active" data-tag="all">All</button>
+  ${allTags.map(t => `<button class="filter-btn" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join("\n  ")}
 </div>
 <div class="chart-box">
   <table id="meetingsTable">
@@ -338,37 +353,40 @@ const COLORS = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#f778ba'
 
 new Chart(document.getElementById('monthChart'), {
   type: 'bar',
-  data: { labels: ${JSON.stringify(monthLabels)}, datasets: [{ data: ${JSON.stringify(monthValues)}, backgroundColor: '#58a6ff', borderRadius: 4 }] },
+  data: { labels: ${jsonForScript(monthLabels)}, datasets: [{ data: ${jsonForScript(monthValues)}, backgroundColor: '#58a6ff', borderRadius: 4 }] },
   options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#8b949e' }, grid: { display: false } }, y: { ticks: { color: '#8b949e', stepSize: 1 }, grid: { color: '#21262d' } } } }
 });
 
 new Chart(document.getElementById('weekChart'), {
   type: 'bar',
-  data: { labels: ${JSON.stringify(weekLabels)}, datasets: [{ data: ${JSON.stringify(weekValues)}, backgroundColor: '#3fb950', borderRadius: 4 }] },
+  data: { labels: ${jsonForScript(weekLabels)}, datasets: [{ data: ${jsonForScript(weekValues)}, backgroundColor: '#3fb950', borderRadius: 4 }] },
   options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#8b949e', maxRotation: 45 }, grid: { display: false } }, y: { ticks: { color: '#8b949e', stepSize: 1 }, grid: { color: '#21262d' } } } }
 });
 
 new Chart(document.getElementById('tagChart'), {
   type: 'doughnut',
-  data: { labels: ${JSON.stringify(tagLabels)}, datasets: [{ data: ${JSON.stringify(tagValues)}, backgroundColor: COLORS.slice(0, ${tagLabels.length}) }] },
+  data: { labels: ${jsonForScript(tagLabels)}, datasets: [{ data: ${jsonForScript(tagValues)}, backgroundColor: COLORS.slice(0, ${tagLabels.length}) }] },
   options: { responsive: true, plugins: { legend: { position: 'right', labels: { color: '#8b949e' } } } }
 });
 
 new Chart(document.getElementById('hourChart'), {
   type: 'bar',
-  data: { labels: ${JSON.stringify(Array.from({length:24},(_,i)=>String(i).padStart(2,'0')))}, datasets: [{ data: ${JSON.stringify(hourCounts)}, backgroundColor: '#bc8cff', borderRadius: 4 }] },
+  data: { labels: ${jsonForScript(Array.from({length:24},(_,i)=>String(i).padStart(2,'0')))}, datasets: [{ data: ${jsonForScript(hourCounts)}, backgroundColor: '#bc8cff', borderRadius: 4 }] },
   options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#8b949e' }, grid: { display: false } }, y: { ticks: { color: '#8b949e', stepSize: 1 }, grid: { color: '#21262d' } } } }
 });
 
-function filterTable(tag) {
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
-  document.querySelectorAll('#meetingsTable tbody tr').forEach(row => {
-    if (tag === 'all') { row.style.display = ''; return; }
-    const tags = row.querySelector('td:last-child').textContent;
-    row.style.display = tags.includes(tag) ? '' : 'none';
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const tag = btn.dataset.tag;
+    document.querySelectorAll('#meetingsTable tbody tr').forEach(row => {
+      if (tag === 'all') { row.style.display = ''; return; }
+      const tags = row.querySelector('td:last-child').textContent;
+      row.style.display = tags.includes(tag) ? '' : 'none';
+    });
   });
-}
+});
 </script>
 </body>
 </html>`;
