@@ -111,6 +111,34 @@ describe("cleanText", () => {
     assert.ok(!result.includes("лайк"));
   });
 
+  it("removes hallucination: оставляйте комментарии", () => {
+    const result = cleanText("Оставляйте комментарии! Итак, по проекту.");
+    assert.ok(!result.includes("комментари"));
+  });
+
+  it("removes hallucination: оформляйте подписку", () => {
+    const result = cleanText("Оформляйте подписку! Итак, по проекту.");
+    assert.ok(!result.includes("подписку"));
+  });
+
+  // Preservation fixtures (High #8): бытовое/деловое употребление тех же
+  // слов не должно вырезаться — раньше bare /лайк/, /комментарий/, /подписка/
+  // ловили эти слова в любом контексте.
+  it("preserves 'комментарий' in ordinary business text", () => {
+    const text = "Добавь комментарий к задаче в трекере.";
+    assert.strictEqual(cleanText(text), text);
+  });
+
+  it("preserves 'подписка' in ordinary business text", () => {
+    const text = "Мы оформили подписку на сервис в прошлом месяце.";
+    assert.strictEqual(cleanText(text), text);
+  });
+
+  it("preserves 'лайк' when not part of the call-to-action phrase", () => {
+    const text = "Слово лайк тут используется просто как пример термина.";
+    assert.strictEqual(cleanText(text), text);
+  });
+
   it("returns empty for very short fragments", () => {
     assert.strictEqual(cleanText(""), "");
     assert.strictEqual(cleanText("а"), "");

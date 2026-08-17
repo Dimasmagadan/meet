@@ -30,9 +30,16 @@ const HALLUCINATION_PATTERNS: RegExp[] = [
   /встреча\s+на\s+русском\s+языке/i,
   /консультация.*вопросы.*ответы/i,
   /обсуждение.*вопросы.*ответы/i,
-  /лайк/i,
-  /комментарий/i,
-  /подписка/i,
+  // Bare /лайк/, /комментарий/, /подписка/ used to match those words in any
+  // context — including legitimate business text ("добавь комментарий к
+  // задаче", "оформили подписку на сервис"). Restricted to the actual
+  // YouTube/streaming-outro phrasing whisper hallucinates, so a real meeting
+  // discussing comments/subscriptions survives.
+  /(ставь|поставь|стави)(те)?\s+лайк/i,
+  /оставляйте?\s+комментари/i,
+  /пишите\s+комментари(и|ях)\s+(ниже|под)/i,
+  /оформ(ляйте|ите)\s+подписку/i,
+  /не\s+забудьте\s+подписаться/i,
 ];
 
 const NOISE_TOKENS: RegExp[] = [
