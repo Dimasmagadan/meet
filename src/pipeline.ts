@@ -36,6 +36,12 @@ export class Pipeline {
   private healthCheckCounter = 0;
   private warn = createWarnOnce();
   private queueDrained: (() => void) | null = null;
+  // The chunk currently being transcribed has already left `queue` (shifted
+  // in processNext) but isn't yet in processedChunks (only pushed once the
+  // transcribe call resolves). Without tracking it, stop()'s rescan() sees
+  // neither "in queue" nor "done" and re-enqueues the same chunk for a
+  // second transcription. isProcessed() treats this key as claimed too.
+  private inFlightKey: string | null = null;
 
   constructor(session: Session) {
     this.session = session;
@@ -125,6 +131,7 @@ export class Pipeline {
   }
 
   private isProcessed(key: string): boolean {
+    if (key === this.inFlightKey) return true;
     return this.session.processedChunks.some(
       (c) => `${c.source}-${String(c.index).padStart(3, "0")}` === key && c.status === "done"
     );
@@ -153,8 +160,10 @@ export class Pipeline {
 
     const item = this.queue.shift()!;
     const wavPath = join(this.session.sessionDir, item.wav);
+    this.inFlightKey = `${item.source}-${String(item.index).padStart(3, "0")}`;
 
     if (!existsSync(wavPath)) {
+      this.inFlightKey = null;
       this.processing = false;
       if (trackProgress) {
         this.drainTotal--;
@@ -244,6 +253,7 @@ export class Pipeline {
       trackProgress({ done: this.completedDuringDrain, total: this.drainTotal });
     }
 
+    this.inFlightKey = null;
     this.processing = false;
     if (this.queue.length > 0) {
       this.processNext();

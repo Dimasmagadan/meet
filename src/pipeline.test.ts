@@ -1,8 +1,10 @@
-import { test } from "node:test";
+import { test, describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { Pipeline } from "./pipeline.js";
+import type { Session } from "./types.js";
 
 // P1 rescope acceptance check: the LIVE transcription path (pipeline.ts) must
 // remain UN-gated. The spec is explicit that gating it would be self-defeating
@@ -37,4 +39,54 @@ test("pipeline live path is un-gated (P1 rescope seam guard)", () => {
     !/makeDeadline/.test(pipelineSrc),
     "pipeline.ts must not create a pressure deadline — live path is self-throttling",
   );
+});
+
+function makeSession(): Session {
+  return {
+    id: "test",
+    title: "Test",
+    mode: "mic",
+    startedAt: new Date().toISOString(),
+    chunkDurationSeconds: 15,
+    sessionDir: "/tmp/does-not-exist",
+    outputFile: "/tmp/does-not-exist/transcript.md",
+    capturePid: null,
+    status: "recording",
+    processedChunks: [],
+    lastError: null,
+    autoStopReason: null,
+    latestProcessedOffsetSeconds: 0,
+    lastMeaningfulTextAtOffsetSeconds: null,
+    hasMeaningfulText: false,
+  };
+}
+
+// Regression for the stop()-during-transcription race: a chunk that has
+// already left `queue` (shifted by processNext) but hasn't yet landed in
+// processedChunks (only pushed once transcribeChunk resolves) used to look
+// unprocessed to rescan()/enqueue(), so stop()'s rescan re-queued it for a
+// second transcription. inFlightKey closes that window.
+describe("Pipeline in-flight tracking", () => {
+  it("isProcessed() treats the in-flight key as claimed", () => {
+    const pipeline = new Pipeline(makeSession()) as any;
+    assert.strictEqual(pipeline.isProcessed("mic-001"), false);
+    pipeline.inFlightKey = "mic-001";
+    assert.strictEqual(pipeline.isProcessed("mic-001"), true);
+  });
+
+  it("enqueue() skips re-adding a chunk that's currently in-flight", () => {
+    const pipeline = new Pipeline(makeSession()) as any;
+    pipeline.inFlightKey = "mic-001";
+    pipeline.enqueue("mic", 1, "mic-001.wav");
+    assert.strictEqual(pipeline.queue.length, 0);
+  });
+
+  it("enqueue() re-allows the chunk once in-flight clears without a done record", () => {
+    const pipeline = new Pipeline(makeSession()) as any;
+    pipeline.drainMode = true; // isolate enqueue's own logic from processNext auto-trigger
+    pipeline.inFlightKey = "mic-001";
+    pipeline.inFlightKey = null; // transcription failed, not marked "done"
+    pipeline.enqueue("mic", 1, "mic-001.wav");
+    assert.strictEqual(pipeline.queue.length, 1);
+  });
 });
