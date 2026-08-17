@@ -152,8 +152,6 @@ export function filterEntries(
       }
 
       if (isAcknowledgement(mic.text)) continue;
-
-      if (micTokens.length <= 3) continue;
     }
 
     kept.push(mic);

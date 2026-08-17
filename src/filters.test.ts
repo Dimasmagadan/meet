@@ -178,14 +178,16 @@ describe("filterEntries", () => {
     assert.strictEqual(filtered[0].source, "mic");
   });
 
-  it("drops mic with 3 or fewer words when sys has text", () => {
+  it("keeps a short but distinct mic reply when sys has text (no ack/echo/duplicate evidence)", () => {
+    // Previously dropped unconditionally for being <=3 tokens even though it's
+    // none of duplicate, echo, or acknowledgement — killed real short replies
+    // like "Нет, не согласен". Short text is only dropped with actual evidence.
     const results = [
       makeResult("sys", 1, "Давайте начнем с обзора"),
       makeResult("mic", 1, "начали работу сегодня", -30),
     ];
     const filtered = filterEntries(results, config);
-    assert.strictEqual(filtered.length, 1);
-    assert.strictEqual(filtered[0].source, "sys");
+    assert.strictEqual(filtered.length, 2);
   });
 
   it("drops mic echo whose leading sentence lives in sys N-1 (row 2)", () => {
