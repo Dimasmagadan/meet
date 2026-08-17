@@ -6,6 +6,7 @@ import { makeHeader } from "./assembler.js";
 import { finalizeSession } from "./finalize.js";
 import { showStatus } from "./status.js";
 import { isActiveRecording, readActiveRecordingLock, acquireActiveRecordingLock, clearActiveRecordingLock, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock } from "./locks.js";
+import { chunkFileRegex } from "./regex-utils.js";
 import { transcribeImport, type ImportOptions } from "./import.js";
 import { renameSpeaker } from "./speaker-rename.js";
 import { runSpeakersSuggest } from "./speakers-suggest.js";
@@ -594,8 +595,8 @@ async function runDoctor(mode: "mic" | "full") {
   });
 
   const files = await readdir(sessionDir);
-  const micFiles = files.filter((f) => /^mic-\d{3}\.wav$/.test(f)).sort();
-  const sysFiles = files.filter((f) => /^sys-\d{3}\.wav$/.test(f)).sort();
+  const micFiles = files.filter((f) => chunkFileRegex("mic").test(f)).sort();
+  const sysFiles = files.filter((f) => chunkFileRegex("sys").test(f)).sort();
 
   const micMetrics = await Promise.all(micFiles.map((f) => analyzeWavFile(join(sessionDir, f))));
   const sysMetrics = await Promise.all(sysFiles.map((f) => analyzeWavFile(join(sessionDir, f))));
@@ -885,7 +886,7 @@ async function runSpeakersEnrollSelf(seconds: number) {
 
   try {
     const files = await readdir(sessionDir);
-    const micFiles = files.filter((f) => /^mic-\d{3}\.wav$/.test(f));
+    const micFiles = files.filter((f) => chunkFileRegex("mic").test(f));
     if (micFiles.length === 0) {
       console.log(chalk.red("No mic audio captured."));
       process.exit(1);

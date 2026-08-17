@@ -19,8 +19,12 @@ describe("parseChunkFilename", () => {
     assert.deepStrictEqual(parseChunkFilename("mic-009.wav"), { source: "mic", index: 9 });
   });
 
-  it("rejects mic-1.wav (non-zero-padded)", () => {
-    assert.strictEqual(parseChunkFilename("mic-1.wav"), null);
+  it("parses mic-1.wav (non-zero-padded)", () => {
+    assert.deepStrictEqual(parseChunkFilename("mic-1.wav"), { source: "mic", index: 1 });
+  });
+
+  it("parses mic-1000.wav (Swift's %03d grows past 3 digits for long recordings)", () => {
+    assert.deepStrictEqual(parseChunkFilename("mic-1000.wav"), { source: "mic", index: 1000 });
   });
 
   it("rejects foo-001.wav", () => {

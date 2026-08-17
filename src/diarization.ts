@@ -6,6 +6,7 @@ import type { Config, TranscriptEntry } from "./types.js";
 import { resolveAnalysisBin } from "./storage.js";
 import { makeWavHeader } from "./audio-metrics.js";
 import { applyQoS } from "./process-priority.js";
+import { chunkFileRegex, sortChunkFilenames } from "./regex-utils.js";
 
 const SAMPLE_RATE = 16000;
 const WAV_HEADER_SIZE = 44;
@@ -40,8 +41,7 @@ async function concatChunksImpl(
   outName: string,
 ): Promise<{ wavPath: string; offsets: Map<number, ChunkOffset> }> {
   const files = await readdir(sessionDir);
-  const chunkRe = new RegExp(`^${prefix}-\\d{3}\\.wav$`);
-  const chunkFiles = files.filter((f) => chunkRe.test(f)).sort();
+  const chunkFiles = sortChunkFilenames(files.filter((f) => chunkFileRegex(prefix).test(f)));
 
   const offsets = new Map<number, ChunkOffset>();
   const outPath = join(sessionDir, outName);
@@ -54,7 +54,7 @@ async function concatChunksImpl(
   // Placeholder header, rewritten with the final size once all data is copied.
   out.write(makeWavHeader(0, SAMPLE_RATE, 1, 16));
 
-  const indexRe = new RegExp(`^${prefix}-(\\d{3})\\.wav$`);
+  const indexRe = chunkFileRegex(prefix, true);
   try {
     for (const file of chunkFiles) {
       const match = indexRe.exec(file);

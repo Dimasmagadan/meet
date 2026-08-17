@@ -36,7 +36,7 @@ export function parseCaptureEvent(line: string): CaptureEvent | null {
 }
 
 export function parseLegacyChunkFinalized(line: string): { source: "mic" | "sys"; filename: string } | null {
-  const match = line.match(/^finalized:\s*(mic|sys)-\d{3}\.wav$/);
+  const match = line.match(/^finalized:\s*(mic|sys)-\d+\.wav$/);
   if (!match) return null;
   const filename = line.replace(/^finalized:\s*/, "").trim();
   const source = filename.startsWith("mic") ? "mic" as const : "sys" as const;

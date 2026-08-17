@@ -7,6 +7,7 @@ import { getPhrasebook } from "./phrasebook.js";
 import { getVocabulary } from "./vocabulary.js";
 import { resolveWhisperBin, resolveModelPath } from "./storage.js";
 import { applyQoS } from "./process-priority.js";
+import { MIC_OR_SYS_CHUNK_RE } from "./regex-utils.js";
 
 export interface TranscribeResult {
   chunkIndex: number;
@@ -240,7 +241,7 @@ export async function transcribeChunk(
 }
 
 export function parseChunkFilename(filename: string): { source: "mic" | "sys"; index: number } | null {
-  const match = filename.match(/^(mic|sys)-(\d{3})\.wav$/);
+  const match = filename.match(MIC_OR_SYS_CHUNK_RE);
   if (!match) return null;
   return { source: match[1] as "mic" | "sys", index: parseInt(match[2], 10) };
 }

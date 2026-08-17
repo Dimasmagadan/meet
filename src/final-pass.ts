@@ -15,6 +15,7 @@ import {
 import { filterEntries, type FinalChunkResult, type FilterConfig } from "./filters.js";
 import { chunkToTimestamp } from "./assembler.js";
 import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
+import { MIC_OR_SYS_CHUNK_RE, sortChunkFilenames } from "./regex-utils.js";
 
 export async function copyLiveTranscript(outputFile: string): Promise<void> {
   const livePath = outputFile.replace(/transcript\.md$/, "transcript.live.md");
@@ -51,9 +52,7 @@ export async function forEachAudibleChunk(
   if (!existsSync(session.sessionDir)) return;
 
   const files = await readdir(session.sessionDir);
-  const wavFiles = files
-    .filter((f) => /^((mic|sys)-\d{3}\.wav)$/.test(f))
-    .sort();
+  const wavFiles = sortChunkFilenames(files.filter((f) => MIC_OR_SYS_CHUNK_RE.test(f)));
 
   const total = wavFiles.length;
   let done = 0;

@@ -14,6 +14,7 @@ import { concatSysChunks, concatMicChunks, runDiarizer, assignSpeakers, assignLa
 import { runDiarizationAbPass } from "./diarization-ab.js";
 import { computeTalkTime } from "./talk-time.js";
 import type { TalkTimeStats } from "./talk-time.js";
+import { chunkFileRegex } from "./regex-utils.js";
 
 // Re-applies the registry's display-name overrides to the Talk Time footer
 // rows. `computeTalkTime` reads canonical "Speaker N" labels off the segments
@@ -233,7 +234,7 @@ export async function runDiarizationStep(
   let sysFileCount = 0;
   try {
     const files = await readdir(session.sessionDir);
-    sysFileCount = files.filter((f) => /^sys-\d{3}\.wav$/.test(f)).length;
+    sysFileCount = files.filter((f) => chunkFileRegex("sys").test(f)).length;
   } catch {
     return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
   }
@@ -393,7 +394,7 @@ export async function runMicDiarizationStep(
   let micFileCount = 0;
   try {
     const files = await readdir(session.sessionDir);
-    micFileCount = files.filter((f) => /^mic-\d{3}\.wav$/.test(f)).length;
+    micFileCount = files.filter((f) => chunkFileRegex("mic").test(f)).length;
   } catch {
     return none;
   }
