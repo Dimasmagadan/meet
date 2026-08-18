@@ -61,6 +61,27 @@ final class NotchPanelController: NSObject {
     // `meet ask` synchronously. The panel itself stays a lock-file/marker reader.
     var onAsk: ((String) -> Bool)?
 
+    override init() {
+        super.init()
+        // Auto-start can fire while the notch screen is unavailable (lid closed with an
+        // external display, screen asleep, remote session) — arm() no-ops in that case and
+        // setArmed() never retries on its own. Re-resolving on screen changes catches the
+        // notch display coming back (lid opened, external monitor unplugged) mid-recording.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screenParametersChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func screenParametersChanged() {
+        guard armed else { return }
+        arm()
+    }
+
     func setArmed(_ shouldArm: Bool) {
         guard shouldArm != armed else { return }
         armed = shouldArm
