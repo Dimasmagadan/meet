@@ -83,9 +83,20 @@ final class NotchPanelController: NSObject {
     }
 
     func setArmed(_ shouldArm: Bool) {
-        guard shouldArm != armed else { return }
         armed = shouldArm
-        shouldArm ? arm() : disarm()
+        guard shouldArm else {
+            disarm()
+            return
+        }
+        // arm() can silently no-op if the notch screen doesn't resolve at this exact
+        // instant (display reconfiguring, Space switch, brief WindowServer hiccup) —
+        // armed alone can't tell a real success from that no-op, so check the panel's
+        // actual on-screen state instead. RecordingController's 1s status tick re-fires
+        // setArmed(true) continuously while recording/paused, so retrying here whenever
+        // the panel isn't actually visible self-heals within ~1s instead of depending
+        // solely on didChangeScreenParametersNotification firing again.
+        guard panel?.isVisible != true else { return }
+        arm()
     }
 
     // MARK: - Arm / disarm
