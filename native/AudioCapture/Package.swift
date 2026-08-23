@@ -24,5 +24,10 @@ let package = Package(
             path: "Sources/AudioAnalysis",
             swiftSettings: [.unsafeFlags(["-parse-as-library"])]
         ),
+        .testTarget(
+            name: "AudioCaptureTests",
+            dependencies: ["AudioCapture"],
+            path: "Tests/AudioCaptureTests"
+        ),
     ]
 )

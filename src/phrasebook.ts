@@ -60,7 +60,7 @@ export class Phrasebook {
       const dst = entry.to;
       if (!src || dst === undefined) continue;
 
-      const flags = entry.caseInsensitive ? "gi" : "g";
+      const flags = entry.caseInsensitive ? "giu" : "gu";
       let source: string;
       if (entry.regex) {
         // Raw regex runs unsandboxed with no timeout in the sequential live
@@ -70,7 +70,9 @@ export class Phrasebook {
         if (src.length >= RAW_REGEX_SANITY_CAP) continue;
         source = src;
       } else {
-        source = entry.wordBoundary ? `\\b${escapeRegex(src)}\\b` : escapeRegex(src);
+        source = entry.wordBoundary
+          ? `(?<![\\p{L}\\p{N}_])${escapeRegex(src)}(?![\\p{L}\\p{N}_])`
+          : escapeRegex(src);
       }
       try {
         const pattern = new RegExp(source, flags);
@@ -116,15 +118,17 @@ function expandPath(p: string): string {
 
 let _cached: Phrasebook | null = null;
 let _cachedPath: string | null = null;
+let _cachedAllowRegex: boolean | null = null;
 
 export function getPhrasebook(config: { phrasebookPath?: string; phrasebookReload?: boolean; phrasebookAllowRegex?: boolean }): Phrasebook {
   const path = config.phrasebookPath ?? DEFAULT_PHRASEBOOK_PATH;
   const shouldReload = config.phrasebookReload ?? true;
   const allowRegex = config.phrasebookAllowRegex ?? false;
 
-  if (!_cached || _cachedPath !== path) {
+  if (!_cached || _cachedPath !== path || _cachedAllowRegex !== allowRegex) {
     _cached = Phrasebook.load(path, allowRegex);
     _cachedPath = path;
+    _cachedAllowRegex = allowRegex;
     return _cached;
   }
 

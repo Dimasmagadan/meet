@@ -35,7 +35,7 @@ describe("generateSlug", () => {
   });
 
   it("handles empty string", () => {
-    assert.strictEqual(generateSlug(""), "");
+    assert.strictEqual(generateSlug(""), "meeting");
   });
 });
 
@@ -200,9 +200,9 @@ describe("findStaleSessions", () => {
     assert.ok(findStaleSessions().includes(sessionDir));
   });
 
-  it("excludes recording sessions", () => {
+  it("includes recording sessions with no live controller or capture", () => {
     const sessionDir = makeSession("recording", "recording");
-    assert.ok(!findStaleSessions().includes(sessionDir));
+    assert.ok(findStaleSessions().includes(sessionDir));
   });
 
   it("excludes done sessions", () => {

@@ -260,7 +260,7 @@ describe("parseDiarizeOutput (Swift->Node contract)", () => {
   it("is robust to missing segments (empty array, never undefined)", () => {
     const result = parseDiarizeOutput(JSON.stringify({ embeddings: { "1": [0.1] } }));
     assert.deepEqual(result.segments, []);
-    assert.equal(result.embeddings["1"].length, 1);
+    assert.deepEqual(result.embeddings, {});
   });
 });
 

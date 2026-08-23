@@ -17,7 +17,7 @@ class MicCapture {
     private var configObserver: NSObjectProtocol?
     private var restartCount = 0
     private var lastRestartTime: Date = Date.distantPast
-    var paused = false
+    private var paused = false
     // wavWriter is a mutating struct touched from the real-time audio-tap
     // callback (processBuffer) and from stop()/restart on the control thread.
     // All access is serialized through this queue instead of racing directly —
@@ -142,6 +142,11 @@ class MicCapture {
         if stalledFor > thresholdSeconds {
             restartCapture(reason: "buffer_stall_\(Int(stalledFor))s")
         }
+    }
+
+    func setPaused(_ value: Bool) {
+        if paused && !value { lastVoiceTime = Date() }
+        paused = value
     }
 
     private func processBuffer(_ buffer: AVAudioPCMBuffer, hwSampleRate: Float64, hwChannels: AVAudioChannelCount, isInterleaved: Bool, ratio: Double) {

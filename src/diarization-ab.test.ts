@@ -86,10 +86,10 @@ describe("buildDiarizationAbReport", () => {
     const offline: DiarSegment[] = [seg("Speaker 1", 0, 5), seg("Speaker 2", 5, 10)];
 
     const primaryEmb = new Map([
-      ["Speaker 1", [1, 0, 0]],
-      ["Speaker 2", [1, 0, 0]],
+      ["Speaker 1", [1, ...Array(255).fill(0)]],
+      ["Speaker 2", [1, ...Array(255).fill(0)]],
     ]);
-    const offlineEmb = new Map([["Speaker 1", [1, 0, 0]]]); // Speaker 2 embedding missing
+    const offlineEmb = new Map([["Speaker 1", [1, ...Array(255).fill(0)]]]); // Speaker 2 embedding missing
 
     const report = buildDiarizationAbReport(primary, primaryEmb, offline, offlineEmb);
 

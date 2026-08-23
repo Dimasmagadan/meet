@@ -47,17 +47,17 @@ describe("cosineSimilarity", () => {
   });
 
   it("returns 0 for orthogonal vectors", () => {
-    const a = [1, 0, 0, 0];
-    const b = [0, 1, 0, 0];
+    const a = Array.from({ length: 256 }, (_, i) => i === 0 ? 1 : 0);
+    const b = Array.from({ length: 256 }, (_, i) => i === 1 ? 1 : 0);
     assert.ok(Math.abs(cosineSimilarity(a, b)) < 1e-9);
   });
 
   it("returns 0 when one vector is all-zero (no NaN)", () => {
-    assert.equal(cosineSimilarity([0, 0, 0], [1, 2, 3]), 0);
+    assert.equal(cosineSimilarity(Array(256).fill(0), normalize(vec(3))), 0);
   });
 
-  it("handles differing lengths by using the overlap", () => {
-    assert.ok(cosineSimilarity([1, 1, 1, 1], [1, 1]) - 1 < 1e-9);
+  it("rejects differing lengths", () => {
+    assert.equal(cosineSimilarity(normalize(vec(1)), normalize(vec(1, 255))), 0);
   });
 });
 
@@ -388,7 +388,7 @@ describe("registry persistence", () => {
     const raw = {
       version: 1,
       speakers: [
-        { id: "good", name: null, embedding: [0.1, 0.2], backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
+        { id: "good", name: null, embedding: normalize(vec(1)), backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
         { id: "null-emb", name: null, embedding: null, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
         { id: "missing-emb", name: null, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
         { name: null, embedding: [0.1], backend: "diarizer-manager" },

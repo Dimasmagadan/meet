@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Chunk, Session, Config, TranscriptEntry } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
-import { readFinalizerLock } from "./locks.js";
+import { isPidAlive, readActiveRecordingLock, readFinalizerLock } from "./locks.js";
+import { classifyRecordingSessions, type RecordingState } from "./recording-state.js";
 
 const WHISPER_CANDIDATES = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"];
 
@@ -25,6 +26,10 @@ export function resolveModelPath(config: Config, pass: "live" | "final"): string
 
 export function expandPath(p: string): string {
   return p.startsWith("~/") || p === "~" ? p.replace(/^~/, homedir()) : p;
+}
+
+export function normalizePath(p: string): string {
+  return resolve(expandPath(p));
 }
 
 export function getSessionsDir(): string {
@@ -59,9 +64,34 @@ export function sanitizeFileConfig(raw: Record<string, unknown>): Partial<Config
       configWarn(`config:${key}:finite`, `~/.meet/config.json: "${key}" is not a finite number — using default`);
       continue;
     }
+    if (!isValidConfigValue(key, value)) {
+      configWarn(`config:${key}:range`, `~/.meet/config.json: "${key}" has an unsafe value — using default`);
+      continue;
+    }
     clean[key] = value;
   }
   return clean as Partial<Config>;
+}
+
+function isValidConfigValue(key: string, value: unknown): boolean {
+  const number = value as number;
+  const positiveIntegers = new Set([
+    "chunkDurationSeconds", "finalBeamSize", "finalBestOf", "vadMinSpeechMs", "vadTimeoutMs",
+    "attentionCooldownSeconds", "attentionRecapEntries", "summaryIntervalChunks", "summaryTopN",
+    "summaryWindowMaxEntries", "summaryMinEntries", "summaryMemThresholdMb", "summaryCatchupIntervalMs",
+    "gateBudgetMs", "liveQueueLagWarnChunks",
+  ]);
+  const nonNegativeNumbers = new Set(["maxDurationMinutes", "noTextTimeoutMinutes"]);
+  const unitIntervals = new Set([
+    "whisperNoSpeechThreshold", "finalNoSpeechThreshold", "vadThreshold", "diarizationMinOverlap",
+    "micEchoCoverageThreshold", "micEchoCorrelationThreshold", "micEchoFractionThreshold", "speakerMatchThreshold",
+  ]);
+  if (positiveIntegers.has(key)) return Number.isSafeInteger(number) && number > 0;
+  if (nonNegativeNumbers.has(key)) return Number.isFinite(number) && number >= 0;
+  if (unitIntervals.has(key)) return Number.isFinite(number) && number >= 0 && number <= 1;
+  if (["micRmsThresholdDb", "sysRmsThresholdDb", "whisperEntropyThreshold", "whisperLogprobThreshold", "finalEntropyThreshold", "finalLogprobThreshold", "summaryCpuThresholdLoad"].includes(key)) return Number.isFinite(number);
+  if (["outputDir", "whisperBin", "language", "modelPath", "liveModelPath", "finalModelPath"].includes(key)) return typeof value === "string" && value.trim().length > 0;
+  return true;
 }
 
 export function loadConfig(overrides?: Partial<Config>): Config {
@@ -113,12 +143,14 @@ export async function writeSession(session: Session): Promise<void> {
 }
 
 export function generateSlug(title: string): string {
-  return title
+  const slug = title
     .toLowerCase()
     .replace(/[^a-zа-яё0-9\s-]/gi, "")
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
-    .slice(0, 60);
+    .slice(0, 60)
+    .replace(/^-+|-+$/g, "");
+  return slug || "meeting";
 }
 
 export function formatStartTime(date: Date): string {
@@ -178,27 +210,27 @@ export async function ensureDir(path: string): Promise<void> {
 }
 
 export function findStaleSessions(): string[] {
+  return findRecordingStates().filter((state) => state.kind === "stale").map((state) => state.session.sessionDir);
+}
+
+export function findRecordingStates(): RecordingState[] {
   const sessionsDir = getSessionsDir();
   if (!existsSync(sessionsDir)) return [];
   try {
-    const entries = readdirSync(sessionsDir);
-    return entries
+    const sessions = readdirSync(sessionsDir)
       .filter((e: string) => e.startsWith("meet-"))
       .map((e: string) => join(sessionsDir, e))
       .filter((e: string) => existsSync(join(e, "session.json")))
-      .filter((e: string) => {
+      .flatMap((e: string) => {
         try {
           const s = JSON.parse(readFileSync(join(e, "session.json"), "utf-8")) as Session;
-          if (s.status === "done" || s.status === "recording") return false;
-          if (s.status === "error" || s.status === "stopped" || s.status === "queued") return true;
-          if (s.status === "finalizing" || s.status === "paused") {
-            return readFinalizerLock(e) === null;
-          }
-          return true;
+          if ((s.status === "finalizing" || s.status === "paused") && readFinalizerLock(e) !== null) return [];
+          return [s];
         } catch {
-          return true;
+          return [];
         }
       });
+    return classifyRecordingSessions(sessions, readActiveRecordingLock(), isPidAlive);
   } catch {
     return [];
   }

@@ -1,6 +1,8 @@
 import Foundation
 
 struct WAVWriter {
+    private enum State { case idle, writing, failed }
+    enum WriterError: Error { case chunkAlreadyOpen, noOpenChunk, destinationExists }
     private let outputDir: URL
     private let sampleRate: Int = 16000
     private let channels: Int = 1
@@ -17,6 +19,7 @@ struct WAVWriter {
     // accumulating its own per-buffer overshoot at a different rate (P0,
     // SPEC_MIC_ECHO_FILTERING_2026-08-05 root cause B.2).
     private var carry: [Int16] = []
+    private var state: State = .idle
 
     init(outputDir: URL, prefix: String, chunkDurationSeconds: Int) {
         self.outputDir = outputDir
@@ -24,25 +27,31 @@ struct WAVWriter {
         self.maxChunkSamples = sampleRate * channels * chunkDurationSeconds
     }
 
-    var isChunkOpen: Bool { currentFileHandle != nil }
+    var isChunkOpen: Bool { state == .writing && currentFileHandle != nil }
 
     func chunkFilename(_ index: Int) -> String {
         String(format: "\(prefix)-%03d.wav", index)
     }
 
     mutating func startChunk() throws {
-        guard currentFileHandle == nil else { return }
+        guard state != .writing else { throw WriterError.chunkAlreadyOpen }
 
         let tmpName = chunkFilename(chunkIndex) + ".tmp"
         let tmpPath = outputDir.appendingPathComponent(tmpName)
 
-        currentTmpPath = tmpPath
-        currentDataSize = 0
-
         let header = WAVWriter.makeHeader(dataSize: 0, sampleRate: sampleRate, channels: channels, bitsPerSample: bitsPerSample)
-        FileManager.default.createFile(atPath: tmpPath.path, contents: header)
-        currentFileHandle = try FileHandle(forWritingTo: tmpPath)
-        try currentFileHandle?.seekToEnd()
+        guard FileManager.default.createFile(atPath: tmpPath.path, contents: header) else { throw CocoaError(.fileWriteUnknown) }
+        do {
+            let handle = try FileHandle(forWritingTo: tmpPath)
+            try handle.seekToEnd()
+            currentTmpPath = tmpPath
+            currentFileHandle = handle
+            currentDataSize = 0
+            state = .writing
+        } catch {
+            abortCurrentChunk(preserveTemporary: false)
+            throw error
+        }
 
         if !carry.isEmpty {
             let toFlush = carry
@@ -52,7 +61,7 @@ struct WAVWriter {
     }
 
     mutating func appendSamples(_ samples: [Int16]) throws {
-        guard let handle = currentFileHandle else { return }
+        guard state == .writing, let handle = currentFileHandle else { throw WriterError.noOpenChunk }
 
         var data = Data(capacity: samples.count * 2)
         for s in samples {
@@ -64,6 +73,7 @@ struct WAVWriter {
     }
 
     mutating func appendSamplesIfNeeded(_ samples: [Int16]) throws -> Bool {
+        guard state == .writing else { throw WriterError.noOpenChunk }
         guard currentDataSize / 2 < maxChunkSamples else { return false }
 
         let remaining = maxChunkSamples - currentDataSize / 2
@@ -83,37 +93,50 @@ struct WAVWriter {
 
     @discardableResult
     mutating func finalizeChunk() throws -> String? {
-        guard let handle = currentFileHandle,
-              let tmpPath = currentTmpPath else { return nil }
-
-        let header = WAVWriter.makeHeader(dataSize: UInt32(currentDataSize), sampleRate: sampleRate, channels: channels, bitsPerSample: bitsPerSample)
-        try handle.seek(toOffset: 0)
-        try handle.write(contentsOf: header)
-        try handle.close()
-
+        guard state == .writing, let handle = currentFileHandle, let tmpPath = currentTmpPath else { return nil }
         let finalName = chunkFilename(chunkIndex)
         let finalPath = outputDir.appendingPathComponent(finalName)
+        guard !FileManager.default.fileExists(atPath: finalPath.path) else { throw WriterError.destinationExists }
+        do {
+            let header = WAVWriter.makeHeader(dataSize: UInt32(currentDataSize), sampleRate: sampleRate, channels: channels, bitsPerSample: bitsPerSample)
+            try handle.seek(toOffset: 0)
+            try handle.write(contentsOf: header)
+            try handle.close()
+            currentFileHandle = nil
+            try FileManager.default.moveItem(at: tmpPath, to: finalPath)
+            currentTmpPath = nil
+            state = .idle
+            let result = finalName
+            chunkIndex += 1
+            currentDataSize = 0
+            return result
+        } catch {
+            abortCurrentChunk(preserveTemporary: true)
+            throw error
+        }
+    }
 
-        _ = try? FileManager.default.removeItem(at: finalPath)
-        try FileManager.default.moveItem(at: tmpPath, to: finalPath)
-
+    mutating func abortCurrentChunk(preserveTemporary: Bool) {
+        try? currentFileHandle?.close()
         currentFileHandle = nil
+        if let tmpPath = currentTmpPath {
+            if preserveTemporary {
+                let diagnostic = tmpPath.deletingPathExtension().appendingPathExtension("failed.wav.tmp")
+                try? FileManager.default.moveItem(at: tmpPath, to: diagnostic)
+            } else {
+                try? FileManager.default.removeItem(at: tmpPath)
+            }
+        }
         currentTmpPath = nil
-        let result = finalName
-        chunkIndex += 1
         currentDataSize = 0
-        return result
+        state = .failed
     }
 
     mutating func flushPartial() throws -> String? {
         if currentDataSize > 0 {
             return try finalizeChunk()
         }
-        if let tmpPath = currentTmpPath {
-            try? FileManager.default.removeItem(at: tmpPath)
-        }
-        currentFileHandle = nil
-        currentTmpPath = nil
+        abortCurrentChunk(preserveTemporary: false)
         return nil
     }
 

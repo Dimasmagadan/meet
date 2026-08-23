@@ -1,4 +1,4 @@
-import { writeFileSync, existsSync, readFileSync, unlinkSync, openSync, closeSync, mkdirSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync, unlinkSync, openSync, closeSync, mkdirSync, linkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Session } from "./types.js";
@@ -37,7 +37,16 @@ function activeLockData(session: Session): string {
 // Refreshes an already-owned lock (e.g. after a retitle changes outputFile).
 // Not for acquiring a new lock — use acquireActiveRecordingLock for that.
 export function writeActiveRecordingLock(session: Session): void {
-  writeFileSync(activeLockPath(), activeLockData(session), "utf-8");
+  const lockPath = activeLockPath();
+  const existing = readActiveRecordingLock();
+  if (!existing || existing.pid !== process.pid) throw new Error("Active recording lock is not owned by this process");
+  const tmp = `${lockPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmp, activeLockData(session), { encoding: "utf-8", mode: 0o600 });
+    renameSync(tmp, lockPath);
+  } finally {
+    try { unlinkSync(tmp); } catch {}
+  }
 }
 
 // Exclusive create (`wx`) closes the check-then-write race between
@@ -50,13 +59,15 @@ export function acquireActiveRecordingLock(session: Session): boolean {
   const data = activeLockData(session);
 
   const tryCreate = (): boolean => {
+    const tmp = `${lockPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
     try {
-      const fd = openSync(lockPath, "wx");
-      writeFileSync(fd, data, "utf-8");
-      closeSync(fd);
+      writeFileSync(tmp, data, { encoding: "utf-8", mode: 0o600 });
+      linkSync(tmp, lockPath);
       return true;
     } catch {
       return false;
+    } finally {
+      try { unlinkSync(tmp); } catch {}
     }
   };
 
@@ -86,14 +97,19 @@ export interface ActiveRecordingLock {
 export function readActiveRecordingLock(): ActiveRecordingLock | null {
   const lockPath = activeLockPath();
   if (!existsSync(lockPath)) return null;
-  try {
-    const data = JSON.parse(readFileSync(lockPath, "utf-8")) as ActiveRecordingLock;
-    if (data.pid && isPidAlive(data.pid)) return data;
-    try { unlinkSync(lockPath); } catch {}
-    return null;
-  } catch {
-    return null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const data = JSON.parse(readFileSync(lockPath, "utf-8")) as ActiveRecordingLock;
+      if (Number.isSafeInteger(data.pid) && data.pid > 0 && isPidAlive(data.pid)) return data;
+      break;
+    } catch {
+      if (attempt === 0) continue;
+    }
   }
+  // New writers only publish complete JSON. Anything malformed here is legacy
+  // or corrupt metadata and cannot identify a live owner.
+  try { unlinkSync(lockPath); } catch {}
+  return null;
 }
 
 export function isActiveRecording(): boolean {

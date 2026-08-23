@@ -1,8 +1,8 @@
-import { readFileSync, existsSync } from "node:fs";
-import { mkdir, appendFile } from "node:fs/promises";
+import { readFileSync, existsSync, renameSync } from "node:fs";
+import { mkdir, appendFile, chmod, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { nanoid } from "nanoid";
-import { writeAtomic, expandPath } from "./storage.js";
+import { expandPath } from "./storage.js";
 
 // Producers of embeddings. Matching is backend-scoped: an identical voice
 // extracted via a different clustering path (online DiarizerManager vs offline
@@ -10,6 +10,12 @@ import { writeAtomic, expandPath } from "./storage.js";
 // port across backends. Session WAVs are deleted at finalize, so the registry
 // is the only surviving voice state — we never cross-match across backends.
 export type SpeakerBackend = "diarizer-manager" | "vbx-offline";
+export const EMBEDDING_DIMENSION = 256;
+
+export function isValidEmbedding(value: unknown, requireNonZero = true): value is number[] {
+  if (!Array.isArray(value) || value.length !== EMBEDDING_DIMENSION || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return false;
+  return !requireNonZero || value.some((n) => n !== 0);
+}
 
 export interface RegistrySpeaker {
   id: string;                 // stable nanoid
@@ -58,33 +64,54 @@ export function loadRegistry(path: string): SpeakerRegistry {
     const raw = readFileSync(expanded, "utf-8");
     const parsed = JSON.parse(raw) as Partial<SpeakerRegistry>;
     if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.speakers)) {
+      quarantineCorruptRegistry(expanded);
       return emptyRegistry();
     }
     const speakers = parsed.speakers.filter(
       (s): s is RegistrySpeaker =>
         !!s
         && typeof s.id === "string" && s.id.length > 0
-        && Array.isArray(s.embedding) && s.embedding.length > 0
-        && typeof s.backend === "string",
+         && isValidEmbedding(s.embedding)
+         && (s.backend === "diarizer-manager" || s.backend === "vbx-offline"),
     );
+    const invalid = parsed.speakers.length - speakers.length;
+    if (invalid > 0) console.error(`[meet] speaker registry: skipped ${invalid} malformed embedding entr${invalid === 1 ? "y" : "ies"}`);
     return { version: 1, speakers };
   } catch {
+    if (existsSync(expanded)) quarantineCorruptRegistry(expanded);
     return emptyRegistry();
   }
 }
 
+function quarantineCorruptRegistry(path: string): void {
+  try {
+    renameSync(path, `${path}.corrupt-${Date.now()}`);
+    console.error(`[meet] speaker registry: preserved corrupt file at ${path}.corrupt-*`);
+  } catch {}
+}
+
 export async function saveRegistry(reg: SpeakerRegistry, path: string): Promise<void> {
   const expanded = expandPath(path);
-  await mkdir(dirname(expanded), { recursive: true });
-  await writeAtomic(expanded, JSON.stringify(reg, null, 2));
+  await mkdir(dirname(expanded), { recursive: true, mode: 0o700 });
+  await chmod(dirname(expanded), 0o700);
+  const tmp = `${expanded}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tmp, JSON.stringify(reg, null, 2), { encoding: "utf-8", mode: 0o600 });
+    await chmod(tmp, 0o600);
+    await rename(tmp, expanded);
+    await chmod(expanded, 0o600);
+  } catch (error) {
+    await unlink(tmp).catch(() => {});
+    throw error;
+  }
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || !isValidEmbedding(a) || !isValidEmbedding(b)) return 0;
   let dot = 0;
   let na = 0;
   let nb = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
     na += a[i] * a[i];
     nb += b[i] * b[i];
@@ -152,6 +179,7 @@ export function registerSpeaker(
   now: () => Date = () => new Date(),
   isSelf: boolean = false,
 ): RegistrySpeaker {
+  if (!isValidEmbedding(emb)) throw new Error(`Embedding must be ${EMBEDDING_DIMENSION} finite non-zero values`);
   const speaker: RegistrySpeaker = {
     id: nanoid(12),
     name: null,
@@ -193,8 +221,26 @@ export function applyRegistryToSpeakers(
   // asserts these are different people, so a same-run collision is wrong).
   const claimedThisRun = new Set<string>(seedExcludeIds ?? []);
 
+  const candidates: Array<{ label: string; emb: number[]; speaker: RegistrySpeaker; score: number }> = [];
   for (const [label, emb] of embeddingsByLabel) {
-    const m = matchSpeaker(emb, registry, threshold, backend, claimedThisRun);
+    if (!isValidEmbedding(emb)) continue;
+    for (const speaker of registry.speakers) {
+      if (speaker.quarantined || speaker.backend !== backend || claimedThisRun.has(speaker.id)) continue;
+      const score = cosineSimilarity(emb, speaker.embedding);
+      if (score >= threshold) candidates.push({ label, emb, speaker, score });
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, undefined, { numeric: true }) || a.speaker.id.localeCompare(b.speaker.id));
+  const matchesByLabel = new Map<string, { speaker: RegistrySpeaker; score: number }>();
+  for (const candidate of candidates) {
+    if (claimedThisRun.has(candidate.speaker.id) || matchesByLabel.has(candidate.label)) continue;
+    claimedThisRun.add(candidate.speaker.id);
+    matchesByLabel.set(candidate.label, candidate);
+  }
+
+  for (const [label, emb] of [...embeddingsByLabel].sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))) {
+    if (!isValidEmbedding(emb)) continue;
+    const m = matchesByLabel.get(label);
     if (m) {
       claimedThisRun.add(m.speaker.id);
       m.speaker.matchCount += 1;
@@ -256,8 +302,10 @@ export function quarantineByBackend(registry: SpeakerRegistry, backend: SpeakerB
 export async function appendMatchesLog(path: string, lines: string[]): Promise<void> {
   if (lines.length === 0) return;
   const expanded = expandPath(path);
-  await mkdir(dirname(expanded), { recursive: true });
-  await appendFile(expanded, lines.map((l) => `${l}\n`).join(""), "utf-8");
+  await mkdir(dirname(expanded), { recursive: true, mode: 0o700 });
+  await chmod(dirname(expanded), 0o700);
+  await appendFile(expanded, lines.map((l) => `${l}\n`).join(""), { encoding: "utf-8", mode: 0o600 });
+  await chmod(expanded, 0o600);
 }
 
 // `matches.log` lives next to the registry file (default ~/.meet/speakers/).

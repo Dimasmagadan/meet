@@ -3,7 +3,7 @@ import { join } from "node:path";
 import chalk from "chalk";
 import type { Session } from "./types.js";
 import { readActiveRecordingLock, readFinalizerLock } from "./locks.js";
-import { getSessionsDir } from "./storage.js";
+import { findRecordingStates, getSessionsDir } from "./storage.js";
 
 export function showStatus(): void {
   let found = false;
@@ -20,6 +20,8 @@ export function showStatus(): void {
   }
 
   const sessions = findSessions();
+  const recordingStates = findRecordingStates();
+  const orphaned = recordingStates.filter((state) => state.kind === "orphan");
 
   const activeFinalizers = sessions.filter(
     (s) => (s.status === "finalizing" || s.status === "paused") && readFinalizerLock(s.sessionDir) !== null
@@ -29,6 +31,16 @@ export function showStatus(): void {
   );
   const errors = sessions.filter((s) => s.status === "error");
   const stopped = sessions.filter((s) => s.status === "stopped");
+
+  if (orphaned.length > 0) {
+    found = true;
+    console.log(chalk.red("Orphaned capture:"));
+    for (const state of orphaned) {
+      console.log(`  ${state.session.sessionDir}  ${state.session.title}  (capture pid ${state.capturePid})`);
+      console.log(chalk.gray(`    Stop the capture manually, then: meet finalize ${state.session.sessionDir}`));
+    }
+    console.log();
+  }
 
   if (activeFinalizers.length > 0) {
     found = true;

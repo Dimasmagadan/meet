@@ -25,7 +25,7 @@ class SystemAudioCapture {
     private var restartCount = 0
     private var lastRestartTime: Date = Date.distantPast
     private(set) var lastBufferTime: Date = Date()
-    var paused = false
+    private var paused = false
     // wavWriter is a mutating struct touched from the real-time IOProc
     // callback (handleInput) and from stop()/restart on the control thread.
     // All access is serialized through this queue instead of racing directly —
@@ -207,6 +207,8 @@ class SystemAudioCapture {
             restartTap(reason: "buffer_stall_\(Int(stalledFor))s")
         }
     }
+
+    func setPaused(_ value: Bool) { paused = value }
 
     private func restartTap(reason: String) {
         guard isRunning, !isRestarting else { return }

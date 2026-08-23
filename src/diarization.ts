@@ -7,6 +7,7 @@ import { resolveAnalysisBin } from "./storage.js";
 import { makeWavHeader } from "./audio-metrics.js";
 import { applyQoS } from "./process-priority.js";
 import { chunkFileRegex, sortChunkFilenames } from "./regex-utils.js";
+import { isValidEmbedding } from "./speaker-registry.js";
 
 const SAMPLE_RATE = 16000;
 const WAV_HEADER_SIZE = 44;
@@ -28,6 +29,10 @@ export interface DiarizeResult {
 export interface ChunkOffset {
   start: number;
   end: number;
+}
+
+function canonicalSpeakerNumber(label: string): number {
+  return Number(/^Speaker (\d+)$/.exec(label)?.[1] ?? Number.MAX_SAFE_INTEGER);
 }
 
 // Concatenates <prefix>-NNN.wav chunks (in index order) into a single WAV,
@@ -155,7 +160,7 @@ export function parseDiarizeOutput(stdout: string): DiarizeResult {
   const parsed = JSON.parse(stdout) as { segments?: DiarSegment[]; embeddings?: Record<string, number[]> };
   return {
     segments: Array.isArray(parsed.segments) ? parsed.segments : [],
-    embeddings: parsed.embeddings ?? {},
+    embeddings: Object.fromEntries(Object.entries(parsed.embeddings ?? {}).filter(([, value]) => isValidEmbedding(value))),
   };
 }
 
@@ -171,7 +176,7 @@ export async function cleanupMicConcat(sessionDir: string): Promise<void> {
 // ... by first appearance in time across all segments. Exported so the registry
 // can map raw embedding keys to their relabeled canonical "Speaker N" labels.
 export function buildSpeakerLabelMap(segments: DiarSegment[]): Map<string, string> {
-  const sorted = [...segments].sort((a, b) => a.start - b.start);
+  const sorted = [...segments].sort((a, b) => a.start - b.start || a.speaker.localeCompare(b.speaker, undefined, { numeric: true }));
   const map = new Map<string, string>();
   for (const seg of sorted) {
     if (!map.has(seg.speaker)) {
@@ -201,6 +206,7 @@ export function buildEmbeddingsByLabel(
 // Replaces raw diarizer speaker IDs with their renumbered "Speaker N" labels.
 // Idempotent: relabeling already-relabeled segments is a no-op.
 export function relabelSegments(segments: DiarSegment[]): DiarSegment[] {
+  if (segments.every((segment) => /^Speaker \d+$/.test(segment.speaker))) return segments.map((segment) => ({ ...segment }));
   const labelMap = buildSpeakerLabelMap(segments);
   return segments.map((s) => ({ ...s, speaker: labelMap.get(s.speaker)! }));
 }
@@ -237,7 +243,7 @@ function assignSpeakersCore(
     let bestSpeaker: string | null = null;
     let bestOverlap = 0;
     for (const [speaker, overlap] of overlapBySpeaker) {
-      if (overlap > bestOverlap) {
+      if (overlap > bestOverlap || (overlap === bestOverlap && bestSpeaker !== null && canonicalSpeakerNumber(speaker) < canonicalSpeakerNumber(bestSpeaker))) {
         bestOverlap = overlap;
         bestSpeaker = speaker;
       }

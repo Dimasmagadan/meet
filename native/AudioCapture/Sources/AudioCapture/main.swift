@@ -76,6 +76,7 @@ class CaptureRunner {
         }
         installSignalSource(SIGINT) { CaptureRunnerSignalRelay.shared.trigger() }
         installSignalSource(SIGTERM) { CaptureRunnerSignalRelay.shared.trigger() }
+        installSignalSource(SIGHUP) { CaptureRunnerSignalRelay.shared.trigger() }
         installSignalSource(SIGUSR1) { CaptureRunnerSignalRelay.shared.setPaused(true) }
         installSignalSource(SIGUSR2) { CaptureRunnerSignalRelay.shared.setPaused(false) }
 
@@ -133,10 +134,10 @@ class CaptureRunner {
 
         while !CaptureRunnerSignalRelay.shared.shouldStop {
             let relay = CaptureRunnerSignalRelay.shared
-            micCapture?.paused = relay.paused
+            micCapture?.setPaused(relay.paused)
             if #available(macOS 14.2, *) {
                 let sys = systemCapture as? SystemAudioCapture
-                sys?.paused = relay.paused
+                sys?.setPaused(relay.paused)
                 if !relay.paused { sys?.recoverIfStalled() }
             }
 

@@ -1,6 +1,6 @@
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import chalk from "chalk";
-import { loadConfig, getOutputDir, reserveOutputDir, getCaptureBinPath, resolveAnalysisBin, findStaleSessions, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath, readSession } from "./storage.js";
+import { loadConfig, getOutputDir, reserveOutputDir, getCaptureBinPath, resolveAnalysisBin, findRecordingStates, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath, readSession } from "./storage.js";
 import { Recorder } from "./recorder.js";
 import { makeHeader } from "./assembler.js";
 import { finalizeSession } from "./finalize.js";
@@ -41,9 +41,9 @@ export function createProgram(): Command {
     .description("Start a foreground recording session")
     .argument("[title]", "Meeting title (default: \"meeting\")")
     .option("--mic", "Mic-only mode (no system audio)")
-    .option("--silence <seconds>", "Silence timeout for audio capture (0 = disabled)", parseInt, 0)
-    .option("--max-duration <minutes>", "Auto-stop after N minutes (0 = disabled)", parseInt)
-    .option("--no-text-timeout <minutes>", "Auto-stop after N processed minutes without transcript (0 = disabled)", parseInt)
+    .option("--silence <seconds>", "Silence timeout for audio capture (0 = disabled)", parseNonNegativeInteger, 0)
+    .option("--max-duration <minutes>", "Auto-stop after N minutes (0 = disabled)", parseNonNegativeInteger)
+    .option("--no-text-timeout <minutes>", "Auto-stop after N processed minutes without transcript (0 = disabled)", parseNonNegativeInteger)
     .option("--voice-processing", "Enable VoiceProcessing IO echo cancellation (default: off — conflicts with the call app's own AEC/AGC on the same mic and can drop your volume for other participants; verify before relying on it)")
     .option("--headless", "Run without terminal interaction (for menu bar app / automation)")
     .option("--no-summary", "Disable live extractive summary during recording")
@@ -67,7 +67,8 @@ export function createProgram(): Command {
     .description("Run a short capture health check")
     .argument("[target]", "mic or full", "mic")
     .action(async (target: string) => {
-      const mode = target === "full" ? "full" as const : "mic" as const;
+      if (target !== "mic" && target !== "full") throw new InvalidArgumentError("target must be mic or full");
+      const mode = target;
       await runDoctor(mode);
     });
 
@@ -179,7 +180,7 @@ export function createProgram(): Command {
   speakers
     .command("enroll-self")
     .description("Record a short clip of your own voice and save it as your self voiceprint (for splitting \"Me\" from other speakers on mic-only recordings, e.g. phone calls)")
-    .option("--seconds <n>", "Recording length in seconds", (v) => parseInt(v, 10), 20)
+    .option("--seconds <n>", "Recording length in seconds", parsePositiveInteger, 20)
     .action(async (opts: { seconds?: number }) => {
       await runSpeakersEnrollSelf(opts.seconds ?? 20);
     });
@@ -202,7 +203,7 @@ export function createProgram(): Command {
     .action(async (files: string[], opts: { title?: string; model?: string; index?: boolean; date?: string }) => {
       const importOpts: ImportOptions = {
         title: opts.title,
-        model: opts.model === "small" ? "small" : "medium",
+        model: parseModel(opts.model ?? "medium"),
         index: opts.index === true,
         date: opts.date,
       };
@@ -244,7 +245,15 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   const summaryEnabled = summary === false ? false : true;
   const config = loadConfig({ ...(summaryEnabled ? {} : { summaryEnabled: false }) });
 
-  const stale = findStaleSessions();
+  const recordingStates = findRecordingStates();
+  const orphaned = recordingStates.filter((state) => state.kind === "orphan");
+  if (orphaned.length > 0) {
+    console.log(chalk.red("An orphaned audio capture is still running; refusing to start another recording."));
+    for (const state of orphaned) console.log(chalk.gray(`  PID ${state.capturePid}: ${state.session.sessionDir}`));
+    process.exitCode = 1;
+    return { startNextMeeting: false };
+  }
+  const stale = recordingStates.filter((state) => state.kind === "stale").map((state) => state.session.sessionDir);
   if (stale.length > 0) {
     console.log(chalk.yellow("Warning: stale sessions found:"));
     for (const s of stale) {
@@ -259,7 +268,8 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     for (const e of setupErrors) {
       console.log(chalk.red(e));
     }
-    process.exit(1);
+    process.exitCode = 1;
+    return { startNextMeeting: false };
   }
 
   if (isActiveRecording()) {
@@ -270,7 +280,8 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
       console.log(chalk.gray(`  PID: ${lock.pid}`));
       console.log(chalk.gray(`  Session: ${lock.sessionDir}`));
     }
-    process.exit(1);
+    process.exitCode = 1;
+    return { startNextMeeting: false };
   }
 
   const id = nanoid(8);
@@ -331,7 +342,11 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
       console.log(chalk.gray(`  PID: ${lock.pid}`));
       console.log(chalk.gray(`  Session: ${lock.sessionDir}`));
     }
-    process.exit(1);
+    // These paths were reserved by this process and are still header-only.
+    await rm(sessionDir, { recursive: true, force: true });
+    await rm(meetingDir, { recursive: true, force: true });
+    process.exitCode = 1;
+    return { startNextMeeting: false };
   }
 
   await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
@@ -366,6 +381,26 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   });
 
   return await recorder.run();
+}
+
+function parseInteger(value: string, label: string, allowZero: boolean): number {
+  if (!/^(?:0|[1-9]\d*)$/.test(value)) throw new InvalidArgumentError(`${label} must be a ${allowZero ? "non-negative" : "positive"} integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || (!allowZero && parsed === 0)) throw new InvalidArgumentError(`${label} must be a ${allowZero ? "non-negative" : "positive"} safe integer`);
+  return parsed;
+}
+
+export function parseNonNegativeInteger(value: string): number {
+  return parseInteger(value, "value", true);
+}
+
+export function parsePositiveInteger(value: string): number {
+  return parseInteger(value, "value", false);
+}
+
+function parseModel(value: string): "small" | "medium" {
+  if (value === "small" || value === "medium") return value;
+  throw new InvalidArgumentError("model must be small or medium");
 }
 
 function checkSetup(config: Config, mode: string): string[] {
