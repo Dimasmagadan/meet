@@ -90,6 +90,23 @@ test("appendEntryRecord and readEntryRecords", async (t) => {
     await rm(sessionDir, { recursive: true, force: true });
   });
 
+  await t.test("preserves an optional live speaker label", async () => {
+    const entry: EntryRecord = {
+      source: "sys",
+      index: 1,
+      timestamp: "00:00:00",
+      text: "Hello world",
+      rmsDb: -45,
+      speaker: "Ann",
+    };
+
+    await appendEntryRecord(sessionDir, entry);
+    const records = await readEntryRecords(sessionDir);
+    assert.equal(records[0].speaker, "Ann");
+
+    await rm(sessionDir, { recursive: true, force: true });
+  });
+
   await t.test("skips a torn last line but keeps prior valid records", async () => {
     const path = join(sessionDir, "entries.jsonl");
     await mkdir(sessionDir, { recursive: true });

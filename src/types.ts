@@ -10,6 +10,7 @@ export interface Chunk {
   index: number;
   wav: string;
   status: "done" | "failed" | "pending";
+  speaker?: string;
 }
 
 export type SessionStatus = "recording" | "stopped" | "queued" | "finalizing" | "paused" | "done" | "error";
@@ -196,6 +197,7 @@ export interface EntryRecord {
   timestamp: string;
   text: string;
   rmsDb: number;
+  speaker?: string;
 }
 
 export const DEFAULT_CONFIG: Config = {

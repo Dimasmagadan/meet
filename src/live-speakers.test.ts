@@ -66,7 +66,15 @@ describe("LiveSpeakerLabeler.identify (sys)", () => {
     // Degraded chunk (0.68 < 0.7 threshold, >= porch) keeps that number.
     const weak = l.identify("sys", mixAt(0.68, basis(0), basis(1)));
     assert.equal(weak?.speaker, "Speaker 1");
-    assert.equal(weak?.globalSpeakerId, null);
+    assert.equal(weak?.globalSpeakerId, "a1");
+  });
+
+  it("keeps a named identity's label and id for a near-threshold chunk", () => {
+    const l = labelerWith([row("a1", basis(0), { name: "Ann" })]);
+    const weak = l.identify("sys", mixAt(0.68, basis(0), basis(1)));
+    assert.equal(weak?.speaker, "Ann");
+    assert.equal(weak?.matchedName, "Ann");
+    assert.equal(weak?.globalSpeakerId, "a1");
   });
 
   it("an unknown voice files a session-local print reused by later chunks", () => {

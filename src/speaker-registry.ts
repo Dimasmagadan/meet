@@ -182,8 +182,8 @@ function attachCentroid(speaker: RegistrySpeaker, emb: number[]): void {
 }
 
 async function ensurePrivateDirectory(path: string): Promise<void> {
-  const created = await mkdir(path, { recursive: true, mode: 0o700 });
-  if (created) await chmod(path, 0o700);
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  await chmod(path, 0o700);
 }
 
 export async function saveRegistry(reg: SpeakerRegistry, path: string): Promise<void> {

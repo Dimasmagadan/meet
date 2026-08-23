@@ -22,7 +22,7 @@ export function entriesFromSession(session: Session, results: Map<string, string
     const text = results.get(key) || "";
     if (!text) continue;
     const timestamp = chunkToTimestamp(chunk.index, session.chunkDurationSeconds, session.startedAt);
-    entries.push({ source: chunk.source, chunkIndex: chunk.index, timestamp, text });
+    entries.push({ source: chunk.source, chunkIndex: chunk.index, timestamp, text, ...(chunk.speaker ? { speaker: chunk.speaker } : {}) });
   }
 
   entries.sort((a, b) => {

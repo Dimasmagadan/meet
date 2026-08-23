@@ -162,7 +162,12 @@ export class LiveSpeakerLabeler {
     // number so labeling stays stable while chunk quality fluctuates around
     // the threshold (mixed-speaker chunks usually score low and land here).
     if (best && marginOk && best.score >= NEAR_ANCHOR_PORCH) {
-      return { speaker: this.assignNumber(this.identityKey(best)), matchedName: null, score: best.score, globalSpeakerId: null };
+      return {
+        speaker: best.name ?? this.assignNumber(this.identityKey(best)),
+        matchedName: best.name,
+        score: best.score,
+        globalSpeakerId: best.globalId,
+      };
     }
 
     if (marginOk) {

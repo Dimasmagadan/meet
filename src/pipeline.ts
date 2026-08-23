@@ -235,6 +235,7 @@ export class Pipeline {
         index: item.index,
         wav: item.wav,
         status: "done",
+        ...(liveSpeaker ? { speaker: liveSpeaker } : {}),
       });
 
       if (this.onTranscribed) {
@@ -251,6 +252,7 @@ export class Pipeline {
           timestamp,
           text: result.text,
           rmsDb: result.metrics.rmsDb,
+          ...(liveSpeaker ? { speaker: liveSpeaker } : {}),
         }).catch((err) => {
           this.warn("entries.jsonl append failed", err);
           this.session.lastError = `entries.jsonl append failed: ${err instanceof Error ? err.message : String(err)}`;

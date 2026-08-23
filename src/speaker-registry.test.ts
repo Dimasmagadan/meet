@@ -386,10 +386,10 @@ describe("registry persistence", () => {
     assert.equal(loaded.speakers.length, 1);
   });
 
-  it("does not change the mode of an existing registry parent directory", async () => {
+  it("makes an existing registry parent directory private", async () => {
     chmodSync(dir, 0o755);
     await saveRegistry(emptyRegistry(), join(dir, "registry.json"));
-    assert.equal(statSync(dir).mode & 0o777, 0o755);
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
   });
 
   it("loadRegistry drops entries with non-array/empty embeddings or missing id/backend", () => {
@@ -439,10 +439,10 @@ describe("matches.log", () => {
     assert.match(content, /line one\nline two\nline three\n/);
   });
 
-  it("does not change the mode of an existing matches log parent directory", async () => {
+  it("makes an existing matches log parent directory private", async () => {
     chmodSync(dir, 0o755);
     await appendMatchesLog(join(dir, "matches.log"), ["line"]);
-    assert.equal(statSync(dir).mode & 0o777, 0o755);
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
   });
 
   it("appendMatchesLog is a no-op for an empty list (does not create the file)", async () => {

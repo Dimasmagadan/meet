@@ -89,6 +89,15 @@ describe("entriesFromSession", () => {
     assert.strictEqual(entries.length, 1);
     assert.strictEqual(entries[0].chunkIndex, 1);
   });
+
+  it("preserves a live speaker label saved on the processed chunk", () => {
+    const session: Session = {
+      ...baseSession,
+      processedChunks: [{ source: "sys", index: 1, wav: "sys-001.wav", status: "done", speaker: "Ann" }],
+    };
+    const entries = entriesFromSession(session, new Map([["sys-001", "Hello"]]));
+    assert.equal(entries[0].speaker, "Ann");
+  });
 });
 
 describe("makeHeader", () => {
