@@ -593,9 +593,12 @@ async function runDoctor(mode: "mic" | "full") {
   if (config.speakerRegistryEnabled) {
     const registry = loadRegistry(config.speakerRegistryPath);
     const active = registry.speakers.filter((s) => !s.quarantined).length;
-    console.log(chalk.green(`speaker registry: enabled (${active} active, ${registry.speakers.length} total) @ ${expandPath(config.speakerRegistryPath)}, match threshold ${config.speakerMatchThreshold}`));
+    const live = config.liveSpeakerLabels
+      ? `live labels on (threshold ${config.liveSpeakerMatchThreshold})`
+      : "live labels off";
+    console.log(chalk.green(`speaker registry: enabled (${active} active, ${registry.speakers.length} total) @ ${expandPath(config.speakerRegistryPath)}, match threshold ${config.speakerMatchThreshold}, ${live}`));
   } else {
-    console.log(chalk.yellow("speaker registry: disabled (set speakerRegistryEnabled: true in ~/.meet/config.json)"));
+    console.log(chalk.yellow("speaker registry: disabled (set speakerRegistryEnabled: true in ~/.meet/config.json) — also gates live speaker labels"));
   }
 
   const sessionDir = await mkdtemp(join(tmpdir(), "meet-doctor-"));

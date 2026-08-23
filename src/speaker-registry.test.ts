@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -9,6 +9,7 @@ import {
   cosineSimilarity,
   matchSpeaker,
   matchSelf,
+  matchSpeakerRanked,
   registerSpeaker,
   applyRegistryToSpeakers,
   forgetSpeaker,
@@ -16,6 +17,11 @@ import {
   emptyRegistry,
   matchesLogPath,
   appendMatchesLog,
+  centroidsOf,
+  l2Normalize,
+  isValidEmbedding,
+  EMA_ALPHA,
+  CENTROID_ATTACH_PORCH,
   type SpeakerRegistry,
   type RegistrySpeaker,
 } from "./speaker-registry.js";
@@ -380,6 +386,12 @@ describe("registry persistence", () => {
     assert.equal(loaded.speakers.length, 1);
   });
 
+  it("does not change the mode of an existing registry parent directory", async () => {
+    chmodSync(dir, 0o755);
+    await saveRegistry(emptyRegistry(), join(dir, "registry.json"));
+    assert.equal(statSync(dir).mode & 0o777, 0o755);
+  });
+
   it("loadRegistry drops entries with non-array/empty embeddings or missing id/backend", () => {
     // A hand-edited or partially-corrupt registry: validate per-entry at load
     // so cosineSimilarity never sees a null embedding and `meet speakers list`
@@ -427,9 +439,198 @@ describe("matches.log", () => {
     assert.match(content, /line one\nline two\nline three\n/);
   });
 
+  it("does not change the mode of an existing matches log parent directory", async () => {
+    chmodSync(dir, 0o755);
+    await appendMatchesLog(join(dir, "matches.log"), ["line"]);
+    assert.equal(statSync(dir).mode & 0o777, 0o755);
+  });
+
   it("appendMatchesLog is a no-op for an empty list (does not create the file)", async () => {
     const path = join(dir, "matches.log");
     await appendMatchesLog(path, []);
     assert.equal(existsSync(path), false);
+  });
+});
+
+describe("multi-centroid voices", () => {
+  function basis(i: number, dim = 256): number[] {
+    const v = Array<number>(dim).fill(0);
+    v[i] = 1;
+    return v;
+  }
+
+  // Unit vector at `cosTarget` cosine from `from`, assuming from/to are
+  // orthonormal basis vectors.
+  function mixAt(cosTarget: number, from: number[], to: number[]): number[] {
+    const sin = Math.sqrt(Math.max(0, 1 - cosTarget * cosTarget));
+    return from.map((x, i) => x * cosTarget + to[i] * sin);
+  }
+
+  function row(id: string, embedding: number[], extra: Partial<RegistrySpeaker> = {}): RegistrySpeaker {
+    return { id, name: null, embedding, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m0", matchCount: 0, ...extra };
+  }
+
+  it("centroidsOf falls back to [embedding] when centroids are absent/invalid", () => {
+    const legacy = row("a", basis(0));
+    assert.deepEqual(centroidsOf(legacy), [legacy.embedding]);
+    const broken = row("b", basis(0), { centroids: [[0.1], []] });
+    assert.deepEqual(centroidsOf(broken), [broken.embedding]);
+  });
+
+  it("matchSpeaker matches via any centroid, not just embedding", () => {
+    const target = basis(1);
+    const registry: SpeakerRegistry = {
+      version: 1,
+      speakers: [row("a", basis(0), { centroids: [basis(0), target] })],
+    };
+    const m = matchSpeaker(target, registry, 0.75, "diarizer-manager");
+    assert.equal(m?.speaker.id, "a");
+    assert.ok(m!.score > 0.999);
+  });
+
+  it("loadRegistry accepts a hand-written centroids-only row and heals embedding on save", async () => {
+    const dir = makeTmpDir();
+    try {
+      const path = join(dir, "registry.json");
+      writeFileSync(path, JSON.stringify({
+        version: 1,
+        speakers: [{ id: "c-only", name: null, embedding: null, centroids: [basis(0)], backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 }],
+      }), "utf-8");
+      const loaded = loadRegistry(path);
+      assert.equal(loaded.speakers.length, 1);
+      assert.equal(matchSpeaker(basis(0), loaded, 0.75, "diarizer-manager")?.speaker.id, "c-only");
+      await saveRegistry(loaded, path);
+      const reloaded = loadRegistry(path);
+      assert.ok(isValidEmbedding(reloaded.speakers[0].embedding));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("saveRegistry -> loadRegistry round-trips centroids", async () => {
+    const dir = makeTmpDir();
+    try {
+      const path = join(dir, "registry.json");
+      const reg = emptyRegistry();
+      reg.speakers.push(row("a", basis(0), { centroids: [basis(0), basis(1)] }));
+      await saveRegistry(reg, path);
+      const loaded = loadRegistry(path);
+      assert.equal(loaded.speakers[0].centroids?.length, 2);
+      assert.deepEqual(loaded.speakers[0].centroids![1], basis(1));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("matchSpeakerRanked", () => {
+  const v = () => Array.from({ length: 256 }, (_, i) => ((i * 13) % 97) / 100);
+
+  it("returns nulls for an empty registry", () => {
+    assert.deepEqual(matchSpeakerRanked(v(), emptyRegistry(), 0.75, "diarizer-manager"), { best: null, second: null });
+  });
+
+  it("returns nulls for an invalid embedding", () => {
+    const reg = emptyRegistry();
+    reg.speakers.push({ id: "a", name: null, embedding: v(), backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 });
+    assert.deepEqual(matchSpeakerRanked([0.5], reg, 0.75, "diarizer-manager"), { best: null, second: null });
+  });
+
+  it("orders best before second deterministically, honoring excludeIds and backend scope", () => {
+    const target = Array.from({ length: 256 }, (_, i) => (i === 0 ? 1 : 0));
+    const tilt = target.map((x, i) => (i === 1 ? 0.2 : x)); // slightly less similar
+    const reg: SpeakerRegistry = {
+      version: 1,
+      speakers: [
+        { id: "b-near", name: null, embedding: target, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
+        { id: "a-near", name: null, embedding: target.map((x) => x), backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
+        { id: "tilt", name: null, embedding: tilt, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
+        { id: "vbx", name: null, embedding: target, backend: "vbx-offline", createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
+        { id: "quar", name: null, embedding: target, backend: "diarizer-manager", quarantined: true, createdAt: "x", sourceMeetingId: "m", matchCount: 0 },
+      ],
+    };
+    const ranked = matchSpeakerRanked(target, reg, 0.75, "diarizer-manager");
+    assert.equal(ranked.best!.score, ranked.second!.score);
+    // Perfect tie between identical rows resolves by id: "a-near" < "b-near".
+    assert.equal(ranked.best!.speaker.id, "a-near");
+    assert.equal(ranked.second!.speaker.id, "b-near");
+
+    const excluded = matchSpeakerRanked(target, reg, 0.75, "diarizer-manager", new Set(["a-near"]));
+    assert.equal(excluded.best!.speaker.id, "b-near");
+    assert.equal(excluded.second!.speaker.id, "tilt");
+  });
+});
+
+describe("applyRegistryToSpeakers centroid adaptation", () => {
+  function basis(i: number, dim = 256): number[] {
+    const v = Array<number>(dim).fill(0);
+    v[i] = 1;
+    return v;
+  }
+  function mixAt(cosTarget: number, from: number[], to: number[]): number[] {
+    const sin = Math.sqrt(Math.max(0, 1 - cosTarget * cosTarget));
+    return from.map((x, i) => x * cosTarget + to[i] * sin);
+  }
+  function row(id: string, embedding: number[], extra: Partial<RegistrySpeaker> = {}): RegistrySpeaker {
+    return { id, name: null, embedding, backend: "diarizer-manager", createdAt: "x", sourceMeetingId: "m0", matchCount: 0, ...extra };
+  }
+
+  it("confirmed match folds the sample into the nearest centroid by EMA", () => {
+    const e1 = basis(0);
+    const e2 = basis(1);
+    const reg: SpeakerRegistry = { version: 1, speakers: [row("ann", e1, { name: "Ann" })] };
+    const sample = mixAt(0.9, e1, e2); // comfortably above the default threshold
+    const applied = applyRegistryToSpeakers(new Map([["Speaker 1", sample]]), "m1", reg, 0.75, "diarizer-manager");
+
+    const ann = reg.speakers[0];
+    const expectedCentroid = l2Normalize(e1.map((x, i) => EMA_ALPHA * x + (1 - EMA_ALPHA) * sample[i]));
+    assert.ok(ann.centroids, "centroids list materialized");
+    assert.ok(Math.abs(cosineSimilarity(ann.centroids![0], expectedCentroid) - 1) < 1e-9);
+    assert.ok(Math.abs(cosineSimilarity(ann.embedding, expectedCentroid) - 1) < 1e-9);
+    assert.equal(applied.labelOverrides.get("Speaker 1"), "Ann");
+    assert.match(applied.matches[0], /matched "Ann"/);
+  });
+
+  it("clear near-miss attaches a centroid instead of registering a duplicate", () => {
+    const e1 = basis(0);
+    const e2 = basis(1);
+    const reg: SpeakerRegistry = { version: 1, speakers: [row("ann", e1)] };
+    const sample = mixAt(CENTROID_ATTACH_PORCH + 0.05, e1, e2); // in [porch, threshold)
+    const applied = applyRegistryToSpeakers(new Map([["Speaker 1", sample]]), "m1", reg, 0.75, "diarizer-manager");
+
+    assert.equal(reg.speakers.length, 1, "no duplicate registered");
+    assert.equal(reg.speakers[0].id, "ann");
+    assert.equal(reg.speakers[0].centroids!.length, 2);
+    assert.equal(applied.speakerMeta.get("Speaker 1")?.fresh, false);
+    assert.equal(applied.speakerMeta.get("Speaker 1")?.globalSpeakerId, "ann");
+    assert.match(applied.matches[0], /attached centroid/);
+  });
+
+  it("ambiguous near-miss registers fresh (two prior entries nearly equidistant)", () => {
+    const e1 = basis(0);
+    const e2 = basis(1);
+    const reg: SpeakerRegistry = { version: 1, speakers: [row("a", e1), row("b", e2)] };
+    // 0.70·e1 + 0.68·e2 normalized: ~0.717 to a, ~0.697 to b — margin < AMBIGUITY_MARGIN.
+    const raw = e1.map((x, i) => x * 0.7 + e2[i] * 0.68);
+    const sample = l2Normalize(raw);
+    const applied = applyRegistryToSpeakers(new Map([["Speaker 1", sample]]), "m1", reg, 0.75, "diarizer-manager");
+
+    assert.equal(reg.speakers.length, 3, "fresh entry created, neither prior widened");
+    assert.equal(reg.speakers[0].centroids, undefined);
+    assert.equal(applied.speakerMeta.get("Speaker 1")?.fresh, true);
+  });
+
+  it("a second same-run label cannot widen an already-consumed entry", () => {
+    const e1 = basis(0);
+    const e2 = basis(1);
+    const e3 = basis(2);
+    const reg: SpeakerRegistry = { version: 1, speakers: [row("ann", e1)] };
+    const first = mixAt(0.7, e1, e2);
+    const secondSample = mixAt(0.72, e1, e3);
+    const applied = applyRegistryToSpeakers(new Map([["Speaker 1", first], ["Speaker 2", secondSample]]), "m1", reg, 0.75, "diarizer-manager");
+
+    assert.equal(reg.speakers[0].centroids!.length, 2, "first label attached");
+    assert.equal(reg.speakers.length, 2, "second label registered fresh, not attached");
+    assert.match(applied.matches.join("\n"), /registered \(unnamed\)/);
   });
 });

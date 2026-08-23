@@ -21,7 +21,8 @@ meet start "Title"
 ├── src/finalize.ts          — background/foreground session finalization with progress tracking
 ├── src/final-pass.ts        — high-quality retranscription pass, echo/duplicate filtering
 ├── src/diarization.ts       — speaker diarization (final pass only): concatSysChunks, runDiarizer (AudioAnalysis diarize), assignSpeakers → "Speaker N" labels; parseDiarizeOutput threads per-speaker embeddings
-├── src/speaker-registry.ts  — cross-session speaker registry (S1): cosine match (backend-scoped, threshold 0.75), register/forget/quarantine, matches.log; opt-in via speakerRegistryEnabled (biometric)
+├── src/speaker-registry.ts  — cross-session speaker registry (S1): cosine match (backend-scoped, threshold 0.75) over multi-centroid voiceprints (up to 3 per person; EMA-adapted on confirmed matches), register/forget/quarantine, matchSpeakerRanked (top-2 + ambiguity guard for the live path), matches.log; opt-in via speakerRegistryEnabled (biometric)
+├── src/live-speakers.ts     — live per-chunk speaker identification: `AudioAnalysis embed` (~0.3s ANE/chunk) → read-only registry match → transcript labels during recording ("Name"/"Speaker N"); session-local prints for unknown voices, AMBIGUITY_MARGIN guard, gated by liveSpeakerLabels+speakerRegistryEnabled
 ├── src/diarization-ab.ts    — opt-in offline-VBx diarizer A/B pass (S2, `diarizationAbPass`): re-diarizes sys-concat.wav via `AudioAnalysis diarize --offline`, aligns the two independent label numberings by time overlap, writes diarization-ab-report.json (speaker counts, agreement %, swaps, talk-time deltas, embedding cosine); never touches transcript.md
 ├── src/talk-time.ts         — per-speaker talk-time stats, renders the "## Talk Time" transcript footer
 ├── src/parakeet-pass.ts     — optional Parakeet-TDT A/B pass (AudioAnalysis transcribe) → transcript.parakeet.md, ab-report.json

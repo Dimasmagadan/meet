@@ -87,14 +87,17 @@ export function timestampToChunkIndex(timestamp: string, chunkDurationSeconds: n
 
 export function parseTranscriptEntries(content: string, session?: { chunkDurationSeconds: number; startedAt: string }): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
-  const lineRegex = /^\*\*\[(\d{2}:\d{2}:\d{2})\] (Me|Others|Speaker \d+):\*\*\s*(.+)$/;
+  // Labels: "Me"/"Others" plus anything live speaker identification wrote
+  // ("Speaker N" or a registry name like "Anna") — dropping unknown labels
+  // would erase those entries on crash-recovery rewrites.
+  const lineRegex = /^\*\*\[(\d{2}:\d{2}:\d{2})\] (.+?):\*\*\s*(.+)$/;
   for (const line of content.split("\n")) {
     const m = lineRegex.exec(line.trim());
     if (!m) continue;
     const [, timestamp, label, text] = m;
     const source = label === "Me" ? "mic" as const : "sys" as const;
     const chunkIndex = session ? timestampToChunkIndex(timestamp, session.chunkDurationSeconds, session.startedAt) : 0;
-    const speaker = /^Speaker \d+$/.test(label) ? label : undefined;
+    const speaker = label !== "Me" && label !== "Others" ? label : undefined;
     entries.push({ source, chunkIndex, timestamp, text: text.trim(), ...(speaker ? { speaker } : {}) });
   }
   return entries;

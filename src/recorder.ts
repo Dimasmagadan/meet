@@ -99,7 +99,7 @@ export class Recorder {
   }
 
   private initPipeline(): void {
-    this.pipeline.setTranscribeCallback((source, index, text) => {
+    this.pipeline.setTranscribeCallback((source, index, text, speaker) => {
       const chunkOffset = index * this.session.chunkDurationSeconds;
       this.session.latestProcessedOffsetSeconds = Math.max(
         this.session.latestProcessedOffsetSeconds,
@@ -118,7 +118,7 @@ export class Recorder {
         this.session.chunkDurationSeconds,
         this.session.startedAt,
       );
-      const entry: TranscriptEntry = { source, chunkIndex: index, timestamp, text };
+      const entry: TranscriptEntry = { source, chunkIndex: index, timestamp, text, ...(speaker ? { speaker } : {}) };
       appendEntry(this.outputFile, entry).catch((err) => this.warn("transcript append failed", err));
 
       this.summaryScheduler?.onChunk(source, index);

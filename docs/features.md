@@ -43,6 +43,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 - **Speaker diarization** — on the final pass, system audio is concatenated and run through FluidAudio's diarizer to relabel entries as `Speaker 1`, `Speaker 2`… by first appearance. Writes `speakers.json`.
 - **Speaker rename** — `meet rename <dir> "Speaker 1" "Женя"` patches the label across `transcript*.md`, `index.md`, and `speakers.json` (idempotent).
 - **Cross-session speaker registry** (opt-in, biometric) — stores voice embeddings; cosine-matches known voices across meetings so the same person is auto-labeled.
+- **Live speaker labels** (needs the registry) — during recording, each transcribed chunk gets a cheap on-device voiceprint (`AudioAnalysis embed`, ~0.3 s on the ANE) matched against the registry: named people appear under their name in the live transcript and notch panel, unnamed known voices as `Speaker N`. Read-only against the registry; the final pass stays authoritative.
 - **Talk-time statistics** — per-speaker duration & percentage, rendered as a `## Talk Time` footer on every finalized transcript.
 - **Speaker-name suggestions** — `meet speakers suggest <dir>` prints talk time, registry match confidence, and (for calendar-auto-started meetings) the attendee list against still-unnamed speakers, with copy-pasteable `meet rename` lines. Never renames on its own.
 <!-- /FEATURES:speaker-identification -->
@@ -159,6 +160,8 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `diarizationAbPass` | `false` | Diarizer A/B (opt-in) |
 | `opencodeIndexPass` | `false` | `index.md` generation (opt-in) |
 | `speakerRegistryEnabled` | `false` | Cross-session registry (opt-in, biometric) |
+| `liveSpeakerLabels` | `true` | Live per-chunk speaker labels (needs the registry) |
+| `liveSpeakerMatchThreshold` | `0.7` | Live label match threshold |
 | `attentionAlerts` | `true` | Live trigger-word alerts |
 | `summaryEnabled` | `true` | Live extractive summary |
 | `gateHeavyPasses` | `true` | System-pressure gates |

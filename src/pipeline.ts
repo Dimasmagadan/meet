@@ -9,8 +9,9 @@ import { analyzeWavFile } from "./audio-metrics.js";
 import { CaptureHealthMonitor, type HealthWarning, type CaptureHealthConfig } from "./capture-health.js";
 import { appendEntryRecord } from "./entries-store.js";
 import { chunkToTimestamp } from "./assembler.js";
+import { createLiveSpeakerLabeler, runEmbedder, type LiveSpeakerLabeler } from "./live-speakers.js";
 
-type TranscribeCallback = (source: "mic" | "sys", index: number, text: string) => void;
+type TranscribeCallback = (source: "mic" | "sys", index: number, text: string, speaker?: string) => void;
 type FailureCallback = (source: "mic" | "sys", index: number, error: string) => void;
 export type DrainProgress = { done: number; total: number };
 export type DrainProgressCallback = (progress: DrainProgress) => void;
@@ -42,6 +43,8 @@ export class Pipeline {
   // neither "in queue" nor "done" and re-enqueues the same chunk for a
   // second transcription. isProcessed() treats this key as claimed too.
   private inFlightKey: string | null = null;
+  // undefined = not attempted yet; null = disabled (config gates failed).
+  private liveLabeler: LiveSpeakerLabeler | null | undefined = undefined;
 
   constructor(session: Session) {
     this.session = session;
@@ -202,6 +205,28 @@ export class Pipeline {
         pass: "live",
         attendees: this.session.attendees,
       });
+
+      // Live speaker identification (best-effort): only meaningful-speech
+      // chunks are worth an embed pass; drain mode skips it so Ctrl-C
+      // finalization stays fast — the finalize diarization pass relabels
+      // everything authoritatively anyway.
+      let liveSpeaker: string | undefined;
+      if (!this.drainMode && result.text.trim()) {
+        if (this.liveLabeler === undefined) this.liveLabeler = createLiveSpeakerLabeler(config);
+        // Full mode identifies the sys channel live (mic is always "Me");
+        // mic-only mode splits mic chunks via the enrolled self voiceprint.
+        const wantsIdentification = this.session.mode === "mic" ? item.source === "mic" : item.source === "sys";
+        if (this.liveLabeler && wantsIdentification) {
+          try {
+            const embedding = await runEmbedder(config, wavPath);
+            const id = this.liveLabeler.identify(item.source, embedding);
+            if (id) liveSpeaker = id.speaker;
+          } catch (err) {
+            this.warn("live speaker identification failed", err);
+          }
+        }
+      }
+
       const key = `${result.source}-${String(result.chunkIndex).padStart(3, "0")}`;
       this.results.set(key, result.text);
 
@@ -213,7 +238,7 @@ export class Pipeline {
       });
 
       if (this.onTranscribed) {
-        this.onTranscribed(item.source, item.index, result.text);
+        this.onTranscribed(item.source, item.index, result.text, liveSpeaker);
       }
 
       // Append to entries.jsonl for reliable recovery. Use chunk-relative time

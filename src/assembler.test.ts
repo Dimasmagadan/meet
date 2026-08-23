@@ -170,6 +170,18 @@ describe("parseTranscriptEntries", () => {
     assert.strictEqual(entries[0].text, "Здравствуйте");
   });
 
+  it("parses live-identified name labels and preserves them as speaker", () => {
+    const md = "**[14:30:00] Anna:** Привет\n**[14:30:15] Женя:** Ответ\n";
+    const entries = parseTranscriptEntries(md);
+    assert.strictEqual(entries.length, 2);
+    assert.strictEqual(entries[0].speaker, "Anna");
+    assert.strictEqual(entries[1].speaker, "Женя");
+    // Round-trip: formatEntry renders the same label back.
+    const md2 = assembleMarkdown("t", new Date().toISOString(), entries);
+    assert.ok(md2.includes("Anna:** Привет"));
+    assert.ok(md2.includes("Женя:** Ответ"));
+  });
+
   it("parses multiple entries", () => {
     const md = "**[14:30:00] Me:** Привет\n**[14:30:15] Others:** Ответ\n**[14:30:30] Me:** Ещё текст\n";
     const entries = parseTranscriptEntries(md);

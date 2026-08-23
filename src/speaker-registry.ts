@@ -12,6 +12,22 @@ import { expandPath } from "./storage.js";
 export type SpeakerBackend = "diarizer-manager" | "vbx-offline";
 export const EMBEDDING_DIMENSION = 256;
 
+// A person may sound different across channels/devices (mac mic vs phone on
+// speaker), so each registry row can carry up to MAX_CENTROIDS voice
+// centroids; matching takes the max cosine across them. Rows written before
+// this feature have only `embedding` — treated as the single centroid.
+export const MAX_CENTROIDS = 3;
+// EMA factor when folding a confirmed match's embedding into its nearest
+// centroid: adapts the print to channel drift without losing identity.
+export const EMA_ALPHA = 0.9;
+// Below-threshold-but-close score at which a miss stops creating a duplicate
+// entry and instead widens the nearest existing speaker with a new centroid.
+export const CENTROID_ATTACH_PORCH = 0.65;
+// Live-path guard: when the best match leads the second-best by less than
+// this, identification is treated as inconclusive (finalization is unaffected
+// — its one-to-one assignment is deterministic regardless of margins).
+export const AMBIGUITY_MARGIN = 0.05;
+
 export function isValidEmbedding(value: unknown, requireNonZero = true): value is number[] {
   if (!Array.isArray(value) || value.length !== EMBEDDING_DIMENSION || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return false;
   return !requireNonZero || value.some((n) => n !== 0);
@@ -20,7 +36,8 @@ export function isValidEmbedding(value: unknown, requireNonZero = true): value i
 export interface RegistrySpeaker {
   id: string;                 // stable nanoid
   name: string | null;        // null until a user names them
-  embedding: number[];        // 256-d, L2-normalized WeSpeaker
+  embedding: number[];        // 256-d, L2-normalized WeSpeaker; kept equal to centroids[0] for legacy readers
+  centroids?: number[][];     // optional extra voice variants (1..MAX_CENTROIDS, each L2-normalized)
   backend: SpeakerBackend;
   quarantined?: boolean;      // set when a backend flip retires this entry (kept for audit, never matched)
   isSelf?: boolean;           // the recording user's own voiceprint (see matchSelf) — never carries a display name
@@ -71,11 +88,16 @@ export function loadRegistry(path: string): SpeakerRegistry {
       (s): s is RegistrySpeaker =>
         !!s
         && typeof s.id === "string" && s.id.length > 0
-         && isValidEmbedding(s.embedding)
+         && rowHasVoice(s)
          && (s.backend === "diarizer-manager" || s.backend === "vbx-offline"),
     );
     const invalid = parsed.speakers.length - speakers.length;
     if (invalid > 0) console.error(`[meet] speaker registry: skipped ${invalid} malformed embedding entr${invalid === 1 ? "y" : "ies"}`);
+    // Heal centroids-only rows so every in-memory entry carries a valid
+    // legacy `embedding` too (mutations keep them synced from here on).
+    for (const s of speakers) {
+      if (!isValidEmbedding(s.embedding)) s.embedding = centroidsOf(s)[0];
+    }
     return { version: 1, speakers };
   } catch {
     if (existsSync(expanded)) quarantineCorruptRegistry(expanded);
@@ -90,10 +112,83 @@ function quarantineCorruptRegistry(path: string): void {
   } catch {}
 }
 
+function hasValidCentroids(centroids: unknown): centroids is number[][] {
+  return Array.isArray(centroids)
+    && centroids.length > 0
+    && centroids.length <= MAX_CENTROIDS
+    && centroids.every((c) => isValidEmbedding(c));
+}
+
+// A row is usable when it carries either the legacy single embedding or a
+// valid centroid list (hand-edited rows may have only the latter; saving
+// re-syncs `embedding` to centroids[0]).
+function rowHasVoice(s: RegistrySpeaker): boolean {
+  return isValidEmbedding(s.embedding) || hasValidCentroids(s.centroids);
+}
+
+// Effective voice variants of a row. Callers guarantee at least one valid
+// vector via loadRegistry's rowHasVoice filter / registerSpeaker validation.
+export function centroidsOf(speaker: RegistrySpeaker): number[][] {
+  if (hasValidCentroids(speaker.centroids)) return speaker.centroids;
+  return [speaker.embedding];
+}
+
+export function l2Normalize(v: number[]): number[] {
+  let n = 0;
+  for (const x of v) n += x * x;
+  const d = Math.sqrt(n);
+  return d === 0 ? [...v] : v.map((x) => x / d);
+}
+
+// Max cosine across the row's voice variants.
+function bestCosineAgainstSpeaker(emb: number[], speaker: RegistrySpeaker): number {
+  let best = -Infinity;
+  for (const c of centroidsOf(speaker)) {
+    const score = cosineSimilarity(emb, c);
+    if (score > best) best = score;
+  }
+  return best;
+}
+
+// Pulls the variant closest to `emb` toward it by EMA and keeps `embedding`
+// synced to centroids[0] so pre-centroids readers still see a live print.
+function emaUpdateCentroid(speaker: RegistrySpeaker, emb: number[]): void {
+  if (!hasValidCentroids(speaker.centroids)) speaker.centroids = [speaker.embedding];
+  const cs = speaker.centroids!;
+  let idx = 0;
+  let best = -Infinity;
+  for (let i = 0; i < cs.length; i++) {
+    const score = cosineSimilarity(emb, cs[i]);
+    if (score > best) {
+      best = score;
+      idx = i;
+    }
+  }
+  cs[idx] = l2Normalize(cs[idx].map((x, i) => EMA_ALPHA * x + (1 - EMA_ALPHA) * emb[i]));
+  speaker.embedding = cs[0];
+}
+
+// Widens an existing speaker with a new voice variant; a full slot list folds
+// into the nearest variant instead (identity diversity beats unbounded growth).
+function attachCentroid(speaker: RegistrySpeaker, emb: number[]): void {
+  if (!hasValidCentroids(speaker.centroids)) speaker.centroids = [speaker.embedding];
+  const cs = speaker.centroids!;
+  if (cs.length < MAX_CENTROIDS) {
+    cs.push(l2Normalize([...emb]));
+  } else {
+    emaUpdateCentroid(speaker, emb);
+  }
+  speaker.embedding = cs[0];
+}
+
+async function ensurePrivateDirectory(path: string): Promise<void> {
+  const created = await mkdir(path, { recursive: true, mode: 0o700 });
+  if (created) await chmod(path, 0o700);
+}
+
 export async function saveRegistry(reg: SpeakerRegistry, path: string): Promise<void> {
   const expanded = expandPath(path);
-  await mkdir(dirname(expanded), { recursive: true, mode: 0o700 });
-  await chmod(dirname(expanded), 0o700);
+  await ensurePrivateDirectory(dirname(expanded));
   const tmp = `${expanded}.${process.pid}.${Date.now()}.tmp`;
   try {
     await writeFile(tmp, JSON.stringify(reg, null, 2), { encoding: "utf-8", mode: 0o600 });
@@ -132,20 +227,38 @@ export function matchSpeaker(
   backend: SpeakerBackend,
   excludeIds?: Set<string>,
 ): { speaker: RegistrySpeaker; score: number } | null {
-  let best: RegistrySpeaker | null = null;
-  let bestScore = -Infinity;
+  const { best } = matchSpeakerRanked(emb, registry, threshold, backend, excludeIds);
+  return best && best.score >= threshold ? best : null;
+}
+
+export interface RankedMatch {
+  best: { speaker: RegistrySpeaker; score: number } | null;
+  second: { speaker: RegistrySpeaker; score: number } | null;
+}
+
+// Top-2 nearest same-backend non-quarantined entries regardless of threshold
+// (null only when the registry has no eligible rows). The `threshold` param
+// exists for call-site symmetry with matchSpeaker; ranking itself ignores it.
+// Callers decide policy: a plain threshold on `best`, or the live-path
+// ambiguity guard — when `best.score - second.score < AMBIGUITY_MARGIN` the
+// identification is inconclusive and should not produce a label. Ties resolve
+// deterministically by id so replays of the same registry state are stable.
+export function matchSpeakerRanked(
+  emb: number[],
+  registry: SpeakerRegistry,
+  threshold: number,
+  backend: SpeakerBackend,
+  excludeIds?: Set<string>,
+): RankedMatch {
+  if (!isValidEmbedding(emb)) return { best: null, second: null };
+  const scored: Array<{ speaker: RegistrySpeaker; score: number }> = [];
   for (const s of registry.speakers) {
-    if (s.quarantined) continue;
-    if (s.backend !== backend) continue;
-    if (excludeIds && excludeIds.has(s.id)) continue;
-    const score = cosineSimilarity(emb, s.embedding);
-    if (score > bestScore) {
-      bestScore = score;
-      best = s;
-    }
+    if (s.quarantined || s.backend !== backend) continue;
+    if (excludeIds?.has(s.id)) continue;
+    scored.push({ speaker: s, score: bestCosineAgainstSpeaker(emb, s) });
   }
-  if (best && bestScore >= threshold) return { speaker: best, score: bestScore };
-  return null;
+  scored.sort((a, b) => b.score - a.score || a.speaker.id.localeCompare(b.speaker.id));
+  return { best: scored[0] ?? null, second: scored[1] ?? null };
 }
 
 // Nearest isSelf entry whose cosine is >= threshold, else null. Used to split
@@ -161,7 +274,7 @@ export function matchSelf(
   let bestScore = -Infinity;
   for (const s of registry.speakers) {
     if (s.quarantined || !s.isSelf || s.backend !== backend) continue;
-    const score = cosineSimilarity(emb, s.embedding);
+    const score = bestCosineAgainstSpeaker(emb, s);
     if (score > bestScore) {
       bestScore = score;
       best = s;
@@ -226,7 +339,7 @@ export function applyRegistryToSpeakers(
     if (!isValidEmbedding(emb)) continue;
     for (const speaker of registry.speakers) {
       if (speaker.quarantined || speaker.backend !== backend || claimedThisRun.has(speaker.id)) continue;
-      const score = cosineSimilarity(emb, speaker.embedding);
+      const score = bestCosineAgainstSpeaker(emb, speaker);
       if (score >= threshold) candidates.push({ label, emb, speaker, score });
     }
   }
@@ -244,6 +357,9 @@ export function applyRegistryToSpeakers(
     if (m) {
       claimedThisRun.add(m.speaker.id);
       m.speaker.matchCount += 1;
+      // Confirmed identity: fold the new sample into the nearest centroid so
+      // the print drifts with the person's channel/device over time.
+      emaUpdateCentroid(m.speaker, emb);
       if (m.speaker.name) labelOverrides.set(label, m.speaker.name);
       speakerMeta.set(label, {
         globalSpeakerId: m.speaker.id,
@@ -255,24 +371,59 @@ export function applyRegistryToSpeakers(
         `${iso} ${meetingId} ${m.speaker.id} matched "${m.speaker.name ?? ""}" @ ${m.score.toFixed(4)} (threshold ${threshold})`,
       );
     } else {
-      // Audit the nearest prior score even on a miss (0 when registry empty).
+      // Audit the top-2 prior scores even on a miss (0 when registry empty).
       // Same-run registrations are not "prior" — exclude them so the audit
       // reflects only pre-existing entries.
       let nearest = 0;
+      let second = 0;
+      let nearestEntry: RegistrySpeaker | null = null;
       for (const s of registry.speakers) {
         if (s.quarantined || s.backend !== backend) continue;
         if (claimedThisRun.has(s.id)) continue;
-        nearest = Math.max(nearest, cosineSimilarity(emb, s.embedding));
+        const score = bestCosineAgainstSpeaker(emb, s);
+        if (score > nearest) {
+          second = nearest;
+          nearest = score;
+          nearestEntry = s;
+        } else if (score > second) {
+          second = score;
+        }
       }
-      const created = registerSpeaker(emb, meetingId, registry, backend, now);
-      claimedThisRun.add(created.id);
-      speakerMeta.set(label, {
-        globalSpeakerId: created.id,
-        matchedName: null,
-        score: nearest,
-        fresh: true,
-      });
-      matches.push(`${iso} ${meetingId} ${created.id} registered (unnamed) @ ${nearest.toFixed(4)}`);
+      // A near-miss that is clearly closest to exactly one existing person is
+      // the same voice seen through another channel: widen that person with a
+      // centroid instead of registering a duplicate. Ambiguous or far misses
+      // register fresh.
+      if (
+        nearestEntry
+        && nearest >= CENTROID_ATTACH_PORCH
+        && nearest < threshold
+        && (second === 0 || nearest - second >= AMBIGUITY_MARGIN)
+      ) {
+        attachCentroid(nearestEntry, emb);
+        nearestEntry.matchCount += 1;
+        // Claim like a match: a second label must never widen (or fresh-register
+        // against) the same entry within this run.
+        claimedThisRun.add(nearestEntry.id);
+        speakerMeta.set(label, {
+          globalSpeakerId: nearestEntry.id,
+          matchedName: nearestEntry.name,
+          score: nearest,
+          fresh: false,
+        });
+        matches.push(
+          `${iso} ${meetingId} ${nearestEntry.id} attached centroid @ ${nearest.toFixed(4)} (threshold ${threshold}, porch ${CENTROID_ATTACH_PORCH})`,
+        );
+      } else {
+        const created = registerSpeaker(emb, meetingId, registry, backend, now);
+        claimedThisRun.add(created.id);
+        speakerMeta.set(label, {
+          globalSpeakerId: created.id,
+          matchedName: null,
+          score: nearest,
+          fresh: true,
+        });
+        matches.push(`${iso} ${meetingId} ${created.id} registered (unnamed) @ ${nearest.toFixed(4)}`);
+      }
     }
   }
 
@@ -302,8 +453,7 @@ export function quarantineByBackend(registry: SpeakerRegistry, backend: SpeakerB
 export async function appendMatchesLog(path: string, lines: string[]): Promise<void> {
   if (lines.length === 0) return;
   const expanded = expandPath(path);
-  await mkdir(dirname(expanded), { recursive: true, mode: 0o700 });
-  await chmod(dirname(expanded), 0o700);
+  await ensurePrivateDirectory(dirname(expanded));
   await appendFile(expanded, lines.map((l) => `${l}\n`).join(""), { encoding: "utf-8", mode: 0o600 });
   await chmod(expanded, 0o600);
 }

@@ -10,6 +10,7 @@ Local meeting transcription for macOS (Apple Silicon). Records mic + system audi
 - **Dual-channel capture** — mic (you) and system audio (others) recorded simultaneously
 - **Local transcription** — whisper.cpp with Metal GPU acceleration, no internet required
 - **Speaker diarization** — system audio labeled "Speaker 1", "Speaker 2", ... on the final pass (falls back to "Others" if diarization is off/unavailable); mic is always "Me"
+- **Live speaker labels** — with the cross-session registry enabled, each chunk is matched against known voices during recording (~0.3 s on-device per chunk), so named people show up live instead of "Others"
 - **Speaker rename** — `meet rename` swaps a diarized label for a real name across a finished meeting's output
 - **Talk-time stats** — per-speaker duration/percentage footer on every finalized transcript
 - **Live transcription** — chunks processed during recording, transcript written incrementally
@@ -247,6 +248,8 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `analysisBin` | resolved like `captureBin` | Path to the `AudioAnalysis` binary |
 | `parakeetComparePass` | `true` | Run the Parakeet A/B pass after finalize |
 | `opencodeIndexPass` | `false` | Generate `index.md` (Summary/Decisions/Action Items) after `meet start` recordings finalize |
+| `liveSpeakerLabels` | `true` | Live per-chunk speaker identification (requires `speakerRegistryEnabled`) |
+| `liveSpeakerMatchThreshold` | `0.7` | Cosine threshold for live speaker labels (lower than the finalize threshold) |
 | `attentionAlerts` | `true` | Master switch for live trigger-word alerts |
 | `triggersPath` | `./triggers.json` | Trigger word list |
 | `triggersReload` | `true` | Hot-reload the triggers file on change |

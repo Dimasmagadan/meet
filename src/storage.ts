@@ -85,6 +85,7 @@ function isValidConfigValue(key: string, value: unknown): boolean {
   const unitIntervals = new Set([
     "whisperNoSpeechThreshold", "finalNoSpeechThreshold", "vadThreshold", "diarizationMinOverlap",
     "micEchoCoverageThreshold", "micEchoCorrelationThreshold", "micEchoFractionThreshold", "speakerMatchThreshold",
+    "liveSpeakerMatchThreshold",
   ]);
   if (positiveIntegers.has(key)) return Number.isSafeInteger(number) && number > 0;
   if (nonNegativeNumbers.has(key)) return Number.isFinite(number) && number >= 0;

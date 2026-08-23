@@ -129,6 +129,15 @@ export interface Config {
   speakerRegistryEnabled: boolean;
   speakerMatchThreshold: number;
   speakerRegistryPath: string;
+  // Live per-chunk speaker identification (src/live-speakers.ts): after each
+  // transcribed chunk, `AudioAnalysis embed` extracts a voiceprint and the
+  // speaker registry labels the entry in real time. Read-only against the
+  // registry — enrollment stays finalize-only. Gated on speakerRegistryEnabled.
+  liveSpeakerLabels: boolean;
+  // Chunk-level voiceprints sit lower against pooled registry centroids than
+  // pooled-vs-pooled comparisons, hence a dedicated threshold below
+  // speakerMatchThreshold.
+  liveSpeakerMatchThreshold: number;
   // Diarizes the mic channel too, but only when sys diarization found nobody
   // (the phone-call signature: a call that never went through this Mac lands
   // entirely on mic). Splits mic clusters into "Me" vs "Speaker N" using the
@@ -257,6 +266,8 @@ export const DEFAULT_CONFIG: Config = {
   speakerRegistryEnabled: false,
   speakerMatchThreshold: 0.75,
   speakerRegistryPath: "~/.meet/speakers/registry.json",
+  liveSpeakerLabels: true,
+  liveSpeakerMatchThreshold: 0.7,
   micDiarizationEnabled: false,
   lowerProcessPriority: true,
   liveQueueLagWarnChunks: 8,
