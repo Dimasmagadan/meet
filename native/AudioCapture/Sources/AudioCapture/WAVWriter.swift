@@ -96,7 +96,12 @@ struct WAVWriter {
         guard state == .writing, let handle = currentFileHandle, let tmpPath = currentTmpPath else { return nil }
         let finalName = chunkFilename(chunkIndex)
         let finalPath = outputDir.appendingPathComponent(finalName)
-        guard !FileManager.default.fileExists(atPath: finalPath.path) else { throw WriterError.destinationExists }
+        if FileManager.default.fileExists(atPath: finalPath.path) {
+            abortCurrentChunk(preserveTemporary: true)
+            chunkIndex += 1
+            try startChunk()
+            throw WriterError.destinationExists
+        }
         do {
             let header = WAVWriter.makeHeader(dataSize: UInt32(currentDataSize), sampleRate: sampleRate, channels: channels, bitsPerSample: bitsPerSample)
             try handle.seek(toOffset: 0)
