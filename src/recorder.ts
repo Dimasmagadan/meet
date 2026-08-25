@@ -239,6 +239,10 @@ export class Recorder {
     );
 
     await this.stopCapture();
+    // The menu bar may have dropped a retitle marker immediately before SIGINT.
+    // Apply it while this process still owns the active lock, and persist the new
+    // output path before the finalizer gets a chance to read session.json.
+    await this.applyPendingRetitle();
     clearActiveRecordingLock();
   }
 
@@ -273,7 +277,6 @@ export class Recorder {
 
   private async promptTags(): Promise<void> {
     this.applyPendingTags(); // catch anything queued in the last <5s before stop
-    this.applyPendingRetitle(); // same window: Stop-window renames must land even when OK precedes SIGINT by <5s
     const existing = this.session.tags ?? [];
     let picked: string[] = [];
     if (!this.opts.headless && process.stdin.isTTY) {
@@ -333,7 +336,7 @@ export class Recorder {
   // applyPendingTags' marker-file handoff). The Recorder is the only process
   // that can safely move its own output folder without racing its own writes,
   // so the short-lived `retitle` CLI only writes the marker; this does the move.
-  private applyPendingRetitle(): void {
+  private async applyPendingRetitle(): Promise<void> {
     const markerPath = join(this.session.sessionDir, "retitle-request.json");
     if (!existsSync(markerPath)) return;
 
@@ -377,10 +380,10 @@ export class Recorder {
     this.session.outputFile = newOutputFile;
     this.summaryScheduler?.setOutputFile(summaryOutputPath(this.session));
 
-    void writeAtomic(
+    await writeAtomic(
       join(this.session.sessionDir, "session.json"),
       JSON.stringify(this.session, null, 2),
-    ).catch((err) => this.warn("session.json write failed after retitle", err));
+    );
     writeActiveRecordingLock(this.session);
 
     try { unlinkSync(markerPath); } catch {}
@@ -622,7 +625,7 @@ export class Recorder {
       );
 
       this.applyPendingTags();
-      this.applyPendingRetitle();
+      void this.applyPendingRetitle().catch((err) => this.warn("pending retitle failed", err));
       this.applyPendingAskQuestion();
       this.checkAutoStop();
     }, 5000);
