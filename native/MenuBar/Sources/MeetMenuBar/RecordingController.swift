@@ -196,6 +196,13 @@ class RecordingController {
         return runAndCaptureLines(["tags", "--session", sessionDir])
     }
 
+    // Live session title straight from active-recording.lock — local JSON read, no spawn
+    // (mirrors currentSessionDir()), safe right before opening a dialog. Fresh because
+    // Recorder.applyPendingRetitle() rewrites the lock after every folder move.
+    func fetchCurrentTitle() -> String {
+        ActiveLock.read()?["title"] as? String ?? "meeting"
+    }
+
     private func runAndCaptureLines(_ args: [String]) -> [String] {
         guard let runner = resolver.resolve() else { return [] }
         let proc = Process()

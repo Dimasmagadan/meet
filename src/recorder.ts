@@ -273,6 +273,7 @@ export class Recorder {
 
   private async promptTags(): Promise<void> {
     this.applyPendingTags(); // catch anything queued in the last <5s before stop
+    this.applyPendingRetitle(); // same window: Stop-window renames must land even when OK precedes SIGINT by <5s
     const existing = this.session.tags ?? [];
     let picked: string[] = [];
     if (!this.opts.headless && process.stdin.isTTY) {

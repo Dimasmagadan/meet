@@ -11,7 +11,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 <!-- FEATURES:core-recording -->
 ## Core recording
 
-- **Menu bar app** — `native/MenuBar/` builds a Dock-less `Meet.app` that drives `meet` headlessly from the menu bar: click the icon, enter a title, start/stop/pause/extend without a terminal. Optional launch-at-login; reuses the full pipeline via shell-out + POSIX signals.
+- **Menu bar app** — `native/MenuBar/` builds a Dock-less `Meet.app` that drives `meet` headlessly from the menu bar: click Start and recording begins instantly under a default title — no naming popup; rename via "Rename Meeting…" or the title field in either tag window, with start/stop/pause/extend all without a terminal. Optional launch-at-login; reuses the full pipeline via shell-out + POSIX signals.
 - **Notch transcript panel** (14"/16" MacBook Pro, M1 Pro+) — while recording, hover the physical notch to reveal a scrollable live tail of the transcript; hides again when you move away.
 - **Calendar auto-start** — enable "Auto-Record Calendar Calls" in the menu bar to auto-start recording the moment a scheduled event with a Zoom/Meet/Teams/Webex/Whereby/Telemost/Jazz/Kontur link begins. No confirmation dialog; declined events, all-day events, and Free/OOO blocks are skipped. Auto-stops at the event's scheduled end (+ grace, trimmed for back-to-back meetings). The idle menu shows the next qualifying event so the feature stays observable.
 - **Foreground meeting recording** — `meet start "Title"` records mic + system audio, transcribes chunks live, and blocks the terminal until you stop.

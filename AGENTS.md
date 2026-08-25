@@ -55,7 +55,7 @@ meet start "Title"
 │   └── Logger.swift            — structured JSON logging
 └── native/MenuBar/         — Swift menu-bar .app (SPEC_MENUBAR_UI_2026-07-30): spawns `meet start --headless`, controls via SIGINT/SIGUSR1/SIGUSR2/SIGWINCH; ad-hoc signed, Dock-less, optional launch-at-login
     ├── main.swift              — NSApplication; setActivationPolicy(.accessory) (no Dock icon)
-    ├── AppDelegate.swift       — status item + menu (start/pause/stop/extend, Launch-at-Login, Auto-Record Calendar Calls toggle + live "Next: … in Nm" line), title modal, TCC preflight before spawn
+    ├── AppDelegate.swift       — status item + menu (start/pause/stop/extend, Launch-at-Login, Auto-Record Calendar Calls toggle + live "Next: … in Nm" line), silent start (no post-start popup — naming via "Rename Meeting…" or the tag windows' title field), TCC preflight before spawn
     ├── RecordingController.swift — headless meet spawn + POSIX signal control + attach-to-existing-session; `start(title:maxDurationMinutes:attendees:)` — manual Start omits both (CLI defaults apply), calendar auto-start passes both
     ├── RunnerResolver.swift    — shells out to `meet bin-path` (PATH augmented with /opt/homebrew/bin,/usr/local/bin) → cached Runner{node,[main.js]}
     ├── PermissionController.swift — TCC baseline: ensureMic() gated synchronously; no screen/system-audio preflight (SPEC_TCC_SCREEN_REPROMPT_2026-07-31 §6 — Core Audio process taps have no public preflight API; AudioCapture raises the "System Audio Recording Only" prompt itself as the responsible process), openPrivacySettings() deep-link

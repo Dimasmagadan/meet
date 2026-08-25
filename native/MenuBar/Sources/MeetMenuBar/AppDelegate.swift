@@ -151,10 +151,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // Recording starts under the default title "meeting" the instant the mic gate clears —
-    // no dialog stands between "click Start" and "audio is being captured". The naming
-    // prompt still shows right after, but it's cosmetic from here on: Cancel just leaves
-    // the title as "meeting" (still renameable later via "Rename Meeting…").
+    // Silent start (SPEC_SILENT_START_TAG_WINDOW_RENAME_2026-08-25): recording begins under
+    // the default title "meeting" the instant the mic gate clears and nothing follows it —
+    // no naming popup, no dialog of any kind. Naming happens afterwards via "Rename Meeting…"
+    // or the title field in either tag window (Add Tag… / Stop).
     @objc func startRecording() {
         // TCC preflight. Mic is gated synchronously and refuses on deny. System audio has no
         // public preflight API (Core Audio process taps, SPEC_TCC_SCREEN_REPROMPT_2026-07-31
@@ -176,11 +176,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             self.recordingController.start(title: "meeting")
-
-            let defaultTitle = self.lastTitle() ?? "meeting"
-            if let title = self.promptText(message: "Meeting title", info: "Recording already started — name it now or later via \"Rename Meeting…\"", ok: "Save", default: defaultTitle) {
-                self.submitRetitle(title)
-            }
         }
     }
 
@@ -200,7 +195,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func stopRecording() {
         let current = recordingController.fetchTagsState()
-        guard let tags = promptTags(message: "Stop recording", info: "Tags (optional)", ok: "Stop", preChecked: current) else { return }
+        let originalTitle = recordingController.fetchCurrentTitle()
+        guard let (tags, newTitle) = promptTags(message: "Stop recording", info: "Tags (optional)", ok: "Stop", preChecked: current, defaultTitle: originalTitle) else { return }
+        applyTagWindowRename(original: originalTitle, submitted: newTitle)
         if !recordingController.setTags(tags) {
             showAlert(title: "Tags not saved", message: "Meet could not save tags for this recording. Stopping anyway.")
         }
@@ -213,7 +210,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func addTag() {
         let current = recordingController.fetchTagsState()
-        guard let tags = promptTags(message: "Add tag", info: "Select tags or type a new one", ok: "Add", preChecked: current) else { return }
+        let originalTitle = recordingController.fetchCurrentTitle()
+        guard let (tags, newTitle) = promptTags(message: "Add tag", info: "Select tags or type a new one", ok: "Add", preChecked: current, defaultTitle: originalTitle) else { return }
+        applyTagWindowRename(original: originalTitle, submitted: newTitle)
         if !recordingController.setTags(tags) {
             showAlert(title: "Tags not saved", message: "Meet could not save tags for this recording.")
         }
@@ -308,11 +307,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return input.stringValue
     }
 
-    // Checkbox per tag in tags.md + a free-text field for a brand-new one. Returns the
-    // full checked selection (+ any newly typed tag) as an array — both call sites pass
-    // this straight to recordingController.setTags(), which replaces the session's tag
-    // state wholesale; [] means nothing selected, not cancelled.
-    private func promptTags(message: String, info: String, ok: String, preChecked: [String] = []) -> [String]? {
+    // Checkbox per tag in tags.md + a free-text field for a brand-new one, plus a meeting
+    // title field on top (SPEC_SILENT_START_TAG_WINDOW_RENAME_2026-08-25) prefilled with the
+    // live title. Returns the full checked selection (+ any newly typed tag) and the
+    // submitted title — both call sites pass the tags straight to recordingController.setTags(),
+    // which replaces the session's tag state wholesale; [] means nothing selected, not
+    // cancelled. nil means cancelled.
+    private func promptTags(message: String, info: String, ok: String, preChecked: [String] = [], defaultTitle: String) -> (tags: [String], title: String)? {
         let alert = NSAlert()
         alert.messageText = message
         alert.informativeText = info
@@ -324,10 +325,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return checkbox
         }
 
+        let titleField = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        titleField.stringValue = defaultTitle
+        titleField.placeholderString = "Meeting title"
+
         let newTagField = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
         newTagField.placeholderString = "New tag"
 
-        let stack = NSStackView(views: checkboxes + [newTagField])
+        let stack = NSStackView(views: [titleField] + checkboxes + [newTagField])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
@@ -341,6 +346,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.accessoryView = stack
         alert.addButton(withTitle: ok)
         alert.addButton(withTitle: "Cancel")
+        // Focus stays on newTagField even with the title field present: picking tags is the
+        // common action; renaming is secondary.
         alert.window.initialFirstResponder = newTagField
         DispatchQueue.main.async { alert.window.makeFirstResponder(newTagField) }
         let result = runModalAsRegularApp(alert)
@@ -349,12 +356,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var selected = checkboxes.filter { $0.state == .on }.map { $0.title }
         let newTag = newTagField.stringValue.trimmingCharacters(in: .whitespaces)
         if !newTag.isEmpty { selected.append(newTag) }
-        return selected
+        return (selected, titleField.stringValue)
     }
 
-    // Shared by the post-start prompt and "Rename Meeting…" — only a real (non-default)
-    // title is worth a retitle spawn or remembering as lastTitle(); "meeting" (Cancel,
-    // or literally typing the default) is already what's live, so it's a no-op.
+    // Applies a tag-window rename only when the submitted title actually differs from the
+    // live one captured when the dialog opened. submitRetitle's own guard makes empty and
+    // literal-"meeting" submissions no-ops, so a cleared field can't clobber anything.
+    private func applyTagWindowRename(original: String, submitted: String) {
+        let trimmed = submitted.trimmingCharacters(in: .whitespaces)
+        guard trimmed != original else { return }
+        submitRetitle(trimmed)
+    }
+
+    // Shared by "Rename Meeting…" and the tag windows' title fields — only a real
+    // (non-default) title is worth a retitle spawn or remembering as lastTitle();
+    // "meeting" (empty field, or literally typing the default) is already what's
+    // live, so it's a no-op.
     private func submitRetitle(_ title: String) {
         let resolved = title.isEmpty ? "meeting" : title
         guard resolved != "meeting" else { return }

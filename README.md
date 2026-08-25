@@ -6,7 +6,7 @@ Local meeting transcription for macOS (Apple Silicon). Records mic + system audi
 
 ## Features
 
-- **Menu bar app** — `Meet.app` records without the terminal: click the menu bar icon, enter a title, then start/stop/pause/extend from the menu. Optional launch-at-login. Built from `native/MenuBar/`.
+- **Menu bar app** — `Meet.app` records without the terminal: click the menu bar icon to start recording instantly (no naming popup — rename later via "Rename Meeting…" or the tag windows), then start/stop/pause/extend from the menu. Optional launch-at-login. Built from `native/MenuBar/`.
 - **Dual-channel capture** — mic (you) and system audio (others) recorded simultaneously
 - **Local transcription** — whisper.cpp with Metal GPU acceleration, no internet required
 - **Speaker diarization** — system audio labeled "Speaker 1", "Speaker 2", ... on the final pass (falls back to "Others" if diarization is off/unavailable); mic is always "Me"
@@ -130,7 +130,7 @@ sh native/MenuBar/scripts/build-app.sh # swift build → assemble Meet.app → a
 open native/MenuBar/.build/Meet.app    # NOT the raw binary — LaunchServices must register the bundle
 ```
 
-- Click the menu bar mic icon → **Start Recording** → enter a title → Start. The last title is remembered.
+- Click the menu bar mic icon → **Start Recording** → recording begins instantly under a default `"meeting"` title, no popup. Rename it anytime via **Rename Meeting…** or the title field in either tag window (**Add Tag…** / Stop) — the last title is remembered for prefilling.
 - Mic/Screen TCC prompts are pre-requested from the app before capture starts; granting them lets the spawned `AudioCapture` record.
 - **Launch at Login** toggle (via `SMAppService`) so the app survives reboots — foundation for the future scheduler/calendar features.
 - **Notch transcript panel** (14"/16" MacBook Pro, M1 Pro+ only) — while recording, hover the physical notch to reveal a scrollable live tail of the transcript; moves away to hide again. See `specs/SPEC_NOTCH_TRANSCRIPT_PANEL_2026-08-03.md`.
@@ -422,7 +422,7 @@ native/AudioCapture/
 native/MenuBar/                 Dock-less Meet.app menu-bar UI
 ├── Sources/MeetMenuBar/
 │   ├── main.swift              NSApplication, setActivationPolicy(.accessory)
-│   ├── AppDelegate.swift       Status item, menu, title modal, TCC preflight
+│   ├── AppDelegate.swift       Status item, menu, silent start + tag-window renames, TCC preflight
 │   ├── RecordingController.swift Headless meet spawn + POSIX signal control
 │   ├── RunnerResolver.swift    Resolves node + dist/main.js via `meet bin-path`
 │   ├── PermissionController.swift Mic/Screen TCC preflight + System Settings deep-link
