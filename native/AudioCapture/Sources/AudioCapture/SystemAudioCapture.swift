@@ -31,6 +31,13 @@ class SystemAudioCapture {
     // All access is serialized through this queue instead of racing directly —
     // file I/O also no longer runs on the real-time thread.
     private let writerQueue = DispatchQueue(label: "sysaudiocapture.writer")
+    // Storage-error budget — same shape as MicCapture: a failed finalizeChunk
+    // closes the writer while healthy IOProc callbacks keep refreshing
+    // lastBufferTime, masking the stall monitor. Bounded reopen retries, then
+    // halt the stream visibly with the failed audio preserved.
+    private var writerErrorCount = 0
+    private let maxWriterRecoveryAttempts = 3
+    private(set) var writerFailed = false
 
     // Phase-carrying resampler state (P0, SPEC_MIC_ECHO_FILTERING_2026-08-05
     // root cause B.3) — carried across buffers instead of restarting at 0
@@ -156,6 +163,7 @@ class SystemAudioCapture {
         // stop()'s final flush instead of racing it directly.
         writerQueue.async { [weak self] in
             guard let self else { return }
+            guard !self.writerFailed else { return }
             do {
                 let chunkReady = try self.wavWriter.appendSamplesIfNeeded(resampled)
                 if chunkReady {
@@ -165,7 +173,24 @@ class SystemAudioCapture {
                     try self.wavWriter.startChunk()
                 }
             } catch {
-                fputs("SystemAudioCapture write error: \(error)\n", stderr)
+                self.writerErrorCount += 1
+                fputs("SystemAudioCapture write error: \(error) (attempt \(self.writerErrorCount)/\(self.maxWriterRecoveryAttempts))\n", stderr)
+                if self.writerErrorCount > self.maxWriterRecoveryAttempts {
+                    self.writerFailed = true
+                    self.wavWriter.abortCurrentChunk(preserveTemporary: true)
+                    fputs("SystemAudioCapture storage failed permanently; halting sys stream, failed audio preserved\n", stderr)
+                    logJSON("error", "stream_error", ["source": "sys", "message": "storage failure, stream halted"])
+                    self.teardownTap()
+                    self.isRunning = false
+                    return
+                }
+                do {
+                    self.wavWriter.abortCurrentChunk(preserveTemporary: true)
+                    try self.wavWriter.startChunk()
+                    logJSON("warning", "sys_writer_recovered", ["attempt": self.writerErrorCount])
+                } catch {
+                    fputs("SystemAudioCapture writer recovery failed: \(error)\n", stderr)
+                }
             }
         }
     }
@@ -201,7 +226,7 @@ class SystemAudioCapture {
     }
 
     func recoverIfStalled(thresholdSeconds: TimeInterval = 3.0) {
-        guard isRunning else { return }
+        guard isRunning, !writerFailed else { return }
         let stalledFor = Date().timeIntervalSince(lastBufferTime)
         if stalledFor > thresholdSeconds {
             restartTap(reason: "buffer_stall_\(Int(stalledFor))s")
@@ -226,7 +251,13 @@ class SystemAudioCapture {
         do {
             try startTap(reason: reason)
         } catch {
-            isRunning = false
+            // Keep capture intent (isRunning stays true) so the stall monitor
+            // retries with backoff — a transient device/tap failure during
+            // restart must not disable system capture for the rest of the
+            // meeting. Tear down anything startTap partially created (a tap
+            // without its aggregate, or vice versa) so the next attempt starts
+            // clean instead of leaking the half-built resources.
+            teardownTap()
             fputs("SystemAudioCapture restart failed: \(error)\n", stderr)
             logJSON("error", "sys_restart_failed", [
                 "reason": reason,

@@ -39,6 +39,15 @@ enum CalendarMatch {
         "\(eventIdentifier ?? "")|\(Int(occurrenceDate.timeIntervalSince1970))"
     }
 
+    // §2.7 — successor selection for the cap-grace lookahead: the earliest
+    // qualifying start at or after this event's end. Equality is included on
+    // purpose — a back-to-back call starting exactly when this one ends still
+    // needs its own auto-start, and dropping it over-records past the next
+    // call's lateness allowance.
+    static func nextStart(after end: Date, starts: [Date]) -> Date? {
+        starts.filter { $0 >= end }.min()
+    }
+
     // §2.7 — remaining time to the event's end, plus a grace window trimmed when another
     // qualifying event starts soon after (back-to-back meetings), clamped to [0, 8] minutes.
     // Never returns 0 — recorder.ts treats --max-duration 0 as "no cap".
@@ -111,6 +120,19 @@ enum CalendarMatch {
         assert(isLive(now: start.addingTimeInterval(4 * 60), start: start, end: end, maxLatenessMinutes: 5), "4 min late passes")
         assert(!isLive(now: start.addingTimeInterval(6 * 60), start: start, end: end, maxLatenessMinutes: 5), "6 min late fails")
         assert(!isLive(now: start.addingTimeInterval(-60), start: start, end: end, maxLatenessMinutes: 5), "not yet started fails")
+
+        // nextStart successor selection + cap calculation (integration: the
+        // controller feeds qualifying starts through nextStart into capMinutes)
+        let wEnd = Date(timeIntervalSince1970: 5_000_000)
+        let wNow = wEnd.addingTimeInterval(-5 * 60)
+        assert(nextStart(after: wEnd, starts: []) == nil, "no starts: no successor")
+        assert(nextStart(after: wEnd, starts: [wEnd.addingTimeInterval(-60)]) == nil, "earlier start is not a successor")
+        let exactSucc = nextStart(after: wEnd, starts: [wEnd.addingTimeInterval(600), wEnd])
+        assert(exactSucc == wEnd, "exact back-to-back start is a successor")
+        assert(capMinutes(now: wNow, end: wEnd, nextStart: exactSucc) == 5, "back-to-back successor trims grace to 0, cap is exactly the remaining time")
+        let soonSucc = nextStart(after: wEnd, starts: [wEnd.addingTimeInterval(600), wEnd.addingTimeInterval(60)])
+        assert(soonSucc == wEnd.addingTimeInterval(60), "earliest successor wins")
+        assert(capMinutes(now: wNow, end: wEnd, nextStart: soonSucc) == 5, "1 min gap: grace trimmed to 0")
 
         // Occurrence key
         let occ1 = Date(timeIntervalSince1970: 4_000_000)

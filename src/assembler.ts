@@ -1,7 +1,8 @@
-import { appendFile, writeFile } from "node:fs/promises";
+import { appendFile } from "node:fs/promises";
 import type { TranscriptEntry, Session } from "./types.js";
 import type { TalkTimeStats } from "./talk-time.js";
 import { formatTalkTimeSection } from "./talk-time.js";
+import { writeAtomic } from "./storage.js";
 
 export function chunkToTimestamp(chunkIndex: number, chunkDurationSeconds: number, startedAt: string): string {
   const start = new Date(startedAt);
@@ -114,5 +115,5 @@ export function transcriptEntriesToMap(entries: TranscriptEntry[]): Map<string, 
 
 export async function rewriteMarkdown(filePath: string, title: string, startedAt: string, entries: TranscriptEntry[], talkTime?: TalkTimeStats): Promise<void> {
   const markdown = assembleMarkdown(title, startedAt, entries, talkTime);
-  await writeFile(filePath, markdown, "utf-8");
+  await writeAtomic(filePath, markdown);
 }

@@ -80,6 +80,17 @@ export interface FinalPassResult {
   // these from its "did the final pass lose entries" comparison, since
   // effective echo filtering is supposed to shrink the entry count.
   droppedEchoKeys: Set<string>;
+  // Every chunk that completed its final-pass processing, including audible
+  // chunks whose successful transcription cleaned to empty text. Finalization
+  // must not mistake those outcomes for failed transcription merely because
+  // they produce no markdown entry.
+  completedKeys: Set<string>;
+  // Keys of audible chunks whose transcription threw and had no live-text
+  // fallback — i.e. genuine failures, not silence. An empty-text result from a
+  // silent chunk is a successful silence verdict and must stay
+  // distinguishable from these, so finalization can preserve the WAV instead
+  // of deleting unrecoverable audio silently.
+  failedKeys: Set<string>;
 }
 
 export async function runFinalPass(
@@ -92,6 +103,8 @@ export async function runFinalPass(
 ): Promise<FinalPassResult> {
   const finalModelPath = resolveModelPath(config, "final");
   const results: FinalChunkResult[] = [];
+  const completedKeys = new Set<string>();
+  const failedKeys = new Set<string>();
 
   // Per-~100ms-frame RMS envelope, keyed by chunk index (P2). Frame arrays are
   // tiny (~150 floats per 15s chunk) — kept for the whole meeting, unlike the
@@ -120,6 +133,7 @@ export async function runFinalPass(
         rmsDb: chunk.metrics.rmsDb,
         peakDb: chunk.metrics.peakDb,
       });
+      completedKeys.add(`${chunk.source}-${String(chunk.index).padStart(3, "0")}`);
       onProgress?.(done, total);
       return;
     }
@@ -139,15 +153,23 @@ export async function runFinalPass(
         rmsDb: chunk.metrics.rmsDb,
         peakDb: chunk.metrics.peakDb,
       });
+      completedKeys.add(`${chunk.source}-${String(chunk.index).padStart(3, "0")}`);
     } catch {
       const liveEntry = liveEntries?.find(
         (e) => e.source === chunk.source && e.chunkIndex === chunk.index
       );
+      const fallbackText = liveEntry?.text ?? "";
+      // No live fallback and the chunk is audible: this is a failure, not a
+      // silence verdict — record it so the caller can preserve the WAV and
+      // warn instead of deleting unrecoverable audio silently.
+      if (!fallbackText) {
+        failedKeys.add(`${chunk.source}-${String(chunk.index).padStart(3, "0")}`);
+      }
       results.push({
         source: chunk.source,
         index: chunk.index,
         wav: chunk.wav,
-        text: liveEntry?.text ?? "",
+        text: fallbackText,
         rmsDb: chunk.metrics.rmsDb,
         peakDb: chunk.metrics.peakDb,
       });
@@ -204,5 +226,5 @@ export async function runFinalPass(
       text: r.text,
     }));
 
-  return { entries, droppedEchoKeys };
+  return { entries, droppedEchoKeys, completedKeys, failedKeys };
 }

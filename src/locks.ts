@@ -1,4 +1,5 @@
-import { writeFileSync, existsSync, readFileSync, unlinkSync, openSync, closeSync, mkdirSync, linkSync, renameSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync, linkSync, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Session } from "./types.js";
@@ -118,59 +119,98 @@ export function isActiveRecording(): boolean {
 
 export interface FinalizerLock {
   pid: number;
+  token?: string;
   startedAt: string;
   updatedAt: string;
 }
+
+const finalizerLockTokens = new Map<string, string>();
+let globalFinalPassToken: string | null = null;
 
 function finalizerLockPath(sessionDir: string): string {
   return join(sessionDir, "finalizer.lock");
 }
 
 function cleanStaleLock(lockPath: string): boolean {
+  let raw: string;
   try {
-    const raw = readFileSync(lockPath, "utf-8");
+    raw = readFileSync(lockPath, "utf-8");
+  } catch {
+    return !existsSync(lockPath);
+  }
+  try {
     const existing = JSON.parse(raw) as FinalizerLock;
     if (existing.pid && isPidAlive(existing.pid)) return false;
   } catch {}
+  // The failed publisher may have raced a stale-owner reclaimer. Only remove
+  // the exact descriptor observed above; a newly published lock has a unique
+  // token and different bytes, so it remains owned by its publisher.
+  try {
+    if (readFileSync(lockPath, "utf-8") !== raw) return false;
+  } catch {
+    return false;
+  }
   try { unlinkSync(lockPath); } catch {}
   return true;
 }
 
+// Exclusive create + rename-in (like acquireActiveRecordingLock) so readers
+// never observe an empty/partial file between open and metadata write — a
+// reader that hit that window previously treated the file as corrupt and
+// deleted it, letting a second acquirer in while the first still holds it.
+function publishLockAtomically(lockPath: string, data: string): boolean {
+  const tmp = `${lockPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    writeFileSync(tmp, data, "utf-8");
+    linkSync(tmp, lockPath);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { unlinkSync(tmp); } catch {}
+  }
+}
+
 export function acquireFinalizerLock(sessionDir: string): boolean {
   const lockPath = finalizerLockPath(sessionDir);
+  const token = randomUUID();
   const lockData = JSON.stringify({
     pid: process.pid,
+    token,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
 
-  try {
-    const fd = openSync(lockPath, "wx");
-    writeFileSync(fd, lockData, "utf-8");
-    closeSync(fd);
+  if (publishLockAtomically(lockPath, lockData)) {
+    finalizerLockTokens.set(sessionDir, token);
     return true;
-  } catch {
-    if (!cleanStaleLock(lockPath)) return false;
   }
-
-  try {
-    const fd = openSync(lockPath, "wx");
-    writeFileSync(fd, lockData, "utf-8");
-    closeSync(fd);
-    return true;
-  } catch {
-    return false;
-  }
+  if (!cleanStaleLock(lockPath)) return false;
+  if (!publishLockAtomically(lockPath, lockData)) return false;
+  finalizerLockTokens.set(sessionDir, token);
+  return true;
 }
 
 export function releaseFinalizerLock(sessionDir: string): void {
+  // Conditional on ownership like the global lock below: an unconditional
+  // unlink could remove a *different* finalizer's lock if this process lost
+  // (or never won) the race and still ran its finally block.
+  try {
+    const raw = readFileSync(finalizerLockPath(sessionDir), "utf-8");
+    const existing = JSON.parse(raw) as FinalizerLock;
+    if (existing.pid !== process.pid || existing.token !== finalizerLockTokens.get(sessionDir)) return;
+  } catch {
+    return;
+  }
   try { unlinkSync(finalizerLockPath(sessionDir)); } catch {}
+  finalizerLockTokens.delete(sessionDir);
 }
 
 // Global lock: only one big-model final pass runs at a time across all sessions.
 // Live drains stay unlocked (cheap); this serializes the heavy whisper-cli pass.
 export interface GlobalFinalPassLock {
   pid: number;
+  token?: string;
   sessionDir: string;
   startedAt: string;
 }
@@ -181,32 +221,28 @@ function globalFinalPassLockPath(): string {
 
 export function acquireGlobalFinalPassLock(sessionDir: string): boolean {
   const lockPath = globalFinalPassLockPath();
+  const token = randomUUID();
   const lockData = JSON.stringify({
     pid: process.pid,
+    token,
     sessionDir,
     startedAt: new Date().toISOString(),
   });
 
-  const tryOpen = (): boolean => {
-    try {
-      const fd = openSync(lockPath, "wx");
-      writeFileSync(fd, lockData, "utf-8");
-      closeSync(fd);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  if (tryOpen()) return true;
+  if (publishLockAtomically(lockPath, lockData)) {
+    globalFinalPassToken = token;
+    return true;
+  }
 
   // Re-entrant: if we already hold it, treat as acquired.
   const existing = readGlobalFinalPassLock();
-  if (existing?.pid === process.pid) return true;
+  if (existing?.pid === process.pid && existing.token === globalFinalPassToken) return true;
   if (existing) return false;
 
-  // Held by a dead PID and cleaned by readGlobalFinalPassLock(); retry once.
-  return tryOpen();
+  // Held by a dead PID; reclaim only the exact descriptor observed, then retry.
+  if (!cleanStaleLock(lockPath) || !publishLockAtomically(lockPath, lockData)) return false;
+  globalFinalPassToken = token;
+  return true;
 }
 
 export function readGlobalFinalPassLock(): GlobalFinalPassLock | null {
@@ -216,14 +252,15 @@ export function readGlobalFinalPassLock(): GlobalFinalPassLock | null {
     const data = JSON.parse(readFileSync(lockPath, "utf-8")) as GlobalFinalPassLock;
     if (data.pid && isPidAlive(data.pid)) return data;
   } catch {}
-  try { unlinkSync(lockPath); } catch {}
+  cleanStaleLock(lockPath);
   return null;
 }
 
 export function releaseGlobalFinalPassLock(): void {
   const existing = readGlobalFinalPassLock();
-  if (existing && existing.pid !== process.pid) return;
+  if (!existing || existing.pid !== process.pid || existing.token !== globalFinalPassToken) return;
   try { unlinkSync(globalFinalPassLockPath()); } catch {}
+  globalFinalPassToken = null;
 }
 
 export function readFinalizerLock(sessionDir: string): FinalizerLock | null {
@@ -233,6 +270,6 @@ export function readFinalizerLock(sessionDir: string): FinalizerLock | null {
     const data = JSON.parse(readFileSync(lockPath, "utf-8")) as FinalizerLock;
     if (data.pid && isPidAlive(data.pid)) return data;
   } catch {}
-  try { unlinkSync(lockPath); } catch {}
+  cleanStaleLock(lockPath);
   return null;
 }

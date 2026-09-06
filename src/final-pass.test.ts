@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runFinalPass } from "./final-pass.js";
-import { makeSilentWav } from "./audio-metrics.js";
+import { makeSilentWav, makeSineWav } from "./audio-metrics.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import type { Session, Config } from "./types.js";
 import type { ResourcePressure, PressureSensor } from "./system-monitor.js";
@@ -111,6 +111,65 @@ test("runFinalPass — batch gate", async (t) => {
       };
       await runFinalPass(session, config, undefined, undefined, undefined, sensor);
       assert.strictEqual(calls, 0);
+    } finally {
+      teardown();
+    }
+  });
+});
+
+// P1 finding #1: a final-pass transcription error used to collapse into an
+// empty string with no failure accounting, so finalization deleted the WAV as
+// if it were silence. Audible failures must land in failedKeys — distinguishable
+// from a successful silence verdict — while silent chunks never do.
+test("runFinalPass — failure accounting", async (t) => {
+  let dir: string;
+  const setup = (): { session: Session; config: Config } => {
+    dir = mkdtempSync(join(tmpdir(), "meet-finalpass-failed-"));
+    // Audible chunk (needs a real transcription attempt) + silent chunk (gated, no spawn).
+    writeFileSync(join(dir, "mic-001.wav"), makeSineWav(440, 16000, 16000, 0.9));
+    writeFileSync(join(dir, "mic-002.wav"), makeSilentWav(16000));
+    const session = makeSession(dir);
+    // Bogus binary fails every spawn fast, without needing a real model.
+    const config: Config = { ...DEFAULT_CONFIG, gateHeavyPasses: false, whisperBin: "/nonexistent/whisper-cli-nope" };
+    return { session, config };
+  };
+  const teardown = () => rmSync(dir, { recursive: true, force: true });
+
+  await t.test("audible failure is reported in failedKeys, silence is not", async () => {
+    const { session, config } = setup();
+    try {
+      const { entries, failedKeys } = await runFinalPass(session, config);
+      assert.deepStrictEqual(entries, []);
+      assert.deepStrictEqual([...failedKeys].sort(), ["mic-001"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  await t.test("a live-text fallback clears the failure", async () => {
+    const { session, config } = setup();
+    try {
+      const live = [{ source: "mic" as const, chunkIndex: 1, timestamp: "14:30:00", text: "live text" }];
+      const { entries, failedKeys } = await runFinalPass(session, config, undefined, live);
+      assert.strictEqual(failedKeys.size, 0);
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].text, "live text");
+    } finally {
+      teardown();
+    }
+  });
+
+  await t.test("a successful audible empty result is completed, not failed", async () => {
+    const { session, config } = setup();
+    try {
+      const whisperBin = join(dir, "empty-whisper.sh");
+      writeFileSync(whisperBin, "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"-of\" ]; then : > \"$2.txt\"; fi\n  shift\ndone\n");
+      chmodSync(whisperBin, 0o755);
+      const result = await runFinalPass(session, { ...config, whisperBin });
+      assert.deepStrictEqual(result.entries, []);
+      assert.strictEqual(result.failedKeys.size, 0);
+      assert.ok(result.completedKeys.has("mic-001"));
+      assert.ok(result.completedKeys.has("mic-002"));
     } finally {
       teardown();
     }

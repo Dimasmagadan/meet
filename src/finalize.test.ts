@@ -3,8 +3,9 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildBaseResults, runDiarizationStep, runMicDiarizationStep, applyLabelOverridesToTalkTime } from "./finalize.js";
+import { buildBaseResults, mergeRecoveryEntries, runDiarizationStep, runMicDiarizationStep, applyLabelOverridesToTalkTime, filterStoredEntriesByAudio } from "./finalize.js";
 import { appendPostFinalizeNote } from "./summary.js";
+import { makeSilentWav, makeSineWav } from "./audio-metrics.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import type { EntryRecord, TranscriptEntry, Session, Config } from "./types.js";
 import type { TalkTimeStats } from "./talk-time.js";
@@ -62,6 +63,109 @@ test("buildBaseResults", async (t) => {
     assert.equal(result.get("mic-001"), "chunk one");
     assert.equal(result.get("sys-001"), "chunk one sys");
     assert.equal(result.get("mic-002"), "chunk two");
+  });
+});
+
+test("mergeRecoveryEntries", async (t) => {
+  // Regression for P1 finding #2: entriesFromSession only covers chunks listed
+  // as done in processedChunks, so a crashed/partial run whose transcript.md
+  // holds text for an unrecorded chunk dropped it whenever any JSONL record
+  // existed. Markdown-only chunks must be folded back in per chunk.
+  await t.test("recovers a markdown-only chunk missing from session entries", () => {
+    const sessionEntries: TranscriptEntry[] = [
+      { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "stored chunk" },
+    ];
+    const fallback: TranscriptEntry[] = [
+      { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "stored chunk" },
+      { source: "sys", chunkIndex: 2, timestamp: "14:30:15", text: "markdown-only chunk" },
+    ];
+    const baseResults = new Map([["sys-001", "stored chunk"]]);
+    const merged = mergeRecoveryEntries(sessionEntries, fallback, baseResults);
+    assert.strictEqual(merged.length, 2);
+    assert.strictEqual(merged[1].chunkIndex, 2);
+    assert.strictEqual(merged[1].text, "markdown-only chunk");
+    assert.strictEqual(baseResults.get("sys-002"), "markdown-only chunk");
+  });
+
+  await t.test("does not duplicate already-covered chunks", () => {
+    const sessionEntries: TranscriptEntry[] = [
+      { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "live" },
+    ];
+    const fallback: TranscriptEntry[] = [
+      { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "live" },
+    ];
+    const merged = mergeRecoveryEntries(sessionEntries, fallback, new Map([["mic-001", "live"]]));
+    assert.strictEqual(merged.length, 1);
+  });
+});
+
+test("filterStoredEntriesByAudio", async (t) => {
+  const makeSession = (sessionDir: string): Session => ({
+    id: "test-session",
+    title: "Test",
+    mode: "full",
+    startedAt: "2026-05-13T14:30:00.000Z",
+    chunkDurationSeconds: 15,
+    sessionDir,
+    outputFile: join(sessionDir, "transcript.md"),
+    capturePid: null,
+    status: "finalizing",
+    processedChunks: [],
+    lastError: null,
+    autoStopReason: null,
+    latestProcessedOffsetSeconds: 0,
+    lastMeaningfulTextAtOffsetSeconds: null,
+    hasMeaningfulText: false,
+    tags: [],
+  });
+
+  // Regression for P1 finding #2: a chunk with no entries.jsonl record (crashed
+  // mid-run) must be judged by analyzing its actual WAV, not assumed silent.
+  await t.test("analyzes the WAV directly when a chunk has no stored RMS record", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-filter-stored-"));
+    try {
+      const session = makeSession(sessionDir);
+      writeFileSync(join(sessionDir, "sys-001.wav"), makeSineWav(440, 16000, 16000, 0.9));
+      const entries: TranscriptEntry[] = [
+        { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "recovered from markdown" },
+      ];
+      // Empty stored map: entries.jsonl has no record for this chunk at all.
+      const result = await filterStoredEntriesByAudio(entries, new Map(), session, DEFAULT_CONFIG);
+      assert.deepStrictEqual(result, entries);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("still drops a chunk when the WAV itself is silent", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-filter-stored-"));
+    try {
+      const session = makeSession(sessionDir);
+      writeFileSync(join(sessionDir, "sys-001.wav"), makeSilentWav(16000));
+      const entries: TranscriptEntry[] = [
+        { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "hallucinated text" },
+      ];
+      const result = await filterStoredEntriesByAudio(entries, new Map(), session, DEFAULT_CONFIG);
+      assert.deepStrictEqual(result, []);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("uses the stored RMS record when present, without touching disk", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-filter-stored-"));
+    try {
+      const session = makeSession(sessionDir);
+      // No WAV on disk at all — must not be reached because the stored record covers it.
+      const entries: TranscriptEntry[] = [
+        { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "hello" },
+      ];
+      const stored = new Map([["mic-001", -10]]);
+      const result = await filterStoredEntriesByAudio(entries, stored, session, DEFAULT_CONFIG);
+      assert.deepStrictEqual(result, entries);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
   });
 });
 

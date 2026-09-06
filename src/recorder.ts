@@ -446,6 +446,10 @@ export class Recorder {
       }
       await this.summaryScheduler?.flush();
       await this.promptTags();
+      // Must finish before the finalizer (a separate process) starts reading/
+      // mutating the same session.json + entries.jsonl this pipeline instance
+      // may still be mid-write to.
+      await this.pipeline.close();
       this.spawnBackgroundFinalizer();
       console.log(chalk.green(`Finalizer started in background (meet status to check)`));
       console.log(chalk.gray(`Transcript: ${this.outputFile}`));
@@ -513,6 +517,9 @@ export class Recorder {
       await this.stopRecording();
       await this.summaryScheduler?.flush();
       await this.promptTags();
+      // See shutdown()'s identical await: this must land before the detached
+      // finalizer starts touching the same session files.
+      await this.pipeline.close();
       this.spawnBackgroundFinalizer();
       console.log(chalk.green(`Finalizer running in background (meet status to check)`));
     } catch (err) {

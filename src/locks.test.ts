@@ -60,6 +60,20 @@ describe("acquireFinalizerLock", () => {
     assert.strictEqual(acquireFinalizerLock(testDir), true);
     releaseFinalizerLock(testDir);
   });
+
+  // Regression for P1 finding #5: release must be conditional on ownership —
+  // an unconditional unlink could remove a *different* finalizer's lock after
+  // losing the acquisition race.
+  it("releaseFinalizerLock does not remove another owner's lock", () => {
+    const lockPath = join(testDir, "finalizer.lock");
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 99999999, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }),
+      "utf-8"
+    );
+    releaseFinalizerLock(testDir);
+    assert.strictEqual(existsSync(lockPath), true);
+  });
 });
 
 describe("readFinalizerLock", () => {

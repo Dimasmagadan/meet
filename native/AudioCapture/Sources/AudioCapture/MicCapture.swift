@@ -23,6 +23,14 @@ class MicCapture {
     // All access is serialized through this queue instead of racing directly —
     // file I/O also no longer runs on the real-time thread.
     private let writerQueue = DispatchQueue(label: "miccapture.writer")
+    // Storage-error budget: a failed finalizeChunk leaves the writer closed and
+    // every further append throws, while healthy audio callbacks keep refreshing
+    // lastBufferTime — so the stall monitor can neither see nor fix this. Count
+    // writer errors here, retry the chunk open a bounded number of times, and
+    // then halt the stream visibly (writerFailed) instead of spinning forever.
+    private var writerErrorCount = 0
+    private let maxWriterRecoveryAttempts = 3
+    private(set) var writerFailed = false
 
     // Phase-carrying resampler state (P0, SPEC_MIC_ECHO_FILTERING_2026-08-05
     // root cause B.3) — carried across buffers instead of restarting at 0
@@ -137,7 +145,7 @@ class MicCapture {
     }
 
     func recoverIfStalled(thresholdSeconds: TimeInterval = 3.0) {
-        guard isRunning else { return }
+        guard isRunning, !writerFailed else { return }
         let stalledFor = Date().timeIntervalSince(lastBufferTime)
         if stalledFor > thresholdSeconds {
             restartCapture(reason: "buffer_stall_\(Int(stalledFor))s")
@@ -190,6 +198,7 @@ class MicCapture {
         // stop()'s final flush instead of racing it directly.
         writerQueue.async { [weak self] in
             guard let self else { return }
+            guard !self.writerFailed else { return }
             do {
                 let chunkReady = try self.wavWriter.appendSamplesIfNeeded(resampled)
                 if chunkReady {
@@ -199,7 +208,25 @@ class MicCapture {
                     try self.wavWriter.startChunk()
                 }
             } catch {
-                fputs("MicCapture write error: \(error)\n", stderr)
+                self.writerErrorCount += 1
+                fputs("MicCapture write error: \(error) (attempt \(self.writerErrorCount)/\(self.maxWriterRecoveryAttempts))\n", stderr)
+                if self.writerErrorCount > self.maxWriterRecoveryAttempts {
+                    self.writerFailed = true
+                    self.wavWriter.abortCurrentChunk(preserveTemporary: true)
+                    fputs("MicCapture storage failed permanently; halting mic stream, failed audio preserved\n", stderr)
+                    logJSON("error", "stream_error", ["source": "mic", "message": "storage failure, stream halted"])
+                    self.engine.inputNode.removeTap(onBus: 0)
+                    self.engine.stop()
+                    self.isRunning = false
+                    return
+                }
+                do {
+                    self.wavWriter.abortCurrentChunk(preserveTemporary: true)
+                    try self.wavWriter.startChunk()
+                    logJSON("warning", "mic_writer_recovered", ["attempt": self.writerErrorCount])
+                } catch {
+                    fputs("MicCapture writer recovery failed: \(error)\n", stderr)
+                }
             }
         }
     }

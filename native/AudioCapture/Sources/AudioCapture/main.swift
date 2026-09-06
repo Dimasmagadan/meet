@@ -139,10 +139,26 @@ class CaptureRunner {
                 let sys = systemCapture as? SystemAudioCapture
                 sys?.setPaused(relay.paused)
                 if !relay.paused { sys?.recoverIfStalled() }
+                // Full mode with both streams storage-halted has nothing left
+                // to record; exit visibly rather than idling to the duration cap.
+                if let sys, sys.writerFailed, (micCapture?.writerFailed ?? true), mode == "full" {
+                    fputs("All streams halted after unrecoverable storage failure; stopping capture\n", stderr)
+                    logJSON("error", "capture_stopped", ["reason": "all_streams_storage_failure"])
+                    break
+                }
             }
 
             if let mic = micCapture, !relay.paused {
                 mic.recoverIfStalled()
+
+                // A storage-failed stream halts itself visibly (see writerFailed);
+                // in mic-only mode nothing else can still produce audio, so exit
+                // instead of recording silence until the user notices.
+                if mic.writerFailed, mode == "mic" {
+                    fputs("Mic stream halted after unrecoverable storage failure; stopping capture\n", stderr)
+                    logJSON("error", "capture_stopped", ["reason": "mic_storage_failure"])
+                    break
+                }
 
                 if silenceTimeout > 0 {
                     let silentFor = Date().timeIntervalSince(mic.lastVoiceTime)

@@ -113,16 +113,24 @@ async function filterEntriesByAudio(
   return filtered;
 }
 
-function filterStoredEntriesByAudio(
+export async function filterStoredEntriesByAudio(
   entries: TranscriptEntry[],
   stored: Map<string, number>,
+  session: Session,
   config: Config,
-): TranscriptEntry[] {
+): Promise<TranscriptEntry[]> {
   const filtered: TranscriptEntry[] = [];
 
   for (const entry of entries) {
     const key = `${entry.source}-${String(entry.chunkIndex).padStart(3, "0")}`;
-    const rmsDb = stored.get(key) ?? -Infinity;
+    let rmsDb = stored.get(key);
+    if (rmsDb === undefined) {
+      // No entries.jsonl record for this chunk (crashed/partial run) — analyze
+      // the WAV directly instead of assuming silence, which previously dropped
+      // the chunk (and, downstream, its WAV) unconditionally.
+      const wavPath = join(session.sessionDir, `${key}.wav`);
+      rmsDb = existsSync(wavPath) ? (await analyzeWavFile(wavPath)).rmsDb : -Infinity;
+    }
     const threshold = entry.source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     if (rmsDb >= threshold) {
       filtered.push(entry);
@@ -130,6 +138,31 @@ function filterStoredEntriesByAudio(
   }
 
   return filtered;
+}
+
+// Recovery merge: entriesFromSession only covers chunks listed as done in
+// processedChunks, so a crashed/partial run whose transcript.md holds text for
+// chunks session.json never recorded would drop them — and the presence of one
+// valid JSONL record must not suppress recovery of the rest. Folds every
+// markdown-fallback entry whose chunk key is otherwise uncovered back in.
+export function mergeRecoveryEntries(
+  sessionEntries: TranscriptEntry[],
+  fallbackEntries: TranscriptEntry[],
+  baseResults: Map<string, string>,
+): TranscriptEntry[] {
+  const covered = new Set(sessionEntries.map((e) => `${e.source}-${String(e.chunkIndex).padStart(3, "0")}`));
+  for (const fb of fallbackEntries) {
+    const key = `${fb.source}-${String(fb.chunkIndex).padStart(3, "0")}`;
+    if (covered.has(key) || !fb.text) continue;
+    if (!baseResults.has(key)) baseResults.set(key, fb.text);
+    sessionEntries.push(fb);
+    covered.add(key);
+  }
+  sessionEntries.sort((a, b) => {
+    if (a.chunkIndex !== b.chunkIndex) return a.chunkIndex - b.chunkIndex;
+    return a.source === "mic" ? -1 : 1;
+  });
+  return sessionEntries;
 }
 
 // Merges the three text sources finalization can recover, lowest priority first:
@@ -713,12 +746,12 @@ export async function finalizeSession(
     // Base results merge entries.jsonl (survives even chunks this process never
     // touched), the transcript.md fallback, and this run's own live drain.
     const baseResults = buildBaseResults(storedRecords, fallbackEntries, liveResults);
-    const sessionEntries = entriesFromSession(session, baseResults);
+    const sessionEntries = mergeRecoveryEntries(entriesFromSession(session, baseResults), fallbackEntries, baseResults);
     // Non-silent candidate entries from stored+live text — used both as the
     // fallback when the final pass is unavailable/fails, and as the safety-net
     // comparison below (previously compared only against markdown, which is
     // empty whenever entries.jsonl exists).
-    const baseEntries = filterStoredEntriesByAudio(sessionEntries, storedRmsMap, config);
+    const baseEntries = await filterStoredEntriesByAudio(sessionEntries, storedRmsMap, session, config);
 
     const fallbackAudioEntries = async (): Promise<TranscriptEntry[]> => {
       if (baseEntries.length > 0) return baseEntries;
@@ -733,6 +766,8 @@ export async function finalizeSession(
     // "did the final pass lose entries" safety-net comparison, since
     // effective echo filtering is supposed to shrink the entry count.
     let droppedEchoKeys = new Set<string>();
+    let finalPassCompletedKeys = new Set<string>();
+    let finalPassFailedKeys = new Set<string>();
     try {
       if (config.finalRetranscribe) {
         if (!existsSync(finalModelPath)) {
@@ -757,6 +792,11 @@ export async function finalizeSession(
             }, sessionEntries, beforeChunk);
             entries = finalPassResult.entries;
             droppedEchoKeys = finalPassResult.droppedEchoKeys;
+            finalPassCompletedKeys = finalPassResult.completedKeys;
+            finalPassFailedKeys = finalPassResult.failedKeys;
+            if (finalPassFailedKeys.size > 0) {
+              warn(`Final pass failed on ${finalPassFailedKeys.size} audible chunk(s) with no live fallback: ${[...finalPassFailedKeys].sort().join(", ")}`);
+            }
             finalPassWallMs = Date.now() - finalPassStartedAt;
           } catch (err) {
             warn(`Final pass failed: ${err instanceof Error ? err.message : String(err)}, using live transcript`);
@@ -784,6 +824,17 @@ export async function finalizeSession(
 
       if (entries.length > 0) {
         await progressWriter.update(makeProgress("diarize", 0, 0));
+
+        // Diarization can read/modify/save the cross-session speaker registry
+        // (applySpeakerRegistry) even when the final pass never ran (disabled,
+        // or model missing) — that path previously skipped the global lock
+        // entirely, letting a concurrent finalizer or `meet rename`/`forget`
+        // race the same registry file.
+        if (!finalPassLocked) {
+          await waitForGlobalFinalPassSlot(sessionDir, session, progressWriter, log);
+          finalPassLocked = true;
+        }
+
         const { entries: diarizedEntries, segments, speakersRecord, labelOverrides } = await runDiarizationStep(session, config, entries, warn, log);
         entries = diarizedEntries;
 
@@ -837,7 +888,56 @@ export async function finalizeSession(
     session.finalize = makeProgress("done", entries.length, entries.length);
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
-    await rm(sessionDir, { recursive: true, force: true }).catch(() => {});
+    // Only explicit failures and WAVs with no success record are unrecovered.
+    // A successful Whisper call may clean to empty text, so missing markdown
+    // alone is not evidence of a failed transcription.
+    const recoveredKeys = new Set(entries.map((e) => `${e.source}-${String(e.chunkIndex).padStart(3, "0")}`));
+    const successfulKeys = new Set([
+      ...session.processedChunks
+        .filter((chunk) => chunk.status === "done")
+        .map((chunk) => `${chunk.source}-${String(chunk.index).padStart(3, "0")}`),
+      ...finalPassCompletedKeys,
+    ]);
+    const unrecoveredKeys: string[] = [];
+    const considerKey = async (source: "mic" | "sys", key: string, wavFile: string): Promise<void> => {
+      if (recoveredKeys.has(key) || unrecoveredKeys.includes(key)) return;
+      const wavPath = join(sessionDir, wavFile);
+      if (!existsSync(wavPath)) return;
+      const metrics = await analyzeWavFile(wavPath);
+      const threshold = source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
+      if (metrics.rmsDb >= threshold) unrecoveredKeys.push(key);
+    };
+    for (const chunk of session.processedChunks) {
+      if (chunk.status !== "failed") continue;
+      await considerKey(chunk.source, `${chunk.source}-${String(chunk.index).padStart(3, "0")}`, chunk.wav);
+    }
+    for (const key of finalPassFailedKeys) {
+      if (successfulKeys.has(key)) continue;
+      const [source, index] = key.split("-");
+      if (source !== "mic" && source !== "sys") continue;
+      await considerKey(source, key, `${key}.wav`);
+    }
+    try {
+      const files = await readdir(sessionDir);
+      for (const f of files) {
+        const m = /^(mic|sys)-(\d+)\.wav$/.exec(f);
+        if (!m) continue;
+        const key = `${m[1]}-${m[2].padStart(3, "0")}`;
+        if (successfulKeys.has(key)) continue;
+        await considerKey(m[1] as "mic" | "sys", key, f);
+      }
+    } catch {}
+
+    if (unrecoveredKeys.length > 0) {
+      unrecoveredKeys.sort();
+      session.status = "error";
+      session.lastError = `unrecovered audible audio in chunks: ${unrecoveredKeys.join(", ")}`;
+      session.finalize = makeProgress("error", entries.length, entries.length, session.lastError);
+      await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
+      warn(`Preserving ${sessionDir}: audible chunks with no recovered text: ${unrecoveredKeys.join(", ")}`);
+    } else {
+      await rm(sessionDir, { recursive: true, force: true }).catch(() => {});
+    }
 
     log(`Done: ${session.outputFile}`);
     log(`Transcribed ${entries.length} segments`);

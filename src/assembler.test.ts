@@ -1,6 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chunkToTimestamp, entriesFromSession, makeHeader, assembleMarkdown, parseTranscriptEntries, transcriptEntriesToMap, timestampToChunkIndex } from "./assembler.js";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chunkToTimestamp, entriesFromSession, makeHeader, assembleMarkdown, parseTranscriptEntries, transcriptEntriesToMap, timestampToChunkIndex, rewriteMarkdown } from "./assembler.js";
 import type { Session, TranscriptEntry } from "./types.js";
 
 describe("chunkToTimestamp", () => {
@@ -160,6 +163,41 @@ describe("assembleMarkdown", () => {
     assert.ok(md.includes("**[00:00:15]** Основная часть"));
     assert.ok(!md.includes("Me:**"));
     assert.ok(!md.includes("Others:**"));
+  });
+});
+
+describe("rewriteMarkdown", () => {
+  // P2 finding #12: full rewrites must go through the atomic helper so a
+  // failed replacement never truncates the readable live transcript.
+  it("round-trips entries through an atomic rewrite", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-test-rewrite-"));
+    try {
+      const filePath = join(dir, "transcript.md");
+      writeFileSync(filePath, "stale content\n");
+      const entries: TranscriptEntry[] = [
+        { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "Привет" },
+      ];
+      await rewriteMarkdown(filePath, "Test", new Date(2026, 4, 13, 14, 30, 0).toISOString(), entries);
+      const content = readFileSync(filePath, "utf-8");
+      assert.ok(content.includes("# Test"));
+      assert.ok(content.includes("Me:** Привет"));
+      assert.ok(!content.includes("stale content"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a failed replacement preserves the previous transcript", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-test-rewrite-"));
+    try {
+      const filePath = join(dir, "transcript.md");
+      writeFileSync(filePath, "live transcript\n");
+      const badPath = join(dir, "no-such-dir", "transcript.md");
+      await assert.rejects(rewriteMarkdown(badPath, "Test", new Date().toISOString(), []));
+      assert.strictEqual(readFileSync(filePath, "utf-8"), "live transcript\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

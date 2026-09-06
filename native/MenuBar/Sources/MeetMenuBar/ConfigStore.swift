@@ -16,18 +16,27 @@ enum ConfigStore {
         return json
     }
 
-    // .tmp -> rename, matching the atomic-write convention the rest of the
-    // project uses for session/transcript files (see CLAUDE.md).
+    // Atomic replacement: the previous remove-then-move left a window where a
+    // failure left config.json missing entirely (and a fixed ".tmp" name also
+    // races concurrent savers). A uniquely named temp file plus a single
+    // atomic replace keeps the previous config intact if publication fails.
     static func save(_ config: [String: Any]) throws {
         let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let tmpPath = path + ".tmp"
-        try data.write(to: URL(fileURLWithPath: tmpPath))
+        let destURL = URL(fileURLWithPath: path)
         if FileManager.default.fileExists(atPath: path) {
-            try FileManager.default.removeItem(atPath: path)
+            let tmpURL = URL(fileURLWithPath: path + ".\(UUID().uuidString).tmp")
+            try data.write(to: tmpURL, options: .atomic)
+            do {
+                _ = try FileManager.default.replaceItemAt(destURL, withItemAt: tmpURL)
+            } catch {
+                try? FileManager.default.removeItem(at: tmpURL)
+                throw error
+            }
+        } else {
+            try data.write(to: destURL, options: .atomic)
         }
-        try FileManager.default.moveItem(atPath: tmpPath, toPath: path)
     }
 
     static func bool(_ config: [String: Any], _ key: String, default def: Bool) -> Bool {

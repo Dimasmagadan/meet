@@ -45,6 +45,11 @@ export class Pipeline {
   private inFlightKey: string | null = null;
   // undefined = not attempted yet; null = disabled (config gates failed).
   private liveLabeler: LiveSpeakerLabeler | null | undefined = undefined;
+  // Resolved once by processNext() the first time it observes `stopped &&
+  // !drainMode` after the currently in-flight item (if any) finishes writing
+  // its state — lets close() await that write instead of returning while a
+  // transcribe-and-persist is still running in the background.
+  private stopResolvers: Array<() => void> = [];
 
   constructor(session: Session) {
     this.session = session;
@@ -112,12 +117,20 @@ export class Pipeline {
     await this.drainQueue();
   }
 
-  // Close without draining — for the 'n' path where a detached finalizer takes over.
+  // Close without draining the rest of the queue — for the 'n'/'q' paths where
+  // a detached finalizer takes over and will rescan unprocessed chunks itself.
+  // Still waits for whatever chunk is already mid-transcription: without this,
+  // that write to session.json/entries.jsonl could still be in flight when the
+  // finalizer (a separate process, separate in-memory Session) starts reading
+  // and mutating the same files, corrupting or duplicating state.
   async close(): Promise<void> {
     this.stopped = true;
     if (this.watcher) {
       await this.watcher.close();
       this.watcher = null;
+    }
+    if (this.processing) {
+      await new Promise<void>((resolve) => { this.stopResolvers.push(resolve); });
     }
   }
 
@@ -154,7 +167,26 @@ export class Pipeline {
     }
   }
 
+  // Resolves close()'s waiters. Called both when processNext observes the stop
+  // before dequeueing AND when an in-flight item finishes with an empty queue
+  // (that tail has no further processNext call to trip the entry guard, so
+  // without this close() would hang forever on an idle queue).
+  private drainStopWaiters(): void {
+    if (this.stopResolvers.length > 0) {
+      const resolvers = this.stopResolvers;
+      this.stopResolvers = [];
+      resolvers.forEach((r) => r());
+    }
+  }
+
   private async processNext() {
+    // close() halts dequeueing once the item that was already in flight (if
+    // any) finishes — everything still in `queue` is left for the finalizer's
+    // own Pipeline instance to rescan and pick up from disk.
+    if (this.stopped && !this.drainMode) {
+      this.drainStopWaiters();
+      return;
+    }
     if (this.processing || this.queue.length === 0) return;
     this.processing = true;
 
@@ -171,6 +203,9 @@ export class Pipeline {
       if (trackProgress) {
         this.drainTotal--;
         trackProgress({ done: this.completedDuringDrain, total: this.drainTotal });
+      }
+      if (this.stopped && !this.drainMode) {
+        this.drainStopWaiters();
       }
       if (this.queue.length > 0) {
         this.processNext();
@@ -282,6 +317,9 @@ export class Pipeline {
 
     this.inFlightKey = null;
     this.processing = false;
+    if (this.stopped && !this.drainMode) {
+      this.drainStopWaiters();
+    }
     if (this.queue.length > 0) {
       this.processNext();
     } else {

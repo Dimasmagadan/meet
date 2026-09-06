@@ -32,12 +32,37 @@ export function showStatus(): void {
   const errors = sessions.filter((s) => s.status === "error");
   const stopped = sessions.filter((s) => s.status === "stopped");
 
+  // Sessions still marked "recording"/"paused" with a dead controller and no
+  // live capture PID (findRecordingStates' "stale" bucket) were previously
+  // invisible in every list below — none of the other buckets' filters match
+  // status "recording". Exclude dirs already shown elsewhere (a
+  // finalization-paused session can also land in "stale" here).
+  const shownDirs = new Set([
+    ...activeFinalizers.map((s) => s.sessionDir),
+    ...queued.map((s) => s.sessionDir),
+    ...errors.map((s) => s.sessionDir),
+    ...stopped.map((s) => s.sessionDir),
+  ]);
+  const crashedRecordings = recordingStates.filter(
+    (state) => state.kind === "stale" && !shownDirs.has(state.session.sessionDir)
+  );
+
   if (orphaned.length > 0) {
     found = true;
     console.log(chalk.red("Orphaned capture:"));
     for (const state of orphaned) {
       console.log(`  ${state.session.sessionDir}  ${state.session.title}  (capture pid ${state.capturePid})`);
       console.log(chalk.gray(`    Stop the capture manually, then: meet finalize ${state.session.sessionDir}`));
+    }
+    console.log();
+  }
+
+  if (crashedRecordings.length > 0) {
+    found = true;
+    console.log(chalk.red("Crashed recording:"));
+    for (const state of crashedRecordings) {
+      console.log(`  ${state.session.sessionDir}  ${state.session.title}`);
+      console.log(chalk.gray(`    Recover: meet finalize ${state.session.sessionDir}`));
     }
     console.log();
   }

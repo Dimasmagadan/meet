@@ -33,6 +33,12 @@ final class CalendarAutoStartController: NSObject {
     private var resolvedOccurrences = Set<String>()
     private var loggedMicSkips = Set<String>()
     private var cachedNextSummary: String?
+    // Generation token for the enable cycle: disabling bumps it so any
+    // already-queued fetch or in-flight permission Task from the previous
+    // cycle is discarded at the next async boundary instead of restarting
+    // polling or auto-starting after the toggle went off.
+    private var pollGeneration = 0
+    private var enableTask: Task<Void, Never>?
 
     init(recordingController: RecordingController, permission: PermissionController) {
         self.recordingController = recordingController
@@ -62,14 +68,21 @@ final class CalendarAutoStartController: NSObject {
 
     func setEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: Self.enabledKey)
+        // Invalidate any queued fetch or in-flight permission Task first: their
+        // continuations recheck the generation before touching polling state.
+        pollGeneration += 1
+        enableTask?.cancel()
+        enableTask = nil
         guard enabled else {
             stopPolling()
             cachedNextSummary = nil
             return
         }
 
-        Task { @MainActor in
+        let generation = pollGeneration
+        enableTask = Task { @MainActor in
             let calendarGranted = await self.requestCalendarAccess()
+            guard !Task.isCancelled, generation == self.pollGeneration, self.isEnabled else { return }
             guard calendarGranted else {
                 UserDefaults.standard.set(false, forKey: Self.enabledKey)
                 self.onCalendarPermissionDenied?()
@@ -77,6 +90,7 @@ final class CalendarAutoStartController: NSObject {
             }
 
             let micGranted = await self.permission.ensureMic()
+            guard !Task.isCancelled, generation == self.pollGeneration, self.isEnabled else { return }
             if !micGranted {
                 self.onMicPermissionDenied?()
             }
@@ -150,6 +164,7 @@ final class CalendarAutoStartController: NSObject {
     }
 
     private func tick() {
+        let generation = pollGeneration
         fetchQueue.async { [weak self] in
             guard let self else { return }
             let now = Date()
@@ -160,6 +175,7 @@ final class CalendarAutoStartController: NSObject {
             )
             let events = self.store.events(matching: predicate)
             DispatchQueue.main.async {
+                guard generation == self.pollGeneration else { return }
                 self.process(events: events, now: now)
             }
         }
@@ -168,6 +184,7 @@ final class CalendarAutoStartController: NSObject {
     // MARK: - Decision (steps 2-6)
 
     private func process(events: [EKEvent], now: Date) {
+        guard isEnabled else { return }
         let qualifying = events.filter { qualifies($0) }
         updateNextEvent(qualifying: qualifying, now: now)
 
@@ -196,6 +213,10 @@ final class CalendarAutoStartController: NSObject {
     }
 
     private func startIfPermitted(event: EKEvent, candidate: Candidate, qualifying: [EKEvent], now: Date) {
+        // Rechecked immediately before starting: the toggle may have gone off
+        // while the fetch was in flight, and process()'s own guard ran before
+        // ranking — this is the last chance to honor the user's disable.
+        guard isEnabled else { return }
         // Synchronous check only — never prompt from a timer callback (§2.5).
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             if loggedMicSkips.insert(candidate.key).inserted {
@@ -204,10 +225,7 @@ final class CalendarAutoStartController: NSObject {
             return
         }
 
-        let nextStart = qualifying
-            .compactMap { $0.startDate }
-            .filter { $0 > candidate.end }
-            .min()
+        let nextStart = CalendarMatch.nextStart(after: candidate.end, starts: qualifying.compactMap { $0.startDate })
         let cap = CalendarMatch.capMinutes(now: now, end: candidate.end, nextStart: nextStart)
         recordingController.start(title: candidate.title, maxDurationMinutes: cap, attendees: attendeeNames(for: event))
     }
