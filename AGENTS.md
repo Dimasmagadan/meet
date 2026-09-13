@@ -9,7 +9,7 @@ macOS (Apple Silicon) CLI. Records mic + system audio, transcribes locally with 
 ```
 meet start "Title"
 ├── src/main.ts              — entry, dispatches CLI commands
-├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, tag, status, rename, link, speakers, dashboard, bin-path, retitle, ask
+├── src/cli.ts               — commander: start, setup, list, transcribe, doctor, finalize, tag, status, rename, link, speakers, dashboard, bin-path, model, retitle, ask
 ├── src/recorder.ts          — session orchestration: spawns Swift capture, wires Pipeline, handles stdin hotkeys
 ├── src/types.ts             — shared types: Session, Chunk, Config, TranscriptEntry
 ├── src/pipeline.ts          — chokidar watches *.wav, sequential whisper queue, dedup, durable state
@@ -23,6 +23,7 @@ meet start "Title"
 ├── src/diarization.ts       — speaker diarization (final pass only): concatSysChunks, runDiarizer (AudioAnalysis diarize), assignSpeakers → "Speaker N" labels; parseDiarizeOutput threads per-speaker embeddings
 ├── src/speaker-registry.ts  — cross-session speaker registry (S1): cosine match (backend-scoped, threshold 0.75) over multi-centroid voiceprints (up to 3 per person; EMA-adapted on confirmed matches), register/forget/quarantine, matchSpeakerRanked (top-2 + ambiguity guard for the live path), matches.log; opt-in via speakerRegistryEnabled (biometric)
 ├── src/live-speakers.ts     — live per-chunk speaker identification: `AudioAnalysis embed` (~0.3s ANE/chunk) → read-only registry match → transcript labels during recording ("Name"/"Speaker N"); session-local prints for unknown voices, AMBIGUITY_MARGIN guard, gated by liveSpeakerLabels+speakerRegistryEnabled
+├── src/mic-echo.ts          — finalize-time mic echo attribution (SPEC_MIC_ECHO_ATTRIBUTION_2026-09-11): embeds mic chunks with P2-correlated bleed evidence (`echoCorrelatedMicIndices` from final-pass), voice-matches against the sys diarization embeddings (enrolled self print wins first, AMBIGUITY_MARGIN guard), drops sys-text-covered matches as echo and relabels the rest "Me" → "Speaker N"; builds mic talk-time segments; read-only against the registry; gated by micEchoAttribution + micEchoMatchThreshold
 ├── src/diarization-ab.ts    — opt-in offline-VBx diarizer A/B pass (S2, `diarizationAbPass`): re-diarizes sys-concat.wav via `AudioAnalysis diarize --offline`, aligns the two independent label numberings by time overlap, writes diarization-ab-report.json (speaker counts, agreement %, swaps, talk-time deltas, embedding cosine); never touches transcript.md
 ├── src/talk-time.ts         — per-speaker talk-time stats, renders the "## Talk Time" transcript footer
 ├── src/parakeet-pass.ts     — optional Parakeet-TDT A/B pass (AudioAnalysis transcribe) → transcript.parakeet.md, ab-report.json
@@ -41,7 +42,8 @@ meet start "Title"
 ├── src/triggers.ts          — trigger-word matching for live attention alerts (hot-reload, phrasebook clone)
 ├── src/attention.ts         — AttentionMonitor: trigger detection, cooldown, terminal recap, macOS notification
 ├── src/summary.ts           — extractive TextRank summary + SummaryScheduler (rolling summary.md during recording)
-├── src/system-monitor.ts    — macOS resource pressure: sysctl loadavg, vm_stat free mem, pgrep whisper-cli/AudioAnalysis cache; `whenNotOverloaded`/`makeDeadline` gate heavy BATCH passes only (P1)
+├── src/system-monitor.ts    — macOS resource pressure: sysctl loadavg, vm_stat free mem, pgrep whisper-cli/AudioAnalysis cache; `whenNotOverloaded`/`makeDeadline` gate heavy BATCH passes only (P1); `throttleHold` adds config thresholds (gateLoadAvg 0=auto 70% of cores, gateFreeMemMb) + hard pause while a recording is active (gateWhileRecording) for final/parakeet/diarize passes
+├── src/model-select.ts      — whisper model listing + alias/path resolution for `meet model` hot-swap; writes liveModelPath/finalModelPath via updateConfigFile (atomic; picked up per-chunk)
 ├── src/compute-device.ts    — P2 (doctor-only): `detectWhisperCompute` runs `whisper-cli --help` once (cached), parses stderr for `loaded MTL backend` + GPU name; **no flag emitted** — whisper.cpp has no positive `--metal` (GPU on by default; only `-ng`/`--no-gpu`, `-dev N` exist)
 ├── src/process-priority.ts  — P3: `applyQoS`/`buildQoSArgs` wrap whisper-cli/AudioAnalysis spawns with `taskpolicy -c utility` so the Swift capture keeps priority; fail-open when taskpolicy is absent
 ├── src/vad.ts               — voice activity detection wrapper (optional)
@@ -83,14 +85,14 @@ npm run build && node --test dist/import.test.js     # Single test file
 
 - Target: macOS Apple Silicon only
 - Russian transcription (`-l ru`), configurable for any language
-- WAV format: 16kHz mono 16-bit PCM, chunk duration: 15s
+- WAV format: 16kHz mono 16-bit PCM, chunk duration: 30s (whisper pads every inference to a 30s window — 15s chunks paid full encoder cost twice)
 - Foreground recording — `meet start` blocks, q/Ctrl-C to stop
 - Auto-stop: max duration (default 60min) and no-text timeout (default 10min)
 - Session state: `~/.meet/sessions/meet-{id}/session.json` — written atomically, cleaned up after finalization
 - Output: `~/Meetings/YYYY-MM-DD_HH-MM-{slug}/transcript.md`
 - Config: `~/.meet/config.json`
 - Live model: `~/.meet/models/ggml-small.bin` (466MB)
-- Final model: `~/.meet/models/ggml-medium.bin` (optional, for final pass)
+- Final model: `~/.meet/models/ggml-large-v3-turbo-q5_0.bin` (547MB, recommended; medium fallback) — set via `meet model turbo --final`
 
 ## Transcription Quality
 
@@ -159,14 +161,15 @@ Key differences from live recording:
 After recording stops:
 
 1. **Live pass** — remaining unprocessed chunks transcribed with small model
-2. **Final pass** (optional, `finalRetranscribe: true`) — all chunks re-transcribed with medium model
+2. **Final pass** (optional, `finalRetranscribe: true`) — all chunks re-transcribed with the final model (turbo by default)
 3. **Echo/duplicate filtering** — removes repeated segments from final pass
 4. **Silence gating** — chunks below RMS threshold filtered out
 5. **Diarization** (optional, `diarizationEnabled: true`) — `AudioAnalysis diarize` labels system-audio entries "Speaker N", written to `speakers.json`
-6. **Talk-time stats** — per-speaker duration/percentage, appended as a `## Talk Time` footer
-7. **Rewrite** — sorted, deduplicated markdown written to output file
-8. **Parakeet A/B pass** (optional, `parakeetComparePass: true`) — re-transcribes the same chunks with Parakeet-TDT, writes `transcript.parakeet.md` + `ab-report.json` for manual comparison
-9. **opencode index** (optional, `opencodeIndexPass: false`) — generates `index.md` (Summary/Decisions/Action Items) via `runOpencodeIndex()`, fails open (warns, never blocks the transcript)
+6. **Mic echo attribution** (`micEchoAttribution: true`, needs diarization) — mic chunks with P2-correlated bleed evidence are voice-matched against the sys speakers; confident matches are dropped as echo (sys text covers them) or relabeled "Me" → "Speaker N" — see `mic-echo.ts`
+7. **Talk-time stats** — per-speaker duration/percentage, appended as a `## Talk Time` footer
+8. **Rewrite** — sorted, deduplicated markdown written to output file
+9. **Parakeet A/B pass** (optional, `parakeetComparePass: true`) — re-transcribes the same chunks with Parakeet-TDT, writes `transcript.parakeet.md` + `ab-report.json` for manual comparison
+10. **opencode index** (optional, `opencodeIndexPass: false`) — generates `index.md` (Summary/Decisions/Action Items) via `runOpencodeIndex()`, fails open (warns, never blocks the transcript)
 
 Finalization can run in background (detached process) or foreground.
 
@@ -227,7 +230,7 @@ Local preview: `cd docs && bundle install && npm install && bundle exec jekyll s
 - Binary: `whisper-cli` (from `brew install whisper-cpp`, NOT `whisper`)
 - Live invocation: `whisper-cli -m ggml-small.bin -l ru -f <wav> --no-timestamps -otxt -of <base> --suppress-nst ...` (wrapped in `taskpolicy -c utility` per P3; no `--metal` — whisper.cpp has no such flag, GPU is on by default)
 - Import invocation: `whisper-cli -m ggml-medium.bin -l ru -f <wav> -oj -of <base> -sow --max-len 300 ...` (foreground user batch, no QoS wrapping)
-- Models: `ggml-small.bin` (466MB, live), `ggml-medium.bin` (~1.5GB, final pass)
+- Models: `ggml-small.bin` (466MB, live), `ggml-large-v3-turbo-q5_0.bin` (547MB, final pass; `ggml-medium.bin` fallback). Switch live model mid-recording with `meet model <name>` — the pipeline re-reads config per chunk
 - `whisper-cli --help` writes the option list AND backend-init log to **stderr** (stdout is empty) — `detectWhisperCompute` parses stderr to report the active device in `meet doctor`
 
 ## Reference

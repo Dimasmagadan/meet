@@ -15,6 +15,7 @@ import { runDiarizationAbPass } from "./diarization-ab.js";
 import { computeTalkTime } from "./talk-time.js";
 import type { TalkTimeStats } from "./talk-time.js";
 import { chunkFileRegex } from "./regex-utils.js";
+import { runMicEchoAttributionStep } from "./mic-echo.js";
 
 // Re-applies the registry's display-name overrides to the Talk Time footer
 // rows. `computeTalkTime` reads canonical "Speaker N" labels off the segments
@@ -37,7 +38,7 @@ export function applyLabelOverridesToTalkTime(
 import { runParakeetPass } from "./parakeet-pass.js";
 import { appendPostFinalizeNote } from "./summary.js";
 import { runOpencodeIndex } from "./opencode.js";
-import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
+import { makeDeadline, throttleHold, type PressureSensor } from "./system-monitor.js";
 import { loadRegistry, saveRegistry, applyRegistryToSpeakers, appendMatchesLog, matchesLogPath, matchSelf, registerSpeaker, type SpeakerBackend } from "./speaker-registry.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
@@ -229,6 +230,9 @@ interface DiarizationOutcome {
   // rows so the footer stays in sync with the body, which already had entry
   // labels overridden inside this step.
   labelOverrides: Map<string, string>;
+  // canonical "Speaker N" -> diarizer embedding, consumed by the mic-echo
+  // attribution step (src/mic-echo.ts). Empty when diarization didn't run.
+  embeddingsByLabel: Map<string, number[]>;
 }
 
 // Diarizes sys-source entries into "Speaker N" labels (F1). Fails open: any
@@ -253,15 +257,15 @@ export async function runDiarizationStep(
     speakersRecord.calendarAttendees = session.attendees;
   }
 
-  if (!config.diarizationEnabled) return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
-  if (session.mode !== "full") return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
-  if (!entries.some((e) => e.source === "sys")) return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
+  if (!config.diarizationEnabled) return { entries, segments: [], speakersRecord, labelOverrides: new Map(), embeddingsByLabel: new Map() };
+  if (session.mode !== "full") return { entries, segments: [], speakersRecord, labelOverrides: new Map(), embeddingsByLabel: new Map() };
+  if (!entries.some((e) => e.source === "sys")) return { entries, segments: [], speakersRecord, labelOverrides: new Map(), embeddingsByLabel: new Map() };
 
   const analysisBin = resolveAnalysisBin(config);
   if (!existsSync(analysisBin)) {
     warn(`Diarization skipped: AudioAnalysis binary not found at ${analysisBin}, keeping Others labels`);
     speakersRecord.diarization = { ok: false, error: "AudioAnalysis binary not found" };
-    return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
+    return { entries, segments: [], speakersRecord, labelOverrides: new Map(), embeddingsByLabel: new Map() };
   }
 
   let sysFileCount = 0;
@@ -269,19 +273,20 @@ export async function runDiarizationStep(
     const files = await readdir(session.sessionDir);
     sysFileCount = files.filter((f) => chunkFileRegex("sys").test(f)).length;
   } catch {
-    return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
+    return { entries, segments: [], speakersRecord, labelOverrides: new Map(), embeddingsByLabel: new Map() };
   }
-  if (sysFileCount === 0) return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
+  if (sysFileCount === 0) return { entries, segments: [], speakersRecord, labelOverrides: new Map(), embeddingsByLabel: new Map() };
 
   const startedAt = Date.now();
   try {
     log("Diarization pass...");
     const { wavPath, offsets } = await concatSysChunks(session.sessionDir);
     try {
-      // Single heavy CoreML call — one gate check with the whole diarize as
-      // its budget. Batch pass only; never blocks the live path.
+      // Single heavy CoreML call — one throttleHold with the whole diarize as
+      // its budget (load back-off + hard pause while a recording is active).
+      // Batch pass only; never blocks the live path.
       if (config.gateHeavyPasses) {
-        await whenNotOverloaded(makeDeadline(config.gateBudgetMs), sensor);
+        await throttleHold(config, makeDeadline(config.gateBudgetMs), "diarization pass", { sensor });
       }
       const { segments: rawSegments, embeddings: rawEmbeddings } = await runDiarizer(config, wavPath);
       const segments = relabelSegments(rawSegments);
@@ -307,7 +312,13 @@ export async function runDiarizationStep(
         await runDiarizationAbStep(session, config, wavPath, segments, rawSegments, rawEmbeddings, warn, log, sensor);
       }
 
-      return { entries: diarizedEntries, segments, speakersRecord, labelOverrides };
+      return {
+        entries: diarizedEntries,
+        segments,
+        speakersRecord,
+        labelOverrides,
+        embeddingsByLabel: buildEmbeddingsByLabel(rawSegments, rawEmbeddings),
+      };
     } finally {
       await cleanupSysConcat(session.sessionDir);
     }
@@ -315,7 +326,7 @@ export async function runDiarizationStep(
     const message = err instanceof Error ? err.message : String(err);
     warn(`Diarization failed: ${message}, keeping Others labels`);
     speakersRecord.diarization = { ok: false, error: message };
-    return { entries, segments: [], speakersRecord, labelOverrides: new Map() };
+    return { entries, segments: [], speakersRecord, labelOverrides: new Map(), embeddingsByLabel: new Map() };
   }
 }
 
@@ -441,7 +452,7 @@ export async function runMicDiarizationStep(
     const { wavPath, offsets } = await concatMicChunks(session.sessionDir);
     try {
       if (config.gateHeavyPasses) {
-        await whenNotOverloaded(makeDeadline(config.gateBudgetMs), sensor);
+        await throttleHold(config, makeDeadline(config.gateBudgetMs), "mic diarization pass", { sensor });
       }
       const { segments: rawSegments, embeddings: rawEmbeddings } = await runDiarizer(config, wavPath);
       if (rawSegments.length === 0) return none;
@@ -766,6 +777,7 @@ export async function finalizeSession(
     // "did the final pass lose entries" safety-net comparison, since
     // effective echo filtering is supposed to shrink the entry count.
     let droppedEchoKeys = new Set<string>();
+    let echoCorrelatedMicIndices: Set<number> | null = null;
     let finalPassCompletedKeys = new Set<string>();
     let finalPassFailedKeys = new Set<string>();
     try {
@@ -792,6 +804,7 @@ export async function finalizeSession(
             }, sessionEntries, beforeChunk);
             entries = finalPassResult.entries;
             droppedEchoKeys = finalPassResult.droppedEchoKeys;
+            echoCorrelatedMicIndices = finalPassResult.echoCorrelatedMicIndices;
             finalPassCompletedKeys = finalPassResult.completedKeys;
             finalPassFailedKeys = finalPassResult.failedKeys;
             if (finalPassFailedKeys.size > 0) {
@@ -835,12 +848,28 @@ export async function finalizeSession(
           finalPassLocked = true;
         }
 
-        const { entries: diarizedEntries, segments, speakersRecord, labelOverrides } = await runDiarizationStep(session, config, entries, warn, log);
+        const { entries: diarizedEntries, segments, speakersRecord, labelOverrides, embeddingsByLabel } = await runDiarizationStep(session, config, entries, warn, log);
         entries = diarizedEntries;
 
         const micOutcome = await runMicDiarizationStep(session, config, entries, segments.length, speakersRecord, warn, log);
         entries = micOutcome.entries;
-        const talkTimeDiarSegments = micOutcome.micDiarSegments.length > 0 ? micOutcome.micDiarSegments : segments;
+
+        // Mic-channel echo attribution: no-headset calls leak the remote party
+        // into the mic where P1/P2 text/echoFraction filtering can miss it.
+        // Voice-matches the surviving mic chunks against the sys speakers and
+        // drops (sys text already covers it) or relabels them into the same
+        // "Speaker N" space. No-ops unless sys diarization found speakers.
+        const echoOutcome = await runMicEchoAttributionStep(
+          session, config, entries, embeddingsByLabel, labelOverrides,
+          echoCorrelatedMicIndices, storedRmsMap, speakersRecord, warn, log,
+        );
+        entries = echoOutcome.entries;
+
+        const talkTimeDiarSegments = micOutcome.micDiarSegments.length > 0
+          ? micOutcome.micDiarSegments
+          : echoOutcome.micSegments.length > 0
+            ? [...segments, ...echoOutcome.micSegments]
+            : segments;
         const mergedLabelOverrides = new Map([...labelOverrides, ...micOutcome.labelOverrides]);
 
         const talkTime = applyLabelOverridesToTalkTime(

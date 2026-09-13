@@ -16,7 +16,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 - **Calendar auto-start** — enable "Auto-Record Calendar Calls" in the menu bar to auto-start recording the moment a scheduled event with a Zoom/Meet/Teams/Webex/Whereby/Telemost/Jazz/Kontur link begins. No confirmation dialog; declined events, all-day events, and Free/OOO blocks are skipped. Auto-stops at the event's scheduled end (+ grace, trimmed for back-to-back meetings). The idle menu shows the next qualifying event so the feature stays observable.
 - **Foreground meeting recording** — `meet start "Title"` records mic + system audio, transcribes chunks live, and blocks the terminal until you stop.
 - **Mic-only mode** — `meet start --mic "Title"` for in-person meetings, interviews, or a phone on speaker.
-- **Dual-channel capture** — Swift `AudioCapture` records mic (AVAudioEngine + VoiceProcessing IO) and system audio (ScreenCaptureKit) in parallel into atomic 15s WAV chunks; `excludesCurrentProcessAudio` prevents feedback loops.
+- **Dual-channel capture** — Swift `AudioCapture` records mic (AVAudioEngine + VoiceProcessing IO) and system audio (ScreenCaptureKit) in parallel into atomic 30s WAV chunks; `excludesCurrentProcessAudio` prevents feedback loops.
 - **Atomic chunk handoff** — writes `*.wav.tmp`, finalizes the header, then renames to `*.wav`. The pipeline never transcribes a half-written file.
 - **VoiceProcessing echo cancellation** — `--voice-processing` (opt-in) for cleaner audio when you're not wearing headphones.
 - **Auto-stop** — configurable max duration (`--max-duration`, default 60 min) and no-speech timeout (`--no-text-timeout`, default 10 min).
@@ -41,6 +41,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 
 - **Source labels** — live, mic is `Me` and system audio is `Others`; no diarization needed.
 - **Speaker diarization** — on the final pass, system audio is concatenated and run through FluidAudio's diarizer to relabel entries as `Speaker 1`, `Speaker 2`… by first appearance. Writes `speakers.json`.
+- **Mic echo attribution** — without a headset the remote party's voice leaks through the speakers into the mic and gets labeled `Me`. After diarization, mic chunks with acoustic bleed evidence are voice-matched against the diarized speakers: confident matches are dropped as echo (when the sys text already covers the content) or relabeled `Me` → `Speaker N` when it doesn't. An enrolled self print (`meet speakers enroll-self`) protects your own overlapping speech from being relabeled.
 - **Speaker rename** — `meet rename <dir> "Speaker 1" "Женя"` patches the label across `transcript*.md`, `index.md`, and `speakers.json` (idempotent).
 - **Cross-session speaker registry** (opt-in, biometric) — stores voice embeddings; cosine-matches known voices across meetings so the same person is auto-labeled.
 - **Live speaker labels** (needs the registry) — during recording, each transcribed chunk gets a cheap on-device voiceprint (`AudioAnalysis embed`, ~0.3 s on the ANE) matched against the registry: named people appear under their name in the live transcript and notch panel, unnamed known voices as `Speaker N`. Read-only against the registry; the final pass stays authoritative.
@@ -124,6 +125,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `meet speakers suggest <dir>` | Suggest speaker names from calendar attendees + registry matches |
 | `meet dashboard` | Generate HTML dashboard |
 | `meet bin-path` | Print resolved runner paths (used by the menu bar app) |
+| `meet model [name]` | List whisper models / hot-swap the live model (applies from the next chunk); `--final` targets the finalization model |
 
 </div>
 
@@ -162,9 +164,14 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `speakerRegistryEnabled` | `false` | Cross-session registry (opt-in, biometric) |
 | `liveSpeakerLabels` | `true` | Live per-chunk speaker labels (needs the registry) |
 | `liveSpeakerMatchThreshold` | `0.7` | Live label match threshold |
+| `micEchoAttribution` | `true` | Mic echo attribution on finalize (no-headset "Me" mislabels) |
+| `micEchoMatchThreshold` | `0.7` | Mic echo attribution match threshold |
 | `attentionAlerts` | `true` | Live trigger-word alerts |
 | `summaryEnabled` | `true` | Live extractive summary |
 | `gateHeavyPasses` | `true` | System-pressure gates |
+| `gateWhileRecording` | `true` | Pause heavy passes while a recording is active |
+| `gateLoadAvg` | `0` (auto) | Loadavg back-off threshold; 0 = 70% of cores |
+| `gateFreeMemMb` | `2048` | Free-memory back-off threshold |
 | `lowerProcessPriority` | `true` | QoS lowering |
 | `menuBarMeetBin` | (empty = auto) | Explicit `meet` runner for the menu bar app; empty → `meet bin-path` auto-resolves |
 

@@ -127,6 +127,17 @@ export interface Config {
   opencodeIndexPass: boolean;
   gateHeavyPasses: boolean;
   gateBudgetMs: number;
+  // Heavy-pass throttle (src/system-monitor.ts throttleHold): while any
+  // recording is active, batch passes (final/parakeet/diarize) hold instead of
+  // competing with a live call for CPU/Metal. Unbounded by design — a
+  // back-to-back calendar call should always win over a stale finalization.
+  gateWhileRecording: boolean;
+  // 1-min loadavg above which heavy passes back off. 0 = auto: 70% of the
+  // reported core count (loadavg is a runqueue depth, so cores is the unit).
+  gateLoadAvg: number;
+  // Free (free + inactive) memory in MB below which heavy passes back off.
+  gateFreeMemMb: number;
+  gatePollMs: number;
   speakerRegistryEnabled: boolean;
   speakerMatchThreshold: number;
   speakerRegistryPath: string;
@@ -145,6 +156,19 @@ export interface Config {
   // speaker registry's isSelf-flagged voiceprint. Opt-in: an extra CoreML pass
   // per meeting, same convention as diarizationAbPass.
   micDiarizationEnabled: boolean;
+  // Mic-channel echo attribution (src/mic-echo.ts): without a headset the
+  // remote party's voice leaks through the speakers into the mic and is
+  // labeled "Me". After sys diarization, mic chunks with acoustic bleed
+  // evidence (P2 envelope correlation) are embedded and voice-matched against
+  // the sys speakers: confident matches are dropped as echo when the sys text
+  // already covers the content, otherwise relabeled "Me" -> "Speaker N".
+  // Self-voiceprint protection needs speakerRegistryEnabled + enroll-self;
+  // runs read-only against the registry either way.
+  micEchoAttribution: boolean;
+  // Echo-degraded chunk voiceprints score below clean pooled comparisons —
+  // same rationale as liveSpeakerMatchThreshold sitting under
+  // speakerMatchThreshold.
+  micEchoMatchThreshold: number;
   // P3: spawn whisper-cli / AudioAnalysis under `taskpolicy -c utility` so the
   // Swift audio capture (which keeps default priority) never starves during a
   // live recording. Fail-opens to no wrapping when taskpolicy is unavailable.
@@ -208,7 +232,7 @@ export const DEFAULT_CONFIG: Config = {
   finalRetranscribe: true,
   keepLiveTranscript: true,
   outputDir: "~/Meetings",
-  chunkDurationSeconds: 15,
+  chunkDurationSeconds: 30,
   language: "ru",
   whisperBin: "whisper-cli",
   captureBin: "",
@@ -265,12 +289,18 @@ export const DEFAULT_CONFIG: Config = {
   opencodeIndexPass: false,
   gateHeavyPasses: true,
   gateBudgetMs: 120_000,
+  gateWhileRecording: true,
+  gateLoadAvg: 0,
+  gateFreeMemMb: 2048,
+  gatePollMs: 5_000,
   speakerRegistryEnabled: false,
   speakerMatchThreshold: 0.75,
   speakerRegistryPath: "~/.meet/speakers/registry.json",
   liveSpeakerLabels: true,
   liveSpeakerMatchThreshold: 0.7,
   micDiarizationEnabled: false,
+  micEchoAttribution: true,
+  micEchoMatchThreshold: 0.7,
   lowerProcessPriority: true,
   liveQueueLagWarnChunks: 8,
   menuBarMeetBin: "",

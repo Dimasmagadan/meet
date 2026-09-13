@@ -1,6 +1,7 @@
 import { Command, InvalidArgumentError } from "commander";
 import chalk from "chalk";
-import { loadConfig, getOutputDir, reserveOutputDir, getCaptureBinPath, resolveAnalysisBin, findRecordingStates, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath, readSession } from "./storage.js";
+import { loadConfig, getOutputDir, reserveOutputDir, getCaptureBinPath, resolveAnalysisBin, findRecordingStates, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath, readSession, updateConfigFile } from "./storage.js";
+import { listModelFiles, resolveModelInput, contractHome, ModelNotFoundError } from "./model-select.js";
 import { Recorder } from "./recorder.js";
 import { makeHeader } from "./assembler.js";
 import { finalizeSession } from "./finalize.js";
@@ -225,7 +226,47 @@ export function createProgram(): Command {
       console.log(JSON.stringify(resolveRunnerPaths(loadConfig())));
     });
 
+  program
+    .command("model")
+    .description("List whisper models, or hot-swap the live model (applies from the next chunk; use --final for the finalization model)")
+    .argument("[model]", "Alias (small/medium/turbo/large/tiny), file name, or path")
+    .option("--final", "Set the final-pass model instead of the live model")
+    .action(async (model: string | undefined, opts: { final?: boolean }) => {
+      await runModelCommand(model, opts.final ?? false);
+    });
+
   return program;
+}
+
+async function runModelCommand(model: string | undefined, isFinal: boolean): Promise<void> {
+  const files = listModelFiles();
+  const config = loadConfig();
+  if (!model) {
+    const live = expandPath(config.liveModelPath || config.modelPath);
+    const final = expandPath(config.finalModelPath || config.modelPath);
+    for (const f of files) {
+      const marks = [f.path === live ? "live" : null, f.path === final ? "final" : null].filter(Boolean).join(", ");
+      console.log(`${f.alias.padEnd(8)} ${f.name.padEnd(34)} ${String(f.sizeMb).padStart(5)}M${marks ? `  [${marks}]` : ""}`);
+    }
+    return;
+  }
+  let resolved: string;
+  try {
+    resolved = resolveModelInput(model, files);
+  } catch (err) {
+    if (err instanceof ModelNotFoundError) {
+      console.log(chalk.red(err.message));
+      process.exitCode = 1;
+      return;
+    }
+    throw err;
+  }
+  const slot = isFinal ? "finalModelPath" : "liveModelPath";
+  await updateConfigFile({ [slot]: contractHome(resolved) });
+  console.log(`${isFinal ? "Final" : "Live"} model → ${chalk.bold(resolved)}`);
+  console.log(chalk.gray(isFinal
+    ? "Applies to the next finalization (a pass already running keeps its model)."
+    : "Applies from the next transcribed chunk — safe to change mid-recording."));
 }
 
 async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string) {

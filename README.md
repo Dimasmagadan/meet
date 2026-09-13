@@ -10,6 +10,7 @@ Local meeting transcription for macOS (Apple Silicon). Records mic + system audi
 - **Dual-channel capture** — mic (you) and system audio (others) recorded simultaneously
 - **Local transcription** — whisper.cpp with Metal GPU acceleration, no internet required
 - **Speaker diarization** — system audio labeled "Speaker 1", "Speaker 2", ... on the final pass (falls back to "Others" if diarization is off/unavailable); mic is always "Me"
+- **Mic echo attribution** — without a headset, mic audio that voice-matches a diarized speaker is dropped as echo or relabeled "Speaker N" instead of staying under "Me"
 - **Live speaker labels** — with the cross-session registry enabled, each chunk is matched against known voices during recording (~0.3 s on-device per chunk), so named people show up live instead of "Others"
 - **Speaker rename** — `meet rename` swaps a diarized label for a real name across a finished meeting's output
 - **Talk-time stats** — per-speaker duration/percentage footer on every finalized transcript
@@ -82,6 +83,7 @@ meet status                     Show active recording/finalization jobs
 meet rename <dir> <id> <name>   Rename a diarized speaker label in a finalized meeting
 meet link <dir> <repoPath>      Attach/replace git repo context in a finalized meeting's meta.md
 meet bin-path                   Print resolved runner paths as JSON (used by the menu bar app)
+meet model [name]               List whisper models / hot-swap live (--final: finalization) model
 ```
 
 ### `start` options
@@ -234,7 +236,7 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `liveModelPath` | `~/.meet/models/ggml-small.bin` | Model for live transcription |
 | `finalModelPath` | `~/.meet/models/ggml-medium.bin` | Model for final retranscription pass |
 | `outputDir` | `~/Meetings` | Output directory |
-| `chunkDurationSeconds` | `15` | Audio chunk duration |
+| `chunkDurationSeconds` | `30` | Audio chunk duration |
 | `language` | `ru` | Whisper language code |
 | `prompt` | Russian consultation prompt | Whisper context prompt |
 | `finalRetranscribe` | `true` | Run high-quality final pass |
@@ -250,6 +252,8 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `opencodeIndexPass` | `false` | Generate `index.md` (Summary/Decisions/Action Items) after `meet start` recordings finalize |
 | `liveSpeakerLabels` | `true` | Live per-chunk speaker identification (requires `speakerRegistryEnabled`) |
 | `liveSpeakerMatchThreshold` | `0.7` | Cosine threshold for live speaker labels (lower than the finalize threshold) |
+| `micEchoAttribution` | `true` | Voice-match mic-channel echo against the diarized speakers on finalize: no-headset leak of the remote party is dropped (when the sys text already covers it) or relabeled "Me" → "Speaker N" instead of staying under "Me" |
+| `micEchoMatchThreshold` | `0.7` | Cosine threshold for the mic echo attribution (below the finalize threshold — echo-degraded voiceprints score lower) |
 | `attentionAlerts` | `true` | Master switch for live trigger-word alerts |
 | `triggersPath` | `./triggers.json` | Trigger word list |
 | `triggersReload` | `true` | Hot-reload the triggers file on change |
@@ -257,7 +261,7 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `attentionRecapEntries` | `3` | Transcript entries shown in attention recap |
 | `attentionSound` | `Glass` | macOS notification sound name |
 | `summaryEnabled` | `true` | Master switch for live extractive summary |
-| `summaryIntervalChunks` | `8` | Run summarizer every N chunks (~2 min at 15s) |
+| `summaryIntervalChunks` | `8` | Run summarizer every N chunks (~4 min at 30s) |
 | `summaryTopN` | `5` | Key points per window |
 | `summaryWindowMaxEntries` | `200` | Sliding window ceiling (entries considered) |
 | `summaryMinEntries` | `8` | Don't summarize below this many entries |
@@ -265,6 +269,10 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `summaryMemThresholdMb` | `768` | Pause below this free memory |
 | `summaryCatchupIntervalMs` | `30000` | Retry interval while overloaded |
 | `menuBarMeetBin` | (empty = auto) | Explicit `meet` runner for the menu bar app; empty → `meet bin-path` auto-resolves |
+| `gateWhileRecording` | `true` | Pause heavy finalize passes while a recording is active (back-to-back calls) |
+| `gateLoadAvg` | `0` (auto) | 1-min loadavg threshold for heavy-pass back-off; 0 = 70% of core count |
+| `gateFreeMemMb` | `2048` | Pause heavy passes below this free memory |
+| `gatePollMs` | `5000` | Re-check interval while a heavy pass is holding |
 
 ### Phrasebook
 
@@ -330,7 +338,7 @@ Create `triggers.json` in the project root:
 - Matching is a case-insensitive substring check, so short stems (`"Дим"`) also catch inflected forms (`"Диму"`, `"Димой"`).
 - Triggers must be written in **post-phrasebook** form — matching happens after phrasebook replacements are applied.
 - Alerts are rate-limited by `attentionCooldownSeconds` (default 60s) so a repeated mention doesn't spam notifications.
-- Because live transcription runs in 15s chunks through a sequential queue, an alert can lag 15–45s behind the actual speech — the banner shows the speech-time timestamp, not "just now".
+- Because live transcription runs in 30s chunks through a sequential queue, an alert can lag 30–90s behind the actual speech — the banner shows the speech-time timestamp, not "just now".
 - `meet doctor` prints trigger status and fires a test notification. If nothing appears, allow notifications for your terminal app in **System Settings → Notifications**.
 - No triggers file, or `attentionAlerts: false` in config, disables the feature entirely with no warnings.
 
@@ -355,7 +363,7 @@ meet start "Meeting Title"
 ├── Swift AudioCapture (ScreenCaptureKit + AVAudioEngine)
 │   ├── Mic → mic-001.wav, mic-002.wav, ...
 │   └── System → sys-001.wav, sys-002.wav, ...
-│   (atomic .wav.tmp → .wav handoff, 15s chunks)
+│   (atomic .wav.tmp → .wav handoff, 30s chunks)
 │
 ├── Node.js Pipeline (chokidar file watcher)
 │   ├── Detects finalized .wav files

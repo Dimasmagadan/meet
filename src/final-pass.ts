@@ -14,7 +14,7 @@ import {
 } from "./audio-metrics.js";
 import { filterEntries, type FinalChunkResult, type FilterConfig } from "./filters.js";
 import { chunkToTimestamp } from "./assembler.js";
-import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
+import { makeDeadline, throttleHold, type PressureSensor } from "./system-monitor.js";
 import { MIC_OR_SYS_CHUNK_RE, sortChunkFilenames } from "./regex-utils.js";
 
 export async function copyLiveTranscript(outputFile: string): Promise<void> {
@@ -91,6 +91,12 @@ export interface FinalPassResult {
   // distinguishable from these, so finalization can preserve the WAV instead
   // of deleting unrecoverable audio silently.
   failedKeys: Set<string>;
+  // Mic chunk indices whose RMS envelope correlated with the sys neighbourhood
+  // (P2 correlation gate passed, regardless of echoFraction) — acoustic
+  // evidence of speaker bleed, transcription-independent. The finalize
+  // mic-echo attribution step embeds only these; with headphones the set is
+  // empty and that step costs nothing.
+  echoCorrelatedMicIndices: Set<number>;
 }
 
 export async function runFinalPass(
@@ -105,6 +111,7 @@ export async function runFinalPass(
   const results: FinalChunkResult[] = [];
   const completedKeys = new Set<string>();
   const failedKeys = new Set<string>();
+  const echoCorrelatedMicIndices = new Set<number>();
 
   // Per-~100ms-frame RMS envelope, keyed by chunk index (P2). Frame arrays are
   // tiny (~150 floats per 15s chunk) — kept for the whole meeting, unlike the
@@ -114,12 +121,13 @@ export async function runFinalPass(
   const sysFramesByIndex = new Map<number, number[]>();
 
   // One wall-clock budget for the whole pass, threaded into every per-chunk
-  // gate check so a many-chunk pass can't stall N × maxWaitMs. Live path is
-  // un-gated; only this batch (medium-model) pass backs off under load.
+  // throttleHold so a many-chunk pass can't stall N × pollMs under load. Live
+  // path is un-gated; only this batch pass backs off (and hard-pauses while a
+  // recording is active).
   const gate = config.gateHeavyPasses ? makeDeadline(config.gateBudgetMs) : null;
 
   await forEachAudibleChunk(session, config, async (chunk, done, total) => {
-    if (gate) await whenNotOverloaded(gate, sensor);
+    await throttleHold(config, gate, "final pass", sensor ? { sensor } : {});
 
     const frames = frameRmsDb(chunk.samples, frameSize);
     (chunk.source === "mic" ? micFramesByIndex : sysFramesByIndex).set(chunk.index, frames);
@@ -202,6 +210,7 @@ export async function runFinalPass(
     );
     if (correlation >= config.micEchoCorrelationThreshold) {
       r.micEchoScore = echoFraction;
+      echoCorrelatedMicIndices.add(r.index);
     }
   }
 
@@ -226,5 +235,5 @@ export async function runFinalPass(
       text: r.text,
     }));
 
-  return { entries, droppedEchoKeys, completedKeys, failedKeys };
+  return { entries, droppedEchoKeys, completedKeys, failedKeys, echoCorrelatedMicIndices };
 }

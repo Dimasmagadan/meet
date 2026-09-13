@@ -79,9 +79,9 @@ function isValidConfigValue(key: string, value: unknown): boolean {
     "chunkDurationSeconds", "finalBeamSize", "finalBestOf", "vadMinSpeechMs", "vadTimeoutMs",
     "attentionCooldownSeconds", "attentionRecapEntries", "summaryIntervalChunks", "summaryTopN",
     "summaryWindowMaxEntries", "summaryMinEntries", "summaryMemThresholdMb", "summaryCatchupIntervalMs",
-    "gateBudgetMs", "liveQueueLagWarnChunks",
+    "gateBudgetMs", "gatePollMs", "liveQueueLagWarnChunks",
   ]);
-  const nonNegativeNumbers = new Set(["maxDurationMinutes", "noTextTimeoutMinutes"]);
+  const nonNegativeNumbers = new Set(["maxDurationMinutes", "noTextTimeoutMinutes", "gateLoadAvg", "gateFreeMemMb"]);
   const unitIntervals = new Set([
     "whisperNoSpeechThreshold", "finalNoSpeechThreshold", "vadThreshold", "diarizationMinOverlap",
     "micEchoCoverageThreshold", "micEchoCorrelationThreshold", "micEchoFractionThreshold", "speakerMatchThreshold",
@@ -141,6 +141,18 @@ export async function readSession(sessionDir: string): Promise<Session | null> {
 export async function writeSession(session: Session): Promise<void> {
   const path = join(session.sessionDir, "session.json");
   await writeAtomic(path, JSON.stringify(session, null, 2));
+}
+
+// Hot-swap support (`meet model`): rewrites ~/.meet/config.json in place,
+// preserving unrelated keys. Running sessions pick the change up on their
+// next loadConfig() — the live pipeline re-reads it per chunk.
+export async function updateConfigFile(patch: Partial<Config>): Promise<void> {
+  const configPath = expandPath("~/.meet/config.json");
+  let raw: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    raw = JSON.parse(await readFile(configPath, "utf-8")) as Record<string, unknown>;
+  }
+  await writeAtomic(configPath, JSON.stringify({ ...raw, ...patch }, null, 2));
 }
 
 export function generateSlug(title: string): string {

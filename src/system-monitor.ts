@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { cpus } from "node:os";
+import { isActiveRecording } from "./locks.js";
+import type { Config } from "./types.js";
 
 const execFileP = promisify(execFile);
 
@@ -237,6 +239,89 @@ export async function whenNotOverloaded(
     if (!pressure.overloaded) return;
     const remaining = deadline.remainingMs();
     if (remaining <= 0) return; // pass budget exhausted → fail-open
+    await sleep(Math.min(pollMs, remaining));
+  }
+}
+
+// --- heavy-pass throttle: gate thresholds from config + recording pause ----
+
+// Auto load threshold as a fraction of the reported core count. loadavg is a
+// runqueue depth, so "70% of the machine" reads directly in these units.
+export const AUTO_LOAD_FACTOR = 0.7;
+
+// gateLoadAvg 0 means "derive from the machine" (70% of cores); gateFreeMemMb
+// 0 falls back to the legacy default. Numbers so the config stays a plain
+// primitive — resolveGateThresholds does the auto math at use time.
+export function resolveGateThresholds(
+  config: Pick<Config, "gateLoadAvg" | "gateFreeMemMb">,
+  cores: number = cpus().length,
+): PressureThresholds {
+  return {
+    cpuThresholdLoad: config.gateLoadAvg > 0
+      ? config.gateLoadAvg
+      : Math.round(cores * AUTO_LOAD_FACTOR * 10) / 10,
+    memThresholdMb: config.gateFreeMemMb > 0
+      ? config.gateFreeMemMb
+      : DEFAULT_PRESSURE_THRESHOLDS.memThresholdMb,
+  };
+}
+
+export interface ThrottleOptions {
+  sensor?: PressureSensor;
+  isRecordingActive?: () => boolean;
+  // Defaults to a stderr line per hold episode — background finalizers capture
+  // stderr, foreground ones interleave it with progress output.
+  notify?: (message: string) => void;
+}
+
+// The per-chunk hold every heavy batch pass awaits. Two independent back-off
+// causes, checked in order:
+//   1. gateWhileRecording — a live recording is active: hold (unbounded). A
+//      back-to-back calendar call must always beat a stale finalization, so
+//      this pause deliberately ignores the pass deadline.
+//   2. host pressure (loadavg / free memory via resolveGateThresholds) — hold
+//      while the pass deadline still has budget, then fail-open so a
+//      sustained load spike can delay a pass but never starve it forever.
+// Replaces per-chunk whenNotOverloaded() calls; whenNotOverloaded stays
+// exported as the pressure-only primitive.
+export async function throttleHold(
+  config: Config,
+  deadline: PressureDeadline | null,
+  stage: string,
+  opts: ThrottleOptions = {},
+): Promise<void> {
+  const sensor = opts.sensor ?? getSystemPressure;
+  const isRecordingActive = opts.isRecordingActive ?? isActiveRecording;
+  const notify = opts.notify ?? ((message: string) => console.error(`[meet] ${message}`));
+  const pollMs = config.gatePollMs > 0 ? config.gatePollMs : DEFAULT_GATE_POLL_MS;
+  const thresholds = resolveGateThresholds(config);
+  const loadWaitEnabled = config.gateHeavyPasses && deadline !== null;
+  const recordingWaitEnabled = config.gateHeavyPasses && config.gateWhileRecording && deadline !== null;
+  let holdReason: string | null = null;
+
+  for (;;) {
+    if (recordingWaitEnabled && isRecordingActive()) {
+      if (holdReason !== "recording") {
+        holdReason = "recording";
+        notify(`${stage}: holding while a recording is active`);
+      }
+      await sleep(pollMs);
+      continue;
+    }
+    if (!loadWaitEnabled) return;
+    let pressure: ResourcePressure;
+    try {
+      pressure = await sensor();
+    } catch {
+      return; // sensor unavailable → fail-open
+    }
+    if (!pressure.overloaded) return;
+    const remaining = deadline!.remainingMs();
+    if (remaining <= 0) return; // pass budget exhausted → fail-open
+    if (holdReason === null || !holdReason.startsWith("load")) {
+      holdReason = `load: ${pressure.reason ?? "overloaded"}`;
+      notify(`${stage}: holding (${pressure.reason ?? "overloaded"})`);
+    }
     await sleep(Math.min(pollMs, remaining));
   }
 }

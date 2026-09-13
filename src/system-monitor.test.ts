@@ -8,11 +8,15 @@ import {
   isAudioAnalysisRunning,
   whenNotOverloaded,
   makeDeadline,
+  resolveGateThresholds,
+  throttleHold,
+  DEFAULT_PRESSURE_THRESHOLDS,
   _resetWhisperCache,
   _resetAudioAnalysisCache,
   type ResourcePressure,
   type PressureSensor,
 } from "./system-monitor.js";
+import { DEFAULT_CONFIG } from "./types.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -228,6 +232,103 @@ describe("whenNotOverloaded", () => {
     const elapsed = Date.now() - t0;
     assert.strictEqual(calls, 1);
     assert.ok(elapsed < 50, `expected no wait, took ${elapsed}ms`);
+  });
+});
+
+describe("resolveGateThresholds", () => {
+  it("derives the auto load threshold from cores when gateLoadAvg is 0", () => {
+    const t = resolveGateThresholds({ gateLoadAvg: 0, gateFreeMemMb: 2048 }, 10);
+    assert.strictEqual(t.cpuThresholdLoad, 7);
+    assert.strictEqual(t.memThresholdMb, 2048);
+  });
+
+  it("uses the explicit load threshold and the legacy mem default when gateFreeMemMb is 0", () => {
+    const t = resolveGateThresholds({ gateLoadAvg: 4.5, gateFreeMemMb: 0 }, 10);
+    assert.strictEqual(t.cpuThresholdLoad, 4.5);
+    assert.strictEqual(t.memThresholdMb, DEFAULT_PRESSURE_THRESHOLDS.memThresholdMb);
+  });
+});
+
+describe("throttleHold", () => {
+  function throttleConfig(over: Partial<typeof DEFAULT_CONFIG> = {}) {
+    return {
+      ...DEFAULT_CONFIG,
+      gateHeavyPasses: true,
+      gateWhileRecording: true,
+      gateLoadAvg: 0,
+      gateFreeMemMb: 2048,
+      gatePollMs: 1,
+      ...over,
+    };
+  }
+
+  it("returns immediately when idle and no recording is active", async () => {
+    let sensorCalls = 0;
+    const sensor: PressureSensor = async () => {
+      sensorCalls++;
+      return makePressure({ overloaded: false });
+    };
+    const t0 = Date.now();
+    await throttleHold(throttleConfig(), makeDeadline(10_000), "test", { sensor });
+    assert.strictEqual(sensorCalls, 1);
+    assert.ok(Date.now() - t0 < 50);
+  });
+
+  it("holds while a recording is active — ignoring the pass budget — then proceeds", async () => {
+    let recordingCalls = 0;
+    const isRecordingActive = () => {
+      recordingCalls++;
+      return recordingCalls <= 5;
+    };
+    const sensor: PressureSensor = async () => makePressure({ overloaded: true, reason: "cpu 9.0/8c" });
+    // A 1ms budget would fail open after ~1 poll if the recording pause
+    // respected it — the whole point is that it must not.
+    await throttleHold(throttleConfig(), makeDeadline(1), "test", { sensor, isRecordingActive });
+    assert.ok(recordingCalls >= 6, `expected recording probe to clear, got ${recordingCalls} calls`);
+  });
+
+  it("holds under load until the pass budget is exhausted, then fails open", async () => {
+    let sensorCalls = 0;
+    const sensor: PressureSensor = async () => {
+      sensorCalls++;
+      return makePressure({ overloaded: true, reason: "cpu 9.0/8c" });
+    };
+    const t0 = Date.now();
+    await throttleHold(throttleConfig(), makeDeadline(30), "test", { sensor });
+    assert.ok(sensorCalls >= 2);
+    assert.ok(Date.now() - t0 < 500, "budget must bound the load wait");
+  });
+
+  it("skips pressure checks entirely when the pass is not gated (deadline null)", async () => {
+    let recordingCalls = 0;
+    const isRecordingActive = () => {
+      recordingCalls++;
+      return true;
+    };
+    let sensorCalls = 0;
+    const sensor: PressureSensor = async () => {
+      sensorCalls++;
+      return makePressure({ overloaded: true });
+    };
+    await throttleHold(throttleConfig({ gateHeavyPasses: false }), null, "test", { sensor, isRecordingActive });
+    assert.strictEqual(sensorCalls, 0);
+    assert.strictEqual(recordingCalls, 0);
+  });
+
+  it("notifies once per hold episode, not once per poll", async () => {
+    let sensorCalls = 0;
+    const sensor: PressureSensor = async () => {
+      sensorCalls++;
+      return makePressure({ overloaded: sensorCalls < 4, reason: "cpu 9.0/8c" });
+    };
+    const messages: string[] = [];
+    await throttleHold(throttleConfig(), makeDeadline(10_000), "final pass", {
+      sensor,
+      notify: (m) => messages.push(m),
+    });
+    assert.strictEqual(messages.length, 1);
+    assert.match(messages[0], /final pass/);
+    assert.match(messages[0], /cpu 9\.0\/8c/);
   });
 });
 

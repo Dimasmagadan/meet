@@ -4,7 +4,7 @@ import { forEachAudibleChunk } from "./final-pass.js";
 import { chunkToTimestamp } from "./assembler.js";
 import { resolveAnalysisBin } from "./storage.js";
 import { getPhrasebook } from "./phrasebook.js";
-import { makeDeadline, whenNotOverloaded, type PressureSensor } from "./system-monitor.js";
+import { makeDeadline, throttleHold, type PressureSensor } from "./system-monitor.js";
 import { applyQoS } from "./process-priority.js";
 
 export async function transcribeWithParakeet(config: Config, wavPath: string): Promise<string> {
@@ -58,12 +58,12 @@ export async function runParakeetPass(
   let failedChunks = 0;
 
   // One wall-clock budget for the whole A/B pass; threaded into each per-chunk
-  // gate check so the total back-off is bounded. Batch pass only.
+  // throttleHold so the total back-off is bounded. Batch pass only.
   const gate = config.gateHeavyPasses ? makeDeadline(config.gateBudgetMs) : null;
 
   await forEachAudibleChunk(session, config, async (chunk, done, total) => {
     onProgress?.(done, total);
-    if (gate) await whenNotOverloaded(gate, sensor);
+    await throttleHold(config, gate, "parakeet pass", sensor ? { sensor } : {});
     if (!chunk.audible) return;
     chunkCount++;
 
@@ -83,7 +83,10 @@ export async function runParakeetPass(
     if (!text) return;
 
     const timestamp = chunkToTimestamp(chunk.index, session.chunkDurationSeconds, session.startedAt);
-    const speaker = chunk.source === "sys" ? speakerByChunk.get(`sys-${chunk.index}`) : undefined;
+    // Mic keys exist in speakerByChunk when runMicEchoAttributionStep (or the
+    // mic-only diarization split) relabeled a mic chunk — a leak of the remote
+    // party must not render as "Me" in the A/B transcript either.
+    const speaker = speakerByChunk.get(`${chunk.source}-${chunk.index}`);
     entries.push({
       source: chunk.source,
       chunkIndex: chunk.index,
