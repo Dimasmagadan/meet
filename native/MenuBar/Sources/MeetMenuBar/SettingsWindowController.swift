@@ -14,6 +14,8 @@ final class SettingsWindowController: NSWindowController {
     private let languageField = NSTextField(frame: NSRect(x: 0, y: 0, width: 100, height: 24))
     private let chunkDurationField = NSTextField(frame: NSRect(x: 0, y: 0, width: 100, height: 24))
     private let matchThresholdField = NSTextField(frame: NSRect(x: 0, y: 0, width: 100, height: 24))
+    private let liveModelPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 220, height: 26))
+    private let finalModelPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 220, height: 26))
 
     private var config: [String: Any] = [:]
 
@@ -51,8 +53,10 @@ final class SettingsWindowController: NSWindowController {
         parakeetCheckbox.state = ConfigStore.bool(config, "parakeetComparePass", default: true) ? .on : .off
         lowerPriorityCheckbox.state = ConfigStore.bool(config, "lowerProcessPriority", default: true) ? .on : .off
         languageField.stringValue = ConfigStore.string(config, "language", default: "ru")
-        chunkDurationField.stringValue = String(ConfigStore.int(config, "chunkDurationSeconds", default: 15))
+        chunkDurationField.stringValue = String(ConfigStore.int(config, "chunkDurationSeconds", default: 30))
         matchThresholdField.stringValue = String(ConfigStore.double(config, "speakerMatchThreshold", default: 0.75))
+        fillModelPopup(liveModelPopup, key: "liveModelPath", fallback: "~/.meet/models/ggml-small.bin")
+        fillModelPopup(finalModelPopup, key: "finalModelPath", fallback: "~/.meet/models/ggml-large-v3-turbo-q5_0.bin")
     }
 
     @objc private func save() {
@@ -66,6 +70,14 @@ final class SettingsWindowController: NSWindowController {
         config["language"] = languageField.stringValue
         if let n = Int(chunkDurationField.stringValue), n > 0 { config["chunkDurationSeconds"] = n }
         if let d = Double(matchThresholdField.stringValue), (0...1).contains(d) { config["speakerMatchThreshold"] = d }
+        // representedObject carries the tilde-contracted path written back to
+        // config (nil on the "(no models found)" placeholder → key untouched).
+        if let live = liveModelPopup.selectedItem?.representedObject as? String {
+            config["liveModelPath"] = live
+        }
+        if let finalPath = finalModelPopup.selectedItem?.representedObject as? String {
+            config["finalModelPath"] = finalPath
+        }
 
         do {
             try ConfigStore.save(config)
@@ -107,7 +119,10 @@ final class SettingsWindowController: NSWindowController {
             labeledRow("Language (whisper -l):", languageField),
             hint("Код языка распознавания речи (ru, en, ...)."),
             labeledRow("Chunk Duration (seconds):", chunkDurationField),
-            hint("Короче — быстрее живой транскрипт, но меньше контекста на chunk для точности. 15с — разумный баланс."),
+            hint("Длина чанка записи. Whisper всегда прогоняет полный 30-секундный энкодер: чанк короче 30с платит эту цену дважды. 30с — минимум вычислений и лучший контекст, живой текст отстаёт до 30с."),
+            labeledRow("Live Model:", liveModelPopup),
+            labeledRow("Final Model:", finalModelPopup),
+            hint("Live — применяется со следующего чанка (~30 с), можно менять прямо во время звонка: turbo точнее, small легче для машины под нагрузкой. Final — модель финального прохода после встречи; уже идущий проход не переключается."),
             withHint(voiceProcessingCheckbox, "Выкл. по умолчанию: конфликтует с AEC/AGC самого приложения звонка на том же микрофоне — собеседникам становится еле слышно тебя в реальном звонке (не только в записи). Уменьшает эхо в транскрипте («Me» вместо чужих реплик), но включай только если проверил, что громкость для собеседников не проседает."),
             separator(),
             sectionLabel("Speakers"),
@@ -191,5 +206,64 @@ final class SettingsWindowController: NSWindowController {
         box.boxType = .separator
         box.widthAnchor.constraint(equalToConstant: 380).isActive = true
         return box
+    }
+
+    // MARK: - Model switcher
+
+    private func listModelFiles() -> [String] {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".meet/models")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names
+            .filter { $0.hasSuffix(".bin") }
+            .sorted()
+            .map { dir.appendingPathComponent($0).path }
+    }
+
+    // Display-only twin of modelAlias() in src/model-select.ts — the file path
+    // written to config is the source of truth, the alias is just the label.
+    private func modelAlias(_ filename: String) -> String {
+        let lower = filename.lowercased()
+        if lower.contains("turbo") { return "turbo" }
+        if lower.contains("large") { return "large" }
+        if lower.contains("medium") { return "medium" }
+        if lower.contains("small") { return "small" }
+        if lower.contains("tiny") { return "tiny" }
+        return (lower as NSString).lastPathComponent
+            .replacingOccurrences(of: ".bin", with: "")
+            .replacingOccurrences(of: "ggml-", with: "")
+    }
+
+    private func sizeMb(_ path: String) -> Int {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        return Int((attrs?[.size] as? NSNumber)?.intValue ?? 0) / (1024 * 1024)
+    }
+
+    private func fillModelPopup(_ popup: NSPopUpButton, key: String, fallback: String) {
+        popup.removeAllItems()
+        let currentRaw = ConfigStore.string(config, key, default: fallback)
+        let current = (currentRaw as NSString).expandingTildeInPath
+
+        var matched = false
+        for path in listModelFiles() {
+            let name = (path as NSString).lastPathComponent
+            popup.addItem(withTitle: "\(modelAlias(name)) — \(sizeMb(path))M")
+            guard let item = popup.lastItem else { continue }
+            item.representedObject = (path as NSString).abbreviatingWithTildeInPath
+            item.toolTip = name
+            if path == current {
+                popup.select(item)
+                matched = true
+            }
+        }
+        if !matched {
+            // Current path points outside the models dir (or the file was
+            // deleted): show it so Save doesn't silently change the model.
+            popup.addItem(withTitle: "custom — \((currentRaw as NSString).lastPathComponent)")
+            if let item = popup.lastItem {
+                item.representedObject = currentRaw
+                item.toolTip = currentRaw
+                popup.select(item)
+            }
+        }
     }
 }
