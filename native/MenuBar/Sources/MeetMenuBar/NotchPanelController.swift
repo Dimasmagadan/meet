@@ -71,15 +71,32 @@ final class NotchPanelController: NSObject {
             self, selector: #selector(screenParametersChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil
         )
+        // Swiping between full-screen Spaces doesn't reconfigure displays, so
+        // didChangeScreenParametersNotification never fires — the panel's
+        // canJoinAllSpaces/fullScreenAuxiliary collectionBehavior can still leave it
+        // un-ordered on the newly active Space until something re-orders it. isVisible
+        // stays true throughout (it tracks "ordered in", not per-Space occlusion), so
+        // setArmed's self-heal never catches this. Re-asserting orderFrontRegardless()
+        // on every Space switch keeps hover working right after a swipe.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(activeSpaceChanged),
+            name: NSWorkspace.activeSpaceDidChangeNotification, object: nil
+        )
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     @objc private func screenParametersChanged() {
         guard armed else { return }
         arm()
+    }
+
+    @objc private func activeSpaceChanged() {
+        guard armed else { return }
+        panel?.orderFrontRegardless()
     }
 
     func setArmed(_ shouldArm: Bool) {
