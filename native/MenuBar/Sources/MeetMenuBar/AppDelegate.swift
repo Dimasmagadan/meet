@@ -9,6 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let loginItem = LoginItemController()
     let notchPanelController = NotchPanelController()
     let settingsWindowController = SettingsWindowController()
+    let tagPickerPanel = TagPickerPanel()
     lazy var calendarAutoStart = CalendarAutoStartController(recordingController: recordingController, permission: permission)
 
     private let lastTitleKey = "MeetMenuBar.lastTitle"
@@ -194,14 +195,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func stopRecording() {
+        guard let button = statusItem.button else { return }
         let current = recordingController.fetchTagsState()
         let originalTitle = recordingController.fetchCurrentTitle()
-        guard let (tags, newTitle) = promptTags(message: "Stop recording", info: "Tags (optional)", ok: "Stop", preChecked: current, defaultTitle: originalTitle) else { return }
-        applyTagWindowRename(original: originalTitle, submitted: newTitle)
-        if !recordingController.setTags(tags) {
-            showAlert(title: "Tags not saved", message: "Meet could not save tags for this recording. Stopping anyway.")
+        let existingTags = recordingController.fetchAvailableTags()
+        tagPickerPanel.show(
+            anchor: button, message: "Stop recording", info: "Tags (optional)", okTitle: "Stop",
+            existingTags: existingTags, preChecked: current, defaultTitle: originalTitle
+        ) { [weak self] result in
+            guard let self = self, let (tags, newTitle) = result else { return }
+            self.applyTagWindowRename(original: originalTitle, submitted: newTitle)
+            if !self.recordingController.setTags(tags) {
+                self.showAlert(title: "Tags not saved", message: "Meet could not save tags for this recording. Stopping anyway.")
+            }
+            self.recordingController.stop()
         }
-        recordingController.stop()
     }
 
     @objc func extendRecording() {
@@ -209,12 +217,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func addTag() {
+        guard let button = statusItem.button else { return }
         let current = recordingController.fetchTagsState()
         let originalTitle = recordingController.fetchCurrentTitle()
-        guard let (tags, newTitle) = promptTags(message: "Add tag", info: "Select tags or type a new one", ok: "Add", preChecked: current, defaultTitle: originalTitle) else { return }
-        applyTagWindowRename(original: originalTitle, submitted: newTitle)
-        if !recordingController.setTags(tags) {
-            showAlert(title: "Tags not saved", message: "Meet could not save tags for this recording.")
+        let existingTags = recordingController.fetchAvailableTags()
+        tagPickerPanel.show(
+            anchor: button, message: "Add tag", info: "Select tags or type a new one", okTitle: "Add",
+            existingTags: existingTags, preChecked: current, defaultTitle: originalTitle
+        ) { [weak self] result in
+            guard let self = self, let (tags, newTitle) = result else { return }
+            self.applyTagWindowRename(original: originalTitle, submitted: newTitle)
+            if !self.recordingController.setTags(tags) {
+                self.showAlert(title: "Tags not saved", message: "Meet could not save tags for this recording.")
+            }
         }
     }
 
@@ -305,58 +320,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let result = runModalAsRegularApp(alert)
         guard result == .alertFirstButtonReturn else { return nil }
         return input.stringValue
-    }
-
-    // Checkbox per tag in tags.md + a free-text field for a brand-new one, plus a meeting
-    // title field on top (SPEC_SILENT_START_TAG_WINDOW_RENAME_2026-08-25) prefilled with the
-    // live title. Returns the full checked selection (+ any newly typed tag) and the
-    // submitted title — both call sites pass the tags straight to recordingController.setTags(),
-    // which replaces the session's tag state wholesale; [] means nothing selected, not
-    // cancelled. nil means cancelled.
-    private func promptTags(message: String, info: String, ok: String, preChecked: [String] = [], defaultTitle: String) -> (tags: [String], title: String)? {
-        let alert = NSAlert()
-        alert.messageText = message
-        alert.informativeText = info
-
-        let existingTags = recordingController.fetchAvailableTags()
-        let checkboxes: [NSButton] = existingTags.map { tag in
-            let checkbox = NSButton(checkboxWithTitle: tag, target: nil, action: nil)
-            if preChecked.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) { checkbox.state = .on }
-            return checkbox
-        }
-
-        let titleField = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-        titleField.stringValue = defaultTitle
-        titleField.placeholderString = "Meeting title"
-
-        let newTagField = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-        newTagField.placeholderString = "New tag"
-
-        let stack = NSStackView(views: [titleField] + checkboxes + [newTagField])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        // NSAlert sizes its panel from accessoryView.frame at assignment time, not from
-        // Auto Layout constraints — a widthAnchor constraint here fights the view's default
-        // translatesAutoresizingMaskIntoConstraints=true and collapses everything to (0,0),
-        // which is why the checkboxes overlapped and fell outside the clickable area. Compute
-        // the natural size via fittingSize and set the frame directly instead.
-        stack.setFrameSize(stack.fittingSize)
-
-        alert.accessoryView = stack
-        alert.addButton(withTitle: ok)
-        alert.addButton(withTitle: "Cancel")
-        // Focus stays on newTagField even with the title field present: picking tags is the
-        // common action; renaming is secondary.
-        alert.window.initialFirstResponder = newTagField
-        DispatchQueue.main.async { alert.window.makeFirstResponder(newTagField) }
-        let result = runModalAsRegularApp(alert)
-        guard result == .alertFirstButtonReturn else { return nil }
-
-        var selected = checkboxes.filter { $0.state == .on }.map { $0.title }
-        let newTag = newTagField.stringValue.trimmingCharacters(in: .whitespaces)
-        if !newTag.isEmpty { selected.append(newTag) }
-        return (selected, titleField.stringValue)
     }
 
     // Applies a tag-window rename only when the submitted title actually differs from the
