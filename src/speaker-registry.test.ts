@@ -13,7 +13,6 @@ import {
   registerSpeaker,
   applyRegistryToSpeakers,
   forgetSpeaker,
-  quarantineByBackend,
   emptyRegistry,
   matchesLogPath,
   appendMatchesLog,
@@ -235,9 +234,10 @@ describe("applyRegistryToSpeakers", () => {
     applyRegistryToSpeakers(embs(), "meet-a", registry, 0.75, "diarizer-manager");
     const oldId = registry.speakers[0].id;
 
-    // Flip backend: quarantine all diarizer-manager entries.
-    const n = quarantineByBackend(registry, "diarizer-manager");
-    assert.equal(n, 1);
+    // Flip backend: retire all diarizer-manager entries (quarantineByBackend
+    // was removed as dead code — the flip path that would have called it
+    // doesn't exist yet — but quarantined entries must still never match).
+    for (const s of registry.speakers) s.quarantined = true;
     assert.equal(registry.speakers[0].quarantined, true);
 
     // Same voice, now under vbx-offline, must NOT match the quarantined entry.

@@ -19,7 +19,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 - **Dual-channel capture** — Swift `AudioCapture` records mic (AVAudioEngine + VoiceProcessing IO) and system audio (ScreenCaptureKit) in parallel into atomic 30s WAV chunks; `excludesCurrentProcessAudio` prevents feedback loops.
 - **Atomic chunk handoff** — writes `*.wav.tmp`, finalizes the header, then renames to `*.wav`. The pipeline never transcribes a half-written file.
 - **VoiceProcessing echo cancellation** — `--voice-processing` (opt-in) for cleaner audio when you're not wearing headphones.
-- **Auto-stop** — configurable max duration (`--max-duration`, default 60 min) and no-speech timeout (`--no-text-timeout`, default 10 min).
+- **Auto-stop** — configurable max duration (`--max-duration`, default 75 min) and no-speech timeout (`--text-timeout`, default 10 min).
 - **Capture-side silence timeout** — `--silence <sec>` stops the capture after N seconds of silence.
 - **In-recording hotkeys** — `q` stop & finalize in background · `s` stop in foreground · `n` finish & start the next meeting · `p` pause/resume · `e` extend cap +15 min · `a` ask opencode. (Cyrillic aliases: `й ы т ф у`.)
 <!-- /FEATURES:core-recording -->
@@ -137,9 +137,11 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 |---|---|---|
 | `--mic` | Mic-only mode | off |
 | `--silence <sec>` | Capture silence timeout (0 = off) | 0 |
-| `--max-duration <min>` | Auto-stop after N minutes | 60 |
-| `--no-text-timeout <min>` | Auto-stop after N processed min with no text | 10 |
+| `--max-duration <min>` | Auto-stop after N minutes | 75 |
+| `--text-timeout <min>` | Auto-stop after N processed min with no text | 10 |
 | `--voice-processing` | Enable VoiceProcessing IO echo cancellation | off |
+| `--allow-degraded` | Start with degraded audio (one channel) if the other fails | off |
+| `--headless` | Suppress the post-start popup (menu-bar / scripted use) | off |
 | `--no-summary` | Disable live extractive summary | off |
 | `--repo <path>` | Attach git repo context from `<path>` | cwd |
 | `--attendees <names>` | Comma-separated attendee names (from calendar auto-start) | none |
@@ -155,9 +157,11 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | Flag | Default | Category |
 |---|---|---|
 | `finalRetranscribe` | `true` | Final retranscription pass |
+| `chunkDurationSeconds` | `30` | Audio chunk duration (matches whisper's 30s window) |
 | `silenceGate` | `true` | Silence gating |
 | `diarizationEnabled` | `true` | Speaker diarization |
 | `diarizationMinOverlap` | `0.3` | Diarization fallback threshold |
+| `micDiarizationEnabled` | `false` | Diarize the mic channel too (in-person calls with several voices on your side); `meet speakers enroll-self` advises enabling it |
 | `parakeetComparePass` | `true` | Parakeet A/B pass |
 | `diarizationAbPass` | `false` | Diarizer A/B (opt-in) |
 | `opencodeIndexPass` | `false` | `index.md` generation (opt-in) |

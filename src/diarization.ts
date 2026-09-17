@@ -113,14 +113,24 @@ async function copyWavData(filePath: string, out: NodeJS.WritableStream): Promis
     const dataSize = header.readUInt32LE(40);
     if (dataSize <= 0) return 0;
 
+    // A truncated chunk (crash mid-write, a full disk, or an aborted finalize)
+    // leaves a header claiming more data than the file holds. Trusting the
+    // header makes the concat over-read this chunk's silence/padding and
+    // shifts cursorSeconds for it and every later chunk, so the diarizer's
+    // segment times no longer line up with the transcript. Copy only the
+    // bytes that are actually there.
+    const { size } = await fh.stat();
+    const copyBytes = Math.max(0, Math.min(dataSize, size - WAV_HEADER_SIZE));
+    if (copyBytes === 0) return 0;
+
     await new Promise<void>((resolve, reject) => {
-      const src = createReadStream(filePath, { start: WAV_HEADER_SIZE, end: WAV_HEADER_SIZE + dataSize - 1 });
+      const src = createReadStream(filePath, { start: WAV_HEADER_SIZE, end: WAV_HEADER_SIZE + copyBytes - 1 });
       src.on("error", reject);
       src.on("end", resolve);
       src.pipe(out, { end: false });
     });
 
-    return dataSize;
+    return copyBytes;
   } finally {
     await fh.close();
   }

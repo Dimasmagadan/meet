@@ -16,7 +16,7 @@ import type { Session } from "./types.js";
 //
 // We can't run real whisper-cli in CI, so this is a source-level seam guard:
 // it pins that pipeline.ts does NOT wire in the system-pressure gate. A unit
-// test on whenNotOverloaded alone cannot prove the wiring excludes the live
+// test on the gate alone cannot prove the wiring excludes the live
 // path — this does.
 //
 // Runs against the compiled sibling pipeline.js (identifiers/import paths are
@@ -28,8 +28,8 @@ const pipelineSrc = readFileSync(
 
 test("pipeline live path is un-gated (P1 rescope seam guard)", () => {
   assert.ok(
-    !/whenNotOverloaded/.test(pipelineSrc),
-    "pipeline.ts must not reference whenNotOverloaded — the live path is deliberately un-gated",
+    !/whenNotOverloaded|throttleHold/.test(pipelineSrc),
+    "pipeline.ts must not reference the pressure gate (whenNotOverloaded/throttleHold) — the live path is deliberately un-gated",
   );
   assert.ok(
     !/from\s+["']\.\/system-monitor/.test(pipelineSrc),

@@ -1,6 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { escapeHtml, jsonForScript, generateHTML } from "./dashboard.js";
+import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { escapeHtml, jsonForScript, generateHTML, parseTranscript } from "./dashboard.js";
 import type { MeetingStats } from "./types.js";
 
 describe("escapeHtml", () => {
@@ -59,5 +62,49 @@ describe("generateHTML XSS safety", () => {
   it("uses data-tag attributes instead of inline onclick handlers", () => {
     const html = generateHTML([baseMeeting]);
     assert.ok(!html.includes("onclick="));
+  });
+});
+
+describe("parseTranscript word counts", () => {
+  let dir: string;
+
+  it("strips the live speaker label before counting words", () => {
+    dir = join(tmpdir(), `meet-dash-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const path = join(dir, "transcript.md");
+      writeFileSync(path, "**[14:30:00] Me:** Привет мир\n**[14:30:30] Speaker 1:** Ответ на вопрос\n");
+      const { wordCount } = parseTranscript(path);
+      // 2 + 3 = 5 words. The label ("Me", "Speaker 1") must not count.
+      assert.strictEqual(wordCount, 5);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("strips the label-less file-import format", () => {
+    dir = join(tmpdir(), `meet-dash-imp-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const path = join(dir, "transcript.md");
+      writeFileSync(path, "**[00:00:05]** Привет мир\n**[00:00:20]** Конечно\n");
+      const { wordCount } = parseTranscript(path);
+      assert.strictEqual(wordCount, 3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("strips a registry display name label", () => {
+    dir = join(tmpdir(), `meet-dash-name-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const path = join(dir, "transcript.md");
+      writeFileSync(path, "**[14:30:00] Алексей:** Три слова тут\n");
+      const { wordCount } = parseTranscript(path);
+      assert.strictEqual(wordCount, 3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

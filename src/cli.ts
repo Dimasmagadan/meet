@@ -1,12 +1,12 @@
 import { Command, InvalidArgumentError } from "commander";
 import chalk from "chalk";
-import { loadConfig, getOutputDir, reserveOutputDir, getCaptureBinPath, resolveAnalysisBin, findRecordingStates, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath, readSession, updateConfigFile } from "./storage.js";
+import { loadConfig, getOutputDir, reserveOutputDir, getCaptureBinPath, resolveAnalysisBin, findRecordingStates, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath, readSession, updateConfigFile, spawnBackgroundFinalizer } from "./storage.js";
 import { listModelFiles, resolveModelInput, contractHome, ModelNotFoundError } from "./model-select.js";
 import { Recorder } from "./recorder.js";
 import { makeHeader } from "./assembler.js";
 import { finalizeSession } from "./finalize.js";
 import { showStatus } from "./status.js";
-import { isActiveRecording, readActiveRecordingLock, acquireActiveRecordingLock, clearActiveRecordingLock, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock } from "./locks.js";
+import { isActiveRecording, readActiveRecordingLock, acquireActiveRecordingLock, clearActiveRecordingLock, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock, acquireRegistryLock, releaseRegistryLock } from "./locks.js";
 import { chunkFileRegex } from "./regex-utils.js";
 import { transcribeImport, type ImportOptions } from "./import.js";
 import { renameSpeaker } from "./speaker-rename.js";
@@ -44,15 +44,15 @@ export function createProgram(): Command {
     .option("--mic", "Mic-only mode (no system audio)")
     .option("--silence <seconds>", "Silence timeout for audio capture (0 = disabled)", parseNonNegativeInteger, 0)
     .option("--max-duration <minutes>", "Auto-stop after N minutes (0 = disabled)", parseNonNegativeInteger)
-    .option("--no-text-timeout <minutes>", "Auto-stop after N processed minutes without transcript (0 = disabled)", parseNonNegativeInteger)
+    .option("--text-timeout <minutes>", "Auto-stop after N processed minutes without transcript (0 = disabled)", parseNonNegativeInteger)
     .option("--voice-processing", "Enable VoiceProcessing IO echo cancellation (default: off — conflicts with the call app's own AEC/AGC on the same mic and can drop your volume for other participants; verify before relying on it)")
     .option("--headless", "Run without terminal interaction (for menu bar app / automation)")
     .option("--no-summary", "Disable live extractive summary during recording")
     .option("--repo <path>", "Attach git repo context from <path> (default: current working directory)")
     .option("--attendees <names>", "Comma-separated attendee names (from calendar auto-start)")
-    .action(async (title: string | undefined, opts: { mic?: boolean; silence?: number; maxDuration?: number; noTextTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string; attendees?: string }) => {
+    .action(async (title: string | undefined, opts: { mic?: boolean; silence?: number; maxDuration?: number; textTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string; attendees?: string }) => {
       const mode = opts.mic ? "mic" as const : "full" as const;
-      await startSessionLoop(title ?? "meeting", mode, opts.silence ?? 0, opts.maxDuration, opts.noTextTimeout, opts.voiceProcessing, opts.headless, opts.summary, opts.repo, opts.attendees);
+      await startSessionLoop(title ?? "meeting", mode, opts.silence ?? 0, opts.maxDuration, opts.textTimeout, opts.voiceProcessing, opts.headless, opts.summary, opts.repo, opts.attendees);
     });
 
   program
@@ -87,7 +87,9 @@ export function createProgram(): Command {
     .option("--background", "Run finalization in background")
     .action(async (sessionDir: string, opts: { background?: boolean }) => {
       if (opts.background) {
-        await spawnBackgroundFinalizer(sessionDir);
+        const pid = spawnBackgroundFinalizer(sessionDir);
+        console.log(chalk.green(`Background finalizer started${pid !== undefined ? ` (pid ${pid})` : ""}`));
+        console.log(chalk.gray(`Progress: meet status`));
       } else {
         await runForegroundFinalize(sessionDir);
       }
@@ -608,7 +610,6 @@ async function runDoctor(mode: "mic" | "full") {
     const triggers = getTriggers(config);
     console.log(chalk.green(`triggers: ${triggers.triggerCount} loaded from ${expandPath(config.triggersPath)}`));
     const testAlert: AttentionAlert = {
-      kind: "trigger",
       trigger: "test",
       snippet: "meet doctor test notification",
       timestamp: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
@@ -741,17 +742,6 @@ async function runForegroundFinalize(sessionDir: string) {
     console.log(chalk.yellow(`Recoverable session: ${sessionDir}`));
     process.exit(1);
   }
-}
-
-async function spawnBackgroundFinalizer(sessionDir: string) {
-  const binPath = process.argv[1];
-  const child = spawn(process.execPath, [binPath, "finalize", sessionDir], {
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
-  console.log(chalk.green(`Background finalizer started (pid ${child.pid})`));
-  console.log(chalk.gray(`Progress: meet status`));
 }
 
 async function runRename(meetingDir: string, speakerId: string, newName: string) {
@@ -907,9 +897,9 @@ async function runSpeakersForget(globalId: string) {
   // Serialize against concurrent finalize/rename — both also do load → mutate →
   // save on the registry file under this lock. Without it, a background finalize
   // could clobber this forget (or vice versa).
-  const locked = acquireGlobalFinalPassLock("<registry-mutation>");
+  const locked = acquireRegistryLock(`forget ${globalId}`);
   if (!locked) {
-    console.log(chalk.red("Registry busy: a final pass is running, retry in a moment."));
+    console.log(chalk.red("Registry busy: another speaker-registry write is running, retry in a moment."));
     process.exit(1);
   }
   try {
@@ -921,7 +911,7 @@ async function runSpeakersForget(globalId: string) {
     await saveRegistry(registry, config.speakerRegistryPath);
     console.log(chalk.green(`Forgot ${globalId}; its voice will re-register fresh in the next meeting.`));
   } finally {
-    releaseGlobalFinalPassLock();
+    releaseRegistryLock();
   }
 }
 
@@ -1000,9 +990,9 @@ async function runSpeakersEnrollSelf(seconds: number) {
       process.exit(1);
     }
 
-    const locked = acquireGlobalFinalPassLock("<registry-mutation>");
+    const locked = acquireRegistryLock("enroll-self");
     if (!locked) {
-      console.log(chalk.red("Registry busy: a final pass is running, retry in a moment."));
+      console.log(chalk.red("Registry busy: another speaker-registry write is running, retry in a moment."));
       process.exit(1);
     }
     try {
@@ -1012,7 +1002,7 @@ async function runSpeakersEnrollSelf(seconds: number) {
       console.log(chalk.green(`Enrolled self voice: ${speaker.id}`));
       console.log(chalk.gray("Mic-only recordings with more than one voice will now split \"Me\" from other speakers (set micDiarizationEnabled: true in ~/.meet/config.json)."));
     } finally {
-      releaseGlobalFinalPassLock();
+      releaseRegistryLock();
     }
   } finally {
     await rm(sessionDir, { recursive: true, force: true }).catch(() => {});
@@ -1028,8 +1018,7 @@ async function listMeetings() {
     return;
   }
 
-  const { readdir: readdirSync } = await import("node:fs/promises");
-  const entries = (await readdirSync(outputDir, { withFileTypes: true }))
+  const entries = (await readdir(outputDir, { withFileTypes: true }))
     .filter((d) => d.isDirectory())
     .map((d) => d.name)
     .sort()

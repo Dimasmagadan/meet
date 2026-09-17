@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { escapeRegex } from "./regex-utils.js";
+import { expandPath } from "./paths.js";
 
 export const DEFAULT_PHRASEBOOK_PATH = resolve(import.meta.dirname, "..", "phrasebook.json");
 
@@ -110,10 +110,6 @@ export class Phrasebook {
   get ruleCount(): number {
     return this._rules.length;
   }
-}
-
-function expandPath(p: string): string {
-  return p.startsWith("~/") || p === "~" ? p.replace(/^~/, homedir()) : p;
 }
 
 let _cached: Phrasebook | null = null;

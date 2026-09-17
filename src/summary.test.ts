@@ -293,8 +293,7 @@ describe("formatSummaryMarkdown", () => {
 
   it("renders the constant footer", () => {
     const md = formatSummaryMarkdown(sampleResult, "Title", "2026-05-13T14:30:00.000Z");
-    assert.match(md, /Draft produced locally by extractive summarization\./);
-    assert.match(md, /meet summary --full/);
+    assert.match(md, /Draft produced locally by extractive summarization during recording\./);
   });
 
   it("renders section headers even on empty result", () => {

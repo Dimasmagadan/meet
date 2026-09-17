@@ -497,7 +497,7 @@ describe("SummaryScheduler — file content", () => {
     assert.match(content, /## Key points/);
     assert.match(content, /## Candidate action items/);
     assert.match(content, /## Participants/);
-    assert.match(content, /Draft produced locally by extractive summarization\./);
+    assert.match(content, /Draft produced locally by extractive summarization during recording\./);
   });
 
   it("writes atomically — final file is whole", async () => {
@@ -521,6 +521,6 @@ describe("SummaryScheduler — file content", () => {
     await sched.awaitIdle();
     const content = readFileSync(outputFile, "utf-8");
     assert.ok(content.startsWith("# "));
-    assert.ok(content.endsWith("future spec).\n"));
+    assert.ok(content.endsWith("relabels entries as Speaker N.\n"));
   });
 });

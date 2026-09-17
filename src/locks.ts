@@ -1,4 +1,5 @@
 import { writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync, linkSync, renameSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -14,13 +15,42 @@ function activeLockPath(): string {
   return join(sessionsDir(), "active-recording.lock");
 }
 
-export function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number, identity?: { comm: string }): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  if (!identity) return true;
+  // process.kill(pid, 0) only proves *a* process with that PID exists: macOS
+  // reuses PIDs (kern.pid_max wraparound on a busy machine), so a dead
+  // owner's PID can later name an unrelated app — and a lock pointing at it
+  // would then look "live". Verify the command matches before trusting it
+  // (B9). ps failing is not evidence of a dead process, so fail open rather
+  // than orphan a real owner.
+  try {
+    const comm = execFileSync("ps", ["-o", "comm=", "-p", String(pid)], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return comm === identity.comm || comm.endsWith(`/${identity.comm}`);
+  } catch {
+    return true;
+  }
+}
+
+// Unlinks only if the file still holds exactly the bytes we read. A
+// concurrent publisher replaces a stale descriptor with a fresh live lock
+// atomically (linkSync), so a mismatch here means we lost the race and the
+// current bytes belong to a real owner — deleting them would orphan it.
+function unlinkIfUnchanged(lockPath: string, raw: string): boolean {
+  try {
+    if (readFileSync(lockPath, "utf-8") !== raw) return false;
+  } catch {
+    return false;
+  }
+  try { unlinkSync(lockPath); } catch {}
+  return true;
 }
 
 function activeLockData(session: Session): string {
@@ -97,19 +127,32 @@ export interface ActiveRecordingLock {
 
 export function readActiveRecordingLock(): ActiveRecordingLock | null {
   const lockPath = activeLockPath();
-  if (!existsSync(lockPath)) return null;
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (!existsSync(lockPath)) return null;
+    let raw: string;
     try {
-      const data = JSON.parse(readFileSync(lockPath, "utf-8")) as ActiveRecordingLock;
-      if (Number.isSafeInteger(data.pid) && data.pid > 0 && isPidAlive(data.pid)) return data;
-      break;
+      raw = readFileSync(lockPath, "utf-8");
+    } catch {
+      return null;
+    }
+    try {
+      const data = JSON.parse(raw) as ActiveRecordingLock;
+      // The recorder is always `node dist/main.js`, so a live lock's PID must
+      // name a node process — PID reuse can otherwise make a stale lock point
+      // at an unrelated app (B9).
+      if (Number.isSafeInteger(data.pid) && data.pid > 0 && isPidAlive(data.pid, { comm: "node" })) return data;
+      // Dead owner: reclaim, but only the exact descriptor we read.
+      unlinkIfUnchanged(lockPath, raw);
+      return null;
     } catch {
       if (attempt === 0) continue;
     }
   }
   // New writers only publish complete JSON. Anything malformed here is legacy
   // or corrupt metadata and cannot identify a live owner.
-  try { unlinkSync(lockPath); } catch {}
+  try {
+    unlinkIfUnchanged(lockPath, readFileSync(lockPath, "utf-8"));
+  } catch {}
   return null;
 }
 
@@ -140,18 +183,12 @@ function cleanStaleLock(lockPath: string): boolean {
   }
   try {
     const existing = JSON.parse(raw) as FinalizerLock;
-    if (existing.pid && isPidAlive(existing.pid)) return false;
+    if (existing.pid && isPidAlive(existing.pid, { comm: "node" })) return false;
   } catch {}
   // The failed publisher may have raced a stale-owner reclaimer. Only remove
   // the exact descriptor observed above; a newly published lock has a unique
   // token and different bytes, so it remains owned by its publisher.
-  try {
-    if (readFileSync(lockPath, "utf-8") !== raw) return false;
-  } catch {
-    return false;
-  }
-  try { unlinkSync(lockPath); } catch {}
-  return true;
+  return unlinkIfUnchanged(lockPath, raw);
 }
 
 // Exclusive create + rename-in (like acquireActiveRecordingLock) so readers
@@ -250,7 +287,7 @@ export function readGlobalFinalPassLock(): GlobalFinalPassLock | null {
   if (!existsSync(lockPath)) return null;
   try {
     const data = JSON.parse(readFileSync(lockPath, "utf-8")) as GlobalFinalPassLock;
-    if (data.pid && isPidAlive(data.pid)) return data;
+    if (data.pid && isPidAlive(data.pid, { comm: "node" })) return data;
   } catch {}
   cleanStaleLock(lockPath);
   return null;
@@ -268,8 +305,67 @@ export function readFinalizerLock(sessionDir: string): FinalizerLock | null {
   if (!existsSync(lockPath)) return null;
   try {
     const data = JSON.parse(readFileSync(lockPath, "utf-8")) as FinalizerLock;
-    if (data.pid && isPidAlive(data.pid)) return data;
+    if (data.pid && isPidAlive(data.pid, { comm: "node" })) return data;
   } catch {}
   cleanStaleLock(lockPath);
   return null;
+}
+
+// Registry lock: serializes load → mutate → save on the speaker registry
+// (rename / forget / enroll-self / finalize's own registry writes). The
+// global final-pass lock used to stand in here, but it is held for the whole
+// multi-minute retranscription — `meet rename` on meeting A was blocked for
+// the duration of unrelated meeting B's final pass. This lock is held only
+// for the actual JSON mutation.
+export interface RegistryLock {
+  pid: number;
+  token?: string;
+  reason: string;
+  startedAt: string;
+}
+
+let registryLockToken: string | null = null;
+
+function registryLockPath(): string {
+  return join(sessionsDir(), "registry.lock");
+}
+
+export function acquireRegistryLock(reason: string): boolean {
+  const lockPath = registryLockPath();
+  const token = randomUUID();
+  const lockData = JSON.stringify({
+    pid: process.pid,
+    token,
+    reason,
+    startedAt: new Date().toISOString(),
+  });
+
+  if (publishLockAtomically(lockPath, lockData)) {
+    registryLockToken = token;
+    return true;
+  }
+
+  // Re-entrant: if we already hold it, treat as acquired (a retry loop or a
+  // rename nested inside a finalize-registry step in the same process).
+  try {
+    const existing = JSON.parse(readFileSync(lockPath, "utf-8")) as RegistryLock;
+    if (existing.pid === process.pid && existing.token === registryLockToken) return true;
+    if (existing && isPidAlive(existing.pid, { comm: "node" })) return false;
+  } catch {}
+
+  if (!cleanStaleLock(lockPath) || !publishLockAtomically(lockPath, lockData)) return false;
+  registryLockToken = token;
+  return true;
+}
+
+export function releaseRegistryLock(): void {
+  const lockPath = registryLockPath();
+  try {
+    const existing = JSON.parse(readFileSync(lockPath, "utf-8")) as RegistryLock;
+    if (existing.pid !== process.pid || existing.token !== registryLockToken) return;
+  } catch {
+    return;
+  }
+  try { unlinkSync(lockPath); } catch {}
+  registryLockToken = null;
 }

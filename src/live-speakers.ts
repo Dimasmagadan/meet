@@ -4,6 +4,7 @@ import { resolveAnalysisBin } from "./storage.js";
 import { applyQoS } from "./process-priority.js";
 import {
   AMBIGUITY_MARGIN,
+  CENTROID_ATTACH_PORCH,
   isValidEmbedding,
   loadRegistry,
   matchSelf,
@@ -30,8 +31,8 @@ const LIVE_BACKEND: SpeakerBackend = "diarizer-manager";
 
 // Below-threshold-but-close: a chunk scoring at least this against exactly
 // one identity borrows that identity's session number instead of minting a
-// new one (chunk quality fluctuates around the threshold).
-const NEAR_ANCHOR_PORCH = 0.65;
+// new one (chunk quality fluctuates around the threshold). Same 0.65 and same
+// purpose as the registry's CENTROID_ATTACH_PORCH — one knob, not two.
 
 export interface LiveIdentification {
   speaker: string; // display label for the transcript entry
@@ -161,7 +162,7 @@ export class LiveSpeakerLabeler {
     // Below threshold but hugging exactly one identity: borrow its session
     // number so labeling stays stable while chunk quality fluctuates around
     // the threshold (mixed-speaker chunks usually score low and land here).
-    if (best && marginOk && best.score >= NEAR_ANCHOR_PORCH) {
+    if (best && marginOk && best.score >= CENTROID_ATTACH_PORCH) {
       return {
         speaker: best.name ?? this.assignNumber(this.identityKey(best)),
         matchedName: best.name,

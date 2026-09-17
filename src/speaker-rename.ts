@@ -3,8 +3,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { writeAtomic } from "./storage.js";
 import { escapeRegex } from "./regex-utils.js";
+import { speakerSortKey } from "./talk-time.js";
 import { loadRegistry, saveRegistry } from "./speaker-registry.js";
-import { acquireGlobalFinalPassLock, releaseGlobalFinalPassLock } from "./locks.js";
+import { acquireRegistryLock, releaseRegistryLock } from "./locks.js";
 
 export interface RenameFileCount {
   file: string;            // basename: "transcript.md", "transcript.parakeet.md", "index.md"
@@ -29,11 +30,6 @@ interface SpeakersRecord {
   entryAssignments?: Array<{ speaker: string | null }>;
   speakerNames?: Record<string, string>;
   speakerRegistry?: Record<string, { globalSpeakerId: string; matchedName: string | null }>;
-}
-
-function speakerSortKey(label: string): number {
-  const m = /^Speaker (\d+)$/.exec(label);
-  return m ? parseInt(m[1], 10) : Infinity;
 }
 
 // Patches the canonical `Speaker N` label to a real display name across every
@@ -86,17 +82,32 @@ export async function renameSpeaker(
   }
   const currentLabel = speakerNames[canonicalId] ?? canonicalId;
 
+  // Persist the mapping BEFORE touching content. A crash between the two
+  // leaves a divergent state (transcript "Speaker 1", speakers.json "Женя"),
+  // and the label resolution below recovers it: the re-run resolves
+  // canonicalId from either the id or the stored label, and the replacement
+  // set covers both the canonical id and the current label, so whichever one
+  // the transcript still shows gets rewritten. Persisting content-first
+  // instead leaves a state no rerun can fix (the stored label no longer
+  // appears anywhere in the text).
+  speakerNames[canonicalId] = newName;
+  await writeAtomic(speakersPath, JSON.stringify({ ...record, speakerNames }, null, 2));
+
   const files = (await readdir(meetingDir)).filter((f) => /^transcript.*\.md$/.test(f)).sort();
   const counts: RenameFileCount[] = [];
+
+  // Either spelling may be what the transcript currently shows.
+  const labels = new Set([canonicalId, currentLabel]);
+  labels.delete(newName); // never rewrite the target into itself
 
   for (const file of files) {
     const filePath = join(meetingDir, file);
     const original = await readFile(filePath, "utf-8");
 
     // `**[HH:MM:SS] LABEL:**` — assembler.ts:41 label token (anchored, no boundary needed).
-    const bodyRe = new RegExp(`(\\*\\*\\[\\d{2}:\\d{2}:\\d{2}\\] )${escapeRegex(currentLabel)}(:\\*\\*)`, "g");
+    const bodyRe = new RegExp(`(\\*\\*\\[\\d{2}:\\d{2}:\\d{2}\\] )(?:${[...labels].map(escapeRegex).join("|")})(:\\*\\*)`, "g");
     // `- LABEL: ` — talk-time.ts:75 row (anchored by list-marker + ": ").
-    const footerRe = new RegExp(`(- )${escapeRegex(currentLabel)}(: )`, "g");
+    const footerRe = new RegExp(`(- )(?:${[...labels].map(escapeRegex).join("|")})(: )`, "g");
 
     let bodyMatches = 0;
     let footerMatches = 0;
@@ -114,16 +125,13 @@ export async function renameSpeaker(
   // match, while "Speaker 1" never matches inside "Speaker 11".
   const indexPath = join(meetingDir, "index.md");
   if (existsSync(indexPath)) {
-    const indexRe = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(currentLabel)}(?![\\p{L}\\p{N}])`, "gu");
+    const indexRe = new RegExp(`(?<![\\p{L}\\p{N}])(?:${[...labels].map(escapeRegex).join("|")})(?![\\p{L}\\p{N}])`, "gu");
     const original = await readFile(indexPath, "utf-8");
     let indexMatches = 0;
     const content = original.replace(indexRe, () => { indexMatches++; return newName; });
     if (content !== original) await writeAtomic(indexPath, content);
     counts.push({ file: "index.md", bodyMatches: 0, footerMatches: 0, indexMatches });
   }
-
-  speakerNames[canonicalId] = newName;
-  await writeAtomic(speakersPath, JSON.stringify({ ...record, speakerNames }, null, 2));
 
   // Propagate the name into the cross-session registry so future meetings
   // auto-apply it. Only when the registry is enabled AND this meeting's
@@ -135,10 +143,10 @@ export async function renameSpeaker(
   if (options?.speakerRegistryEnabled && options.registryPath) {
     const globalSpeakerId = record.speakerRegistry?.[canonicalId]?.globalSpeakerId;
     if (globalSpeakerId) {
-      const locked = acquireGlobalFinalPassLock("<registry-mutation>");
+      const locked = acquireRegistryLock("rename " + canonicalId);
       try {
         if (!locked) {
-          throw new Error("registry busy: a final pass is running, retry in a moment");
+          throw new Error("registry busy: another speaker-registry write is running, retry in a moment");
         }
         const registry = loadRegistry(options.registryPath);
         const entry = registry.speakers.find((s) => s.id === globalSpeakerId);
@@ -148,7 +156,7 @@ export async function renameSpeaker(
           registryUpdated = true;
         }
       } finally {
-        if (locked) releaseGlobalFinalPassLock();
+        if (locked) releaseRegistryLock();
       }
     }
   }

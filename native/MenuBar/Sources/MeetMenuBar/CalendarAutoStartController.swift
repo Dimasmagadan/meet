@@ -204,9 +204,14 @@ final class CalendarAutoStartController: NSObject {
         guard recordingController.currentDisplayState() == .idle else { return }
         guard !liveByKey.isEmpty else { return }
 
-        // Step 6: rank ties, resolve the whole overlap set so losers never re-trigger.
+        // Step 6: rank ties, resolve the overlap set's losers so they never
+        // re-trigger. The winner is resolved only after its process actually
+        // launches (startIfPermitted) — resolving it here up front meant a
+        // failed spawn (meet unresolvable, node missing, proc.run() throwing)
+        // silently recorded the occurrence as handled and never retried it for
+        // the rest of the meeting (B8).
         let ranked = CalendarMatch.rankCandidates(Array(liveByKey.values.map(\.candidate)), now: now)
-        for candidate in ranked { resolvedOccurrences.insert(candidate.key) }
+        for candidate in ranked.dropFirst() { resolvedOccurrences.insert(candidate.key) }
 
         guard let winner = ranked.first, let winnerEvent = liveByKey[winner.key]?.event else { return }
         startIfPermitted(event: winnerEvent, candidate: winner, qualifying: qualifying, now: now)
@@ -227,7 +232,11 @@ final class CalendarAutoStartController: NSObject {
 
         let nextStart = CalendarMatch.nextStart(after: candidate.end, starts: qualifying.compactMap { $0.startDate })
         let cap = CalendarMatch.capMinutes(now: now, end: candidate.end, nextStart: nextStart)
-        recordingController.start(title: candidate.title, maxDurationMinutes: cap, attendees: attendeeNames(for: event))
+        // Only a confirmed launch closes out this occurrence; a failed spawn
+        // leaves it live for the next poll to retry (B8).
+        if recordingController.start(title: candidate.title, maxDurationMinutes: cap, attendees: attendeeNames(for: event)) {
+            resolvedOccurrences.insert(candidate.key)
+        }
     }
 
     // §6.1 — non-self attendees as a candidate name list, folded into the whisper prompt

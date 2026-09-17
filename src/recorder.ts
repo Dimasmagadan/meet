@@ -8,9 +8,9 @@ import { appendEntry, chunkToTimestamp, entriesFromSession } from "./assembler.j
 import { AttentionMonitor, buildRecap, formatRecap, sendMacNotification } from "./attention.js";
 import { runOpencodeQuestion } from "./opencode.js";
 import { runTagPicker, writeMetaFile, readTagsState, hasTagCaseInsensitive } from "./tags.js";
-import { parseCaptureLine } from "./capture-events.js";
+import { parseCaptureLine, isChunkFinalized, eventMessage } from "./capture-events.js";
 import { writeActiveRecordingLock, clearActiveRecordingLock } from "./locks.js";
-import { getCaptureBinPath, writeAtomic, createWarnOnce } from "./storage.js";
+import { getCaptureBinPath, writeAtomic, createWarnOnce, spawnBackgroundFinalizer } from "./storage.js";
 import { SummaryScheduler, summaryOutputPath } from "./summary.js";
 import { getSystemPressure } from "./system-monitor.js";
 import { existsSync, readFileSync, unlinkSync, renameSync } from "node:fs";
@@ -100,7 +100,10 @@ export class Recorder {
 
   private initPipeline(): void {
     this.pipeline.setTranscribeCallback((source, index, text, speaker) => {
-      const chunkOffset = index * this.session.chunkDurationSeconds;
+      // Chunk indices are 1-based (mic-001/sys-001), so chunk 1 starts at
+      // session t=0 — the same convention as assembler.chunkToTimestamp.
+      // Off-by-one here would shift the no-text clock by a whole chunk.
+      const chunkOffset = (index - 1) * this.session.chunkDurationSeconds;
       this.session.latestProcessedOffsetSeconds = Math.max(
         this.session.latestProcessedOffsetSeconds,
         chunkOffset,
@@ -156,19 +159,36 @@ export class Recorder {
     ];
     if (this.opts.voiceProcessing) captureArgs.push("--voice-processing");
 
+    let captureProcess: ChildProcess;
     try {
-      this.captureProcess = spawn(captureBin, captureArgs, {
+      captureProcess = spawn(captureBin, captureArgs, {
         stdio: ["ignore", "pipe", "pipe"],
       });
+    } catch (err) {
+      this.handleCaptureStartFailure(err, null);
+      return;
+    }
 
-      this.session.capturePid = this.captureProcess.pid ?? null;
+    // spawn() reports async failures (ENOENT/EACCES — the binary missing or
+    // not executable) as an 'error' event, not a throw. Without a listener
+    // Node re-throws it as an uncaught exception, and the session.json + lock
+    // already written for this capture stay on disk pointing at a capture
+    // that never started — invisible to classifyRecordingSessions' orphan
+    // check because no capture process is running.
+    captureProcess.on("error", (err) => {
+      this.handleCaptureStartFailure(err, captureProcess);
+    });
+
+    try {
+      this.captureProcess = captureProcess;
+      this.session.capturePid = captureProcess.pid ?? null;
       writeAtomic(
         join(this.session.sessionDir, "session.json"),
         JSON.stringify(this.session, null, 2),
       );
       writeActiveRecordingLock(this.session);
 
-      this.captureProcess.stderr?.on("data", (data: Buffer) => {
+      captureProcess.stderr?.on("data", (data: Buffer) => {
         const text = data.toString();
         for (const line of text.split(/\r?\n/)) {
           if (!line.trim()) continue;
@@ -176,12 +196,12 @@ export class Recorder {
           if (parsed) {
             if (parsed.type === "json") {
               const ev = parsed.event;
-              if (ev.event === "chunk_finalized") {
-                if ((ev as any).source === "mic") this.micChunks++;
+              if (isChunkFinalized(ev)) {
+                if (ev.source === "mic") this.micChunks++;
                 else this.sysChunks++;
               } else if (ev.level === "warning" || ev.level === "error") {
                 process.stdout.write("\n");
-                console.log(chalk.gray(`[capture] ${(ev as any).message || ev.event}`));
+                console.log(chalk.gray(`[capture] ${eventMessage(ev)}`));
               }
             } else {
               if (parsed.finalized.source === "mic") this.micChunks++;
@@ -199,17 +219,28 @@ export class Recorder {
         }
       });
 
-      this.captureProcess.on("exit", (code) => {
+      captureProcess.on("exit", (code) => {
         this.captureExited = true;
         if (code && code !== 0) {
           console.log(chalk.red(`AudioCapture exited with code ${code}`));
         }
       });
     } catch (err) {
-      console.log(chalk.red(`Failed to start AudioCapture: ${err}`));
-      clearActiveRecordingLock();
-      process.exit(1);
+      // A disk-full (or other write failure) here leaves the child capture
+      // already running with no lock on disk — an orphan no later `meet start`
+      // can detect. Kill the child before exiting so it can't keep recording
+      // into a session nobody owns.
+      this.handleCaptureStartFailure(err, captureProcess);
     }
+  }
+
+  private handleCaptureStartFailure(err: unknown, captureProcess: ChildProcess | null): never {
+    console.log(chalk.red(`Failed to start AudioCapture: ${err}`));
+    if (captureProcess) {
+      try { captureProcess.kill("SIGKILL"); } catch {}
+    }
+    clearActiveRecordingLock();
+    process.exit(1);
   }
 
   private async stopCapture(forceAfterMs = 5000): Promise<void> {
@@ -232,18 +263,25 @@ export class Recorder {
     process.stdout.write("\n");
     console.log(chalk.yellow("Stopping recording..."));
 
-    this.session.status = "stopped";
-    await writeAtomic(
-      join(this.session.sessionDir, "session.json"),
-      JSON.stringify(this.session, null, 2),
-    );
-
     await this.stopCapture();
     // The menu bar may have dropped a retitle marker immediately before SIGINT.
     // Apply it while this process still owns the active lock, and persist the new
     // output path before the finalizer gets a chance to read session.json.
     await this.applyPendingRetitle();
     clearActiveRecordingLock();
+
+    // Persist "stopped" only after the capture is down and the lock is
+    // released. A SIGKILL inside that window otherwise leaves a live capture
+    // plus a session.json whose status is "stopped" — and "stopped" falls
+    // straight through classifyRecordingSessions to "stale", so `meet start`
+    // would print a finalize hint instead of flagging the orphaned capture
+    // that is still recording. With "recording" still on disk, the same
+    // SIGKILL classifies correctly as an orphan (capturePid alive).
+    this.session.status = "stopped";
+    await writeAtomic(
+      join(this.session.sessionDir, "session.json"),
+      JSON.stringify(this.session, null, 2),
+    );
   }
 
   private cleanup(): void {
@@ -424,15 +462,6 @@ export class Recorder {
       });
   }
 
-  private spawnBackgroundFinalizer(): void {
-    const binPath = process.argv[1];
-    const child = spawn(process.execPath, [binPath, "finalize", this.session.sessionDir], {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-  }
-
   // q / SIGINT / auto-stop: background everything, return to shell.
   private async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
@@ -450,7 +479,7 @@ export class Recorder {
       // mutating the same session.json + entries.jsonl this pipeline instance
       // may still be mid-write to.
       await this.pipeline.close();
-      this.spawnBackgroundFinalizer();
+      spawnBackgroundFinalizer(this.session.sessionDir);
       console.log(chalk.green(`Finalizer started in background (meet status to check)`));
       console.log(chalk.gray(`Transcript: ${this.outputFile}`));
       process.exit(0);
@@ -496,7 +525,7 @@ export class Recorder {
 
       await this.summaryScheduler?.flush();
       await this.promptTags();
-      this.spawnBackgroundFinalizer();
+      spawnBackgroundFinalizer(this.session.sessionDir);
       console.log(chalk.green(`Final pass running in background (meet status to check)`));
       console.log(chalk.gray(`Transcript: ${this.outputFile}`));
       process.exit(0);
@@ -520,7 +549,7 @@ export class Recorder {
       // See shutdown()'s identical await: this must land before the detached
       // finalizer starts touching the same session files.
       await this.pipeline.close();
-      this.spawnBackgroundFinalizer();
+      spawnBackgroundFinalizer(this.session.sessionDir);
       console.log(chalk.green(`Finalizer running in background (meet status to check)`));
     } catch (err) {
       console.log(chalk.red(`Failed: ${formatError(err)}`));
@@ -557,11 +586,7 @@ export class Recorder {
 
     if (
       this.opts.noTextTimeoutMinutes > 0 &&
-      this.session.hasMeaningfulText &&
-      this.session.lastMeaningfulTextAtOffsetSeconds !== null &&
-      this.session.latestProcessedOffsetSeconds -
-        this.session.lastMeaningfulTextAtOffsetSeconds >=
-        this.opts.noTextTimeoutMinutes * 60
+      this.noTextGapSec() >= this.opts.noTextTimeoutMinutes * 60
     ) {
       this.autoStopReason = "no_text_timeout";
       this.session.autoStopReason = "no_text_timeout";
@@ -572,6 +597,19 @@ export class Recorder {
       );
       void this.shutdown();
     }
+  }
+
+  // Processed-seconds gap since the last meaningful transcript text. When no
+  // text has ever arrived, the gap runs from the start of processing instead:
+  // the timeout exists precisely for that case (dead/inaudible mic), and the
+  // old hasMeaningfulText precondition made it unreachable then — the status
+  // line just showed "no text: waiting" forever.
+  private noTextGapSec(): number {
+    const last = this.session.lastMeaningfulTextAtOffsetSeconds;
+    if (this.session.hasMeaningfulText && last !== null) {
+      return this.session.latestProcessedOffsetSeconds - last;
+    }
+    return this.session.latestProcessedOffsetSeconds;
   }
 
   private stopStatus(): void {
@@ -606,23 +644,18 @@ export class Recorder {
           0,
           this.opts.maxDurationMinutes * 60 - elapsed,
         );
-        capStr = ` | cap: ${formatDuration(remaining)}`;
+        capStr = ` | cap: ${formatClock(remaining)}`;
       }
 
       let noTextStr = "";
       if (this.opts.noTextTimeoutMinutes > 0) {
-        if (!this.session.hasMeaningfulText) {
-          noTextStr = " | no text: waiting";
-        } else {
-          const gapSec =
-            this.session.latestProcessedOffsetSeconds -
-            (this.session.lastMeaningfulTextAtOffsetSeconds ?? 0);
-          const remaining = Math.max(
-            0,
-            this.opts.noTextTimeoutMinutes * 60 - gapSec,
-          );
-          noTextStr = ` | no text: ${formatDuration(remaining)}`;
-        }
+        // Counts down even before any text arrives (see noTextGapSec) —
+        // "no text: waiting" was a dead state the timeout never escaped.
+        const remaining = Math.max(
+          0,
+          this.opts.noTextTimeoutMinutes * 60 - this.noTextGapSec(),
+        );
+        noTextStr = ` | no text: ${formatClock(remaining)}`;
       }
 
       const status = this.paused ? chalk.yellow("PAUSED") : chalk.cyan(`Recording ${mins}:${secs}`);
@@ -650,8 +683,14 @@ export class Recorder {
     return existsSync(summaryOutputPath(this.session)) ? " | summary: ok" : " | summary: waiting";
   }
 
-  private async togglePause(): Promise<void> {
-    if (this.shuttingDown || this.opencodeBusy()) return;
+  // fromSignal: a menu-bar Pause/Resume arrives as SIGUSR1/SIGUSR2 and never
+  // competes with the interactive `a` hotkey for stdin, so it must not be
+  // blocked by the opencode guard — otherwise the menu bar flipped to
+  // "Paused" while audio kept recording (opencodeBusy's terminal message is
+  // also invisible in headless mode, where there is no one to read it).
+  private async togglePause(fromSignal = false): Promise<void> {
+    if (this.shuttingDown) return;
+    if (!fromSignal && this.opencodeBusy()) return;
 
     if (this.paused) {
       this.captureProcess?.kill("SIGUSR2");
@@ -742,10 +781,10 @@ export class Recorder {
     process.on("SIGTERM", this.sigtermHandler);
 
     this.sigusr1Handler = () => {
-      if (!this.paused) void this.togglePause();
+      if (!this.paused) void this.togglePause(true);
     };
     this.sigusr2Handler = () => {
-      if (this.paused) void this.togglePause();
+      if (this.paused) void this.togglePause(true);
     };
     process.on("SIGUSR1", this.sigusr1Handler);
     process.on("SIGUSR2", this.sigusr2Handler);
@@ -840,7 +879,7 @@ export function formatLagStatus(
   return lagSec > 0 ? `lag ~${lagSec}s` : "up to date";
 }
 
-function formatDuration(sec: number): string {
+function formatClock(sec: number): string {
   const m = String(Math.floor(sec / 60)).padStart(2, "0");
   const s = String(sec % 60).padStart(2, "0");
   return `${m}:${s}`;

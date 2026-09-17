@@ -118,6 +118,11 @@ export async function runTagPicker(session: Session, opts?: { note?: string }): 
   let enteringNew = false;
   let newTagBuffer = "";
 
+  // Declared before render() closes over it — the closure reads `deadline` on
+  // every call, so it must be initialized first even though render() isn't
+  // invoked until the key handler below runs.
+  const deadline = Date.now() + TIMEOUT_MS;
+
   const options = (): string[] => [...existingTags, DONE_OPTION, NEW_TAG_OPTION];
 
   const render = () => {
@@ -161,8 +166,6 @@ export async function runTagPicker(session: Session, opts?: { note?: string }): 
 
     process.stdout.write("\x1B[?25h");
   };
-
-  const deadline = Date.now() + TIMEOUT_MS;
 
   return new Promise<string[]>((resolve) => {
     const cleanup = () => {

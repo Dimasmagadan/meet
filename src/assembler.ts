@@ -34,7 +34,7 @@ export function entriesFromSession(session: Session, results: Map<string, string
   return entries;
 }
 
-function formatEntry(entry: TranscriptEntry): string {
+export function formatEntry(entry: TranscriptEntry): string {
   if (entry.source === "file") {
     return `**[${entry.timestamp}]** ${entry.text}\n`;
   }

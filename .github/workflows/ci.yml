@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint + build + test (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      # Tests run against compiled dist/, and exercise real temp-dir I/O plus
+      # fake executables — no macOS APIs, no hardware, no network.
+      - name: Run tests
+        run: npm test
+
+  swift:
+    name: Build Swift targets (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build AudioCapture + AudioAnalysis
+        working-directory: native/AudioCapture
+        run: swift build
+
+      - name: Build MeetMenuBar
+        working-directory: native/MenuBar
+        run: swift build

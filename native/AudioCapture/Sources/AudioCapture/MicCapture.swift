@@ -23,6 +23,17 @@ class MicCapture {
     // All access is serialized through this queue instead of racing directly —
     // file I/O also no longer runs on the real-time thread.
     private let writerQueue = DispatchQueue(label: "miccapture.writer")
+    // AVAudioEngine is documented as not thread-safe. Before this, three
+    // threads could mutate the engine graph at once — the configuration-change
+    // observer (registered with queue: nil, so it ran on the engine's own
+    // background queue), the 1s stall monitor, and Ctrl-C stop() on the control
+    // thread — with only a bare isRestarting flag between them. A Bluetooth
+    // headset connect mid-meeting fires .AVAudioEngineConfigurationChange in a
+    // burst and races restartCapture against stop()/recoverIfStalled: double
+    // installTap, a tap torn down mid-flush, a corrupted engine graph. All
+    // control-state mutation and engine access now funnels through this serial
+    // queue, mirroring the writerQueue pattern already used for wavWriter.
+    private let controlQueue = DispatchQueue(label: "miccapture.control")
     // Storage-error budget: a failed finalizeChunk leaves the writer closed and
     // every further append throws, while healthy audio callbacks keep refreshing
     // lastBufferTime — so the stall monitor can neither see nor fix this. Count
@@ -52,14 +63,18 @@ class MicCapture {
             }
         }
         installConfigurationObserverIfNeeded()
-        try startEngine(reason: restartCount == 0 ? "initial" : "restart")
-        isRunning = true
-        lastBufferTime = Date()
+        // startEngine touches the engine graph; run it on controlQueue so the
+        // invariant "engine access only happens on controlQueue" holds from
+        // boot, before the stall monitor or a configuration change can fire.
+        try controlQueue.sync {
+            try startEngine(reason: restartCount == 0 ? "initial" : "restart")
+            isRunning = true
+            lastBufferTime = Date()
+        }
     }
 
     private func startEngine(reason: String) throws {
         let inputNode = engine.inputNode
-        let _ = inputNode.outputFormat(forBus: 0)
 
         if voiceProcessing {
             try inputNode.setVoiceProcessingEnabled(true)
@@ -100,15 +115,23 @@ class MicCapture {
 
     private func installConfigurationObserverIfNeeded() {
         guard configObserver == nil else { return }
+        // queue: nil delivers the block on the engine's own background queue;
+        // that's fine because the block does nothing but hop to controlQueue,
+        // where the actual engine mutation (restartCapture) is serialized
+        // against stop()/recoverIfStalled (B3). NotificationCenter's queue
+        // parameter wants an OperationQueue, not a DispatchQueue, so the hop
+        // is the lightweight way to get the serialization.
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
             queue: nil
         ) { [weak self] _ in
-            self?.handleEngineConfigurationChange()
+            self?.controlQueue.async { self?.handleEngineConfigurationChange() }
         }
     }
 
+    // Runs on controlQueue (see installConfigurationObserverIfNeeded), so it
+    // can call restartCapture directly.
     private func handleEngineConfigurationChange() {
         guard isRunning else { return }
         fputs("MicCapture configuration changed; restarting tap\n", stderr)
@@ -116,6 +139,10 @@ class MicCapture {
         restartCapture(reason: "engine_config_changed")
     }
 
+    // Precondition: called on controlQueue. Every caller now funnels through
+    // it (configuration-change observer, recoverIfStalled), so the
+    // isRestarting check-and-set is atomic w.r.t. the other engine mutators
+    // instead of being a non-atomic cross-thread read.
     private func restartCapture(reason: String) {
         guard isRunning, !isRestarting else { return }
         let now = Date()
@@ -145,10 +172,16 @@ class MicCapture {
     }
 
     func recoverIfStalled(thresholdSeconds: TimeInterval = 3.0) {
-        guard isRunning, !writerFailed else { return }
-        let stalledFor = Date().timeIntervalSince(lastBufferTime)
-        if stalledFor > thresholdSeconds {
-            restartCapture(reason: "buffer_stall_\(Int(stalledFor))s")
+        // restartCapture mutates the engine, so the stall check must run on
+        // controlQueue; async keeps the 1s monitor loop from blocking on an
+        // engine restart. The guard reads happen there too, so they can't race
+        // a concurrent restart.
+        controlQueue.async { [weak self] in
+            guard let self, self.isRunning, !self.writerFailed else { return }
+            let stalledFor = Date().timeIntervalSince(self.lastBufferTime)
+            if stalledFor > thresholdSeconds {
+                self.restartCapture(reason: "buffer_stall_\(Int(stalledFor))s")
+            }
         }
     }
 
@@ -167,20 +200,48 @@ class MicCapture {
         var monoSamples = [Int16]()
 
         if let floatData = buffer.floatChannelData {
-            let ch: Int
-            if isInterleaved || hwChannels <= 1 {
-                ch = 0
+            if isInterleaved && hwChannels > 1 {
+                // Interleaved: floatData[0] is one flat stream of
+                // frame*channel floats, so element j is channel (j % channels)
+                // of frame (j / channels). Channel 0 of frame i lives at
+                // i*channels — indexing [0][i] would return 1/channels of the
+                // audio as garbage with no error. Dead today (VoiceProcessing
+                // is non-interleaved, the 9-channel case is handled by
+                // findLoudestChannel), but a device that reports interleaved
+                // would silently produce noise.
+                let stride = Int(hwChannels)
+                monoSamples.reserveCapacity(frameLength)
+                for i in 0..<frameLength {
+                    let sample = floatData[0][i * stride]
+                    let clamped = max(-1.0, min(1.0, sample))
+                    monoSamples.append(Int16(clamped * 32767.0))
+                }
             } else {
-                ch = findLoudestChannel(floatData, channelCount: Int(hwChannels), frameLength: frameLength)
-            }
-            for i in 0..<frameLength {
-                let sample = floatData[ch][i]
-                let clamped = max(-1.0, min(1.0, sample))
-                monoSamples.append(Int16(clamped * 32767.0))
+                let ch: Int
+                if hwChannels <= 1 {
+                    ch = 0
+                } else {
+                    ch = findLoudestChannel(floatData, channelCount: Int(hwChannels), frameLength: frameLength)
+                }
+                monoSamples.reserveCapacity(frameLength)
+                for i in 0..<frameLength {
+                    let sample = floatData[ch][i]
+                    let clamped = max(-1.0, min(1.0, sample))
+                    monoSamples.append(Int16(clamped * 32767.0))
+                }
             }
         } else if let int16Data = buffer.int16ChannelData {
-            for i in 0..<frameLength {
-                monoSamples.append(int16Data[0][i])
+            if isInterleaved && hwChannels > 1 {
+                let stride = Int(hwChannels)
+                monoSamples.reserveCapacity(frameLength)
+                for i in 0..<frameLength {
+                    monoSamples.append(int16Data[0][i * stride])
+                }
+            } else {
+                monoSamples.reserveCapacity(frameLength)
+                for i in 0..<frameLength {
+                    monoSamples.append(int16Data[0][i])
+                }
             }
         }
 
@@ -206,6 +267,11 @@ class MicCapture {
                         self.onChunkFinalized(name)
                     }
                     try self.wavWriter.startChunk()
+                    // A clean finalize+reopen proves storage is healthy again,
+                    // so the error budget is consecutive failures, not a
+                    // lifetime total (B7: four isolated blips in a long meeting
+                    // otherwise halted the stream permanently).
+                    self.writerErrorCount = 0
                 }
             } catch {
                 self.writerErrorCount += 1
@@ -215,15 +281,23 @@ class MicCapture {
                     self.wavWriter.abortCurrentChunk(preserveTemporary: true)
                     fputs("MicCapture storage failed permanently; halting mic stream, failed audio preserved\n", stderr)
                     logJSON("error", "stream_error", ["source": "mic", "message": "storage failure, stream halted"])
-                    self.engine.inputNode.removeTap(onBus: 0)
-                    self.engine.stop()
-                    self.isRunning = false
+                    // Engine teardown from the writer queue would re-introduce
+                    // the cross-thread engine access B3 fixes; hand it to
+                    // controlQueue. isRunning flips first so any tap callback
+                    // still in flight bails before touching the graph.
+                    self.controlQueue.async {
+                        self.isRunning = false
+                        self.engine.inputNode.removeTap(onBus: 0)
+                        self.engine.stop()
+                    }
                     return
                 }
                 do {
                     self.wavWriter.abortCurrentChunk(preserveTemporary: true)
                     try self.wavWriter.startChunk()
-                    logJSON("warning", "mic_writer_recovered", ["attempt": self.writerErrorCount])
+                    let attempt = self.writerErrorCount
+                    self.writerErrorCount = 0
+                    logJSON("warning", "mic_writer_recovered", ["attempt": attempt])
                 } catch {
                     fputs("MicCapture writer recovery failed: \(error)\n", stderr)
                 }
@@ -280,13 +354,19 @@ class MicCapture {
     }
 
     func stop() -> String? {
-        isRunning = false
-        if let observer = configObserver {
-            NotificationCenter.default.removeObserver(observer)
-            configObserver = nil
+        // Engine teardown on controlQueue so it can't race a configuration-change
+        // restart or a stall-monitor restart landing at the same instant (B3).
+        // Sync, not async: the caller (Ctrl-C / sys-start failure) needs the
+        // flush below to see the tap already gone.
+        controlQueue.sync {
+            isRunning = false
+            if let observer = configObserver {
+                NotificationCenter.default.removeObserver(observer)
+                configObserver = nil
+            }
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
         }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
 
         // Synchronous dispatch onto the same serial queue drains any append/
         // finalize/startChunk block a still-in-flight tap callback already

@@ -73,15 +73,21 @@ Speak into your mic. Press `q` or `s` to stop, `p` to pause/resume, `e` to exten
 ```
 meet start "Title"              Record mic + system audio (foreground)
 meet start --mic "Title"        Record mic only
+meet start --headless "Title"   Suppress the post-start popup (menu-bar / scripted use)
 meet transcribe <files...>      Transcribe audio/video files
 meet setup                      Check dependencies and configuration
 meet doctor [mic|full]          Test audio capture (12-second health check)
 meet list                       List past meetings
 meet finalize <sessionDir>      Finalize a stopped recording session
 meet tag <sessionDir> <tags...> Queue tags for a running recording session
+meet retitle <sessionDir> <t>   Change the title of a running session (pending on stop)
 meet status                     Show active recording/finalization jobs
+meet dashboard [--output <f>]   Browse past meetings as a local HTML dashboard
+meet ask [question]             Ask opencode about the active/live transcript
 meet rename <dir> <id> <name>   Rename a diarized speaker label in a finalized meeting
 meet link <dir> <repoPath>      Attach/replace git repo context in a finalized meeting's meta.md
+meet speakers [suggest]         Registry list / copy-paste rename suggestions
+meet speakers enroll-self <n>   Enroll your own voiceprint into the registry
 meet bin-path                   Print resolved runner paths as JSON (used by the menu bar app)
 meet model [name]               List whisper models / hot-swap live (--final: finalization) model
 ```
@@ -92,9 +98,12 @@ meet model [name]               List whisper models / hot-swap live (--final: fi
 |--------|-------------|---------|
 | `--mic` | Mic-only mode (no system audio) | off |
 | `--silence <sec>` | Audio capture silence timeout (0 = disabled) | 0 |
-| `--max-duration <min>` | Auto-stop after N minutes | 60 |
-| `--no-text-timeout <min>` | Auto-stop after N processed minutes without transcript | 10 |
+| `--max-duration <min>` | Auto-stop after N minutes | 75 |
+| `--text-timeout <min>` | Auto-stop after N processed minutes without transcript | 10 |
 | `--voice-processing` | Enable VoiceProcessing IO echo cancellation | off |
+| `--allow-degraded` | Start with degraded audio (one channel) if the other fails | off |
+| `--headless` | Suppress the post-start popup (menu-bar / scripted use) | off |
+| `--attendees <names>` | Pre-seed calendar attendees for speaker suggestions | none |
 | `--no-summary` | Disable live extractive summary draft during recording | off |
 | `--repo <path>` | Attach git repo context from `<path>` (persisted as a `- Repo:` line in `meta.md`) | cwd |
 
@@ -134,7 +143,7 @@ open native/MenuBar/.build/Meet.app    # NOT the raw binary — LaunchServices m
 
 - Click the menu bar mic icon → **Start Recording** → recording begins instantly under a default `"meeting"` title, no popup. Rename it anytime via **Rename Meeting…** or the title field in either tag window (**Add Tag…** / Stop) — the last title is remembered for prefilling.
 - Mic/Screen TCC prompts are pre-requested from the app before capture starts; granting them lets the spawned `AudioCapture` record.
-- **Launch at Login** toggle (via `SMAppService`) so the app survives reboots — foundation for the future scheduler/calendar features.
+- **Launch at Login** toggle (via `SMAppService`) so the app survives reboots.
 - **Notch transcript panel** (14"/16" MacBook Pro, M1 Pro+ only) — while recording, hover the physical notch to reveal a scrollable live tail of the transcript; moves away to hide again. See `specs/SPEC_NOTCH_TRANSCRIPT_PANEL_2026-08-03.md`.
 - **Auto-Record Calendar Calls** toggle — polls Calendar every 20s and auto-starts recording when a scheduled event with a Zoom/Meet/Teams/Webex/Whereby/Telemost/Jazz/Kontur link begins, no confirmation dialog (menu bar icon + notch panel are the only signals). Auto-stops at the event's scheduled end (+ grace). Non-attendee participant names from the event are folded into the whisper prompt and saved to `speakers.json` so `meet speakers suggest <dir>` can propose name assignments after finalize. See `specs/SPEC_CALENDAR_AUTOSTART_2026-08-04.md`. Participants are **not** notified that the meeting is being recorded — disclose it yourself if your jurisdiction requires it, and note that attendee names are PII that lands in `speakers.json`/the transcript text, local-only but shared if you share the transcript.
 - `meet bin-path` prints the resolved `{node, main, meet}` paths the app uses; set `menuBarMeetBin` in config to override the runner.
@@ -170,7 +179,7 @@ During a recording, `meet` produces a rolling **extractive** summary next to `tr
 
 The summarizer is **resource-aware**: it polls `sysctl vm.loadavg` and `vm_stat`, pauses when CPU load exceeds `summaryCpuThresholdLoad` (default 6) or free memory drops below `summaryMemThresholdMb` (default 768MB), and resumes automatically when pressure clears. Status line shows `summary: ok`, `summary: waiting`, `summary: paused (cpu X.X/8c)`, or `summary: disabled`.
 
-This is a **low-quality first tier** — explicitly a draft, not polished. A future `meet summary --full` flag (separate spec) will run a post-finalize LLM refine pass. The transcript is never affected by summarizer state.
+This is a **low-quality first tier** — explicitly a draft, not polished. It is written during recording and is not rewritten by the final pass, so its labels stay `Me`/`Others` even after the transcript is relabeled `Speaker N`. For post-finalize Q&A over the finished transcript, use `meet ask`. The transcript is never affected by summarizer state.
 
 To disable: `meet start --no-summary "Title"` or `summaryEnabled: false` in `~/.meet/config.json`.
 
@@ -228,7 +237,7 @@ With `diarizationAbPass: true` (default `false`, opt-in), finalize re-diarizes `
 
 ## Configuration
 
-Config file: `~/.meet/config.json` (created on first run with defaults)
+Config file: `~/.meet/config.json` (written by `meet model`, read with defaults before that)
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -246,6 +255,7 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `vocabularyReload` | `true` | Hot-reload the vocabulary file on change |
 | `diarizationEnabled` | `true` | Speaker diarization on the final pass |
 | `diarizationMinOverlap` | `0.3` | Below this chunk-overlap ratio, a sys entry stays "Others" |
+| `micDiarizationEnabled` | `false` | Diarize the mic channel too (in-person calls with several voices on your side); `meet speakers enroll-self` advises enabling it |
 | `diarizationAbPass` | `false` | Run an opt-in offline-VBx diarizer A/B pass after the primary diarization, writing `diarization-ab-report.json` |
 | `analysisBin` | resolved like `captureBin` | Path to the `AudioAnalysis` binary |
 | `parakeetComparePass` | `true` | Run the Parakeet A/B pass after finalize |
@@ -273,6 +283,9 @@ Config file: `~/.meet/config.json` (created on first run with defaults)
 | `gateLoadAvg` | `0` (auto) | 1-min loadavg threshold for heavy-pass back-off; 0 = 70% of core count |
 | `gateFreeMemMb` | `2048` | Pause heavy passes below this free memory |
 | `gatePollMs` | `5000` | Re-check interval while a heavy pass is holding |
+| `gateHeavyPasses` | `true` | Master switch for the system-pressure gates |
+| `lowerProcessPriority` | `true` | Wrap whisper-cli/AudioAnalysis in `taskpolicy -c utility` so the Swift capture keeps priority |
+| `speakerRegistryEnabled` | `false` | Cross-session voiceprint registry (opt-in, biometric; required for live speaker labels) |
 
 ### Phrasebook
 

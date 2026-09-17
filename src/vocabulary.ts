@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { expandPath } from "./paths.js";
 
 export const DEFAULT_VOCABULARY_PATH = resolve(import.meta.dirname, "..", "vocabulary.json");
 
@@ -98,10 +98,6 @@ export class Vocabulary {
       return false;
     }
   }
-}
-
-function expandPath(p: string): string {
-  return p.startsWith("~/") || p === "~" ? p.replace(/^~/, homedir()) : p;
 }
 
 let _cached: Vocabulary | null = null;

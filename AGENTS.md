@@ -50,7 +50,7 @@ meet start "Title"
 ├── src/locks.ts             — file-based locks for finalization and active recording
 ├── src/status.ts            — display active session/finalization status
 ├── native/AudioCapture/     — Swift CLI: Core Audio process tap + AVAudioEngine → WAV chunks
-│   ├── main.swift              — CLI entry, --output-dir, --chunk-duration, --mode, --silence-timeout; guards SystemAudioCapture behind `#available(macOS 14.2, *)`
+│   ├── main.swift              — CLI entry, --output-dir, --chunk-duration, --mode, --silence-timeout, --voice-processing, --allow-degraded; guards SystemAudioCapture behind `#available(macOS 14.2, *)`
 │   ├── MicCapture.swift        — AVAudioEngine input tap, VoiceProcessing IO, 9-channel workaround
 │   ├── SystemAudioCapture.swift — Core Audio process tap (macOS 14.2+, SPEC_TCC_SCREEN_REPROMPT_2026-07-31 §6): `CATapDescription(__monoGlobalTapButExcludeProcesses:)` → private aggregate device (tap + default output subdevice for clock) → `AudioDeviceCreateIOProcIDWithBlock` → manual linear-interpolation resample to 16kHz, same pattern as MicCapture. Needs only "System Audio Recording Only" TCC, not Screen Recording — replaced ScreenCaptureKit, which required full Screen Recording for audio-only capture and was subject to periodic re-approval nags
 │   ├── WAVWriter.swift         — 16kHz mono 16-bit PCM WAV output, atomic rename
@@ -69,7 +69,7 @@ meet start "Title"
     ├── ConfigStore.swift       — atomic read/modify/write over `~/.meet/config.json` (raw [String: Any] round-trip so keys the window doesn't expose survive a save)
     ├── CalendarAutoStartController.swift — SPEC_CALENDAR_AUTOSTART_2026-08-04: EKEventStore poll (20s Timer, dedicated fetch queue), permission split (Calendar requested at toggle-enable, mic checked synchronously at auto-start — never prompts from a timer callback), sleep/wake + `.EKEventStoreChanged` observers, occurrence-key dedup (per-occurrence, not per-series — the original bug), deterministic overlap resolution (no blocking alert), non-self attendees → `RecordingController.start(attendees:)`
     ├── CalendarMatch.swift     — pure logic behind the controller, no EventKit/AppKit imports so it's directly unit-testable: `hasCallLink()`, `isLive()` (lateness gate), `occurrenceKey()`, `capMinutes()` (back-to-back grace trimming, never 0), `rankCandidates()`; `selfCheck()` run via `MeetMenuBar --self-test-calendar`
-    ├── Info.plist              — LSUIElement, NSMicrophoneUsageDescription, bundle id com.dimasmagadan.meet.menubar (NSScreenCaptureDescription dropped — not a real TCC key; Phase 2 adds NSAudioCaptureUsageDescription), NSCalendarsUsageDescription + NSCalendarsFullAccessUsageDescription (macOS 13/14+ split)
+    ├── Info.plist              — LSUIElement, NSMicrophoneUsageDescription, bundle id com.dimasmagadan.meet.menubar (NSScreenCaptureDescription dropped — not a real TCC key), NSAudioCaptureUsageDescription (system-audio process tap), NSCalendarsUsageDescription + NSCalendarsFullAccessUsageDescription (macOS 13/14+ split)
     └── scripts/build-app.sh    — swift build → assemble Meet.app → ad-hoc codesign (-s -)
 ```
 
@@ -139,7 +139,7 @@ On the final pass, "Others" entries are diarized and renumbered to "Speaker 1", 
 ```bash
 meet transcribe recording.m4a --title "Interview with Alex"   # single file
 meet transcribe *.m4a                                          # batch (titles from filenames)
-meet transcribe video.mp4 --no-index --date 2026-05-20         # video, no index, custom date
+meet transcribe video.mp4 --index --date 2026-05-20          # video, generate index.md, custom date
 ```
 
 Output format — relative timestamps, no speaker labels:

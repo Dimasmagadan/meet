@@ -1,14 +1,38 @@
-import { execFile } from "node:child_process";
+import { execFile, execSync, spawn } from "node:child_process";
 import { mkdir, writeFile, readFile, rename, unlink } from "node:fs/promises";
-import { existsSync, readdirSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Chunk, Session, Config, TranscriptEntry } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import { isPidAlive, readActiveRecordingLock, readFinalizerLock } from "./locks.js";
 import { classifyRecordingSessions, type RecordingState } from "./recording-state.js";
+import { expandPath } from "./paths.js";
 
-const WHISPER_CANDIDATES = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"];
+export { expandPath };
+
+// Homebrew install locations (Apple Silicon: /opt, Intel: /usr/local).
+// import.ts's checkFfmpeg used to carry its own private copy of this list.
+const HOMEBREW_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
+
+const WHISPER_CANDIDATES = HOMEBREW_BIN_DIRS.map((d) => join(d, "whisper-cli"));
+
+// ffmpeg resolution mirrors resolveWhisperBin: known homebrew paths first,
+// then a `which` fallback for anything on PATH.
+export function ffmpegAvailable(): boolean {
+  const candidates = HOMEBREW_BIN_DIRS.map((d) => join(d, "ffmpeg"));
+  return candidates.some((p) => existsSync(p)) || canWhich("ffmpeg");
+}
+
+// `which X` exits non-zero when X isn't on PATH.
+export function canWhich(name: string): boolean {
+  try {
+    execSync(`which ${name}`, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function resolveWhisperBin(config: Config): string {
   if (config.whisperBin && config.whisperBin !== "whisper-cli") {
@@ -24,10 +48,6 @@ export function resolveModelPath(config: Config, pass: "live" | "final"): string
   return expandPath(raw);
 }
 
-export function expandPath(p: string): string {
-  return p.startsWith("~/") || p === "~" ? p.replace(/^~/, homedir()) : p;
-}
-
 export function normalizePath(p: string): string {
   return resolve(expandPath(p));
 }
@@ -36,6 +56,19 @@ export function getSessionsDir(): string {
   const dir = join(homedir(), ".meet", "sessions");
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+// Detached background `meet finalize` — cli.ts (meet finalize --background)
+// and recorder.ts (q / auto-stop) both spawn the same child; this is the one
+// implementation. Returns the pid, or undefined if the spawn itself failed.
+export function spawnBackgroundFinalizer(sessionDir: string): number | undefined {
+  const binPath = process.argv[1];
+  const child = spawn(process.execPath, [binPath, "finalize", sessionDir], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  return child.pid;
 }
 
 // loadConfig() runs per-chunk (pipeline.ts's processNext) — a malformed
@@ -48,7 +81,7 @@ const configWarn = createWarnOnce();
 // Drops any key whose value isn't the same primitive type as its DEFAULT_CONFIG
 // counterpart (or, for numbers, isn't finite) instead of letting a garbage
 // value (e.g. a string where a threshold number is expected, or NaN) flow
-// unvalidated into VAD/filtering/diarization comparisons.
+// unvalidated into filtering/diarization comparisons.
 export function sanitizeFileConfig(raw: Record<string, unknown>): Partial<Config> {
   const clean: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw)) {
@@ -73,35 +106,51 @@ export function sanitizeFileConfig(raw: Record<string, unknown>): Partial<Config
   return clean as Partial<Config>;
 }
 
+// Range guards for the values sanitizeFileConfig already type-checked. The
+// sets are module-scoped: loadConfig runs per chunk, and constructing three
+// ~80-entry sets on every call is pure overhead (architecture #8).
+const positiveIntegers = new Set([
+  "chunkDurationSeconds", "finalBeamSize", "finalBestOf",
+  "attentionCooldownSeconds", "attentionRecapEntries", "summaryIntervalChunks", "summaryTopN",
+  "summaryWindowMaxEntries", "summaryMinEntries", "summaryMemThresholdMb", "summaryCatchupIntervalMs",
+  "gateBudgetMs", "gatePollMs", "liveQueueLagWarnChunks",
+]);
+const nonNegativeNumbers = new Set(["maxDurationMinutes", "noTextTimeoutMinutes", "gateLoadAvg", "gateFreeMemMb"]);
+const unitIntervals = new Set([
+  "whisperNoSpeechThreshold", "finalNoSpeechThreshold", "diarizationMinOverlap",
+  "micEchoCoverageThreshold", "micEchoCorrelationThreshold", "micEchoFractionThreshold", "speakerMatchThreshold",
+  "liveSpeakerMatchThreshold",
+]);
+
+const finiteNumbers = new Set(["micRmsThresholdDb", "sysRmsThresholdDb", "whisperEntropyThreshold", "whisperLogprobThreshold", "finalEntropyThreshold", "finalLogprobThreshold", "summaryCpuThresholdLoad"]);
+const nonEmptyStrings = new Set(["outputDir", "whisperBin", "language", "modelPath", "liveModelPath", "finalModelPath"]);
+
 function isValidConfigValue(key: string, value: unknown): boolean {
   const number = value as number;
-  const positiveIntegers = new Set([
-    "chunkDurationSeconds", "finalBeamSize", "finalBestOf", "vadMinSpeechMs", "vadTimeoutMs",
-    "attentionCooldownSeconds", "attentionRecapEntries", "summaryIntervalChunks", "summaryTopN",
-    "summaryWindowMaxEntries", "summaryMinEntries", "summaryMemThresholdMb", "summaryCatchupIntervalMs",
-    "gateBudgetMs", "gatePollMs", "liveQueueLagWarnChunks",
-  ]);
-  const nonNegativeNumbers = new Set(["maxDurationMinutes", "noTextTimeoutMinutes", "gateLoadAvg", "gateFreeMemMb"]);
-  const unitIntervals = new Set([
-    "whisperNoSpeechThreshold", "finalNoSpeechThreshold", "vadThreshold", "diarizationMinOverlap",
-    "micEchoCoverageThreshold", "micEchoCorrelationThreshold", "micEchoFractionThreshold", "speakerMatchThreshold",
-    "liveSpeakerMatchThreshold",
-  ]);
   if (positiveIntegers.has(key)) return Number.isSafeInteger(number) && number > 0;
   if (nonNegativeNumbers.has(key)) return Number.isFinite(number) && number >= 0;
   if (unitIntervals.has(key)) return Number.isFinite(number) && number >= 0 && number <= 1;
-  if (["micRmsThresholdDb", "sysRmsThresholdDb", "whisperEntropyThreshold", "whisperLogprobThreshold", "finalEntropyThreshold", "finalLogprobThreshold", "summaryCpuThresholdLoad"].includes(key)) return Number.isFinite(number);
-  if (["outputDir", "whisperBin", "language", "modelPath", "liveModelPath", "finalModelPath"].includes(key)) return typeof value === "string" && value.trim().length > 0;
+  if (finiteNumbers.has(key)) return Number.isFinite(number);
+  if (nonEmptyStrings.has(key)) return typeof value === "string" && value.trim().length > 0;
   return true;
 }
+
+// loadConfig runs per chunk; skip the read+parse+sanitize entirely when the
+// file's mtime hasn't moved (phrasebook/vocabulary/triggers use the same
+// pattern). lastValidFileConfig still holds the last good values.
+let lastConfigMtimeMs: number | null = null;
 
 export function loadConfig(overrides?: Partial<Config>): Config {
   const configPath = expandPath("~/.meet/config.json");
   if (existsSync(configPath)) {
     try {
-      const raw = readFileSync(configPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      lastValidFileConfig = sanitizeFileConfig(parsed);
+      const mtimeMs = statSync(configPath).mtimeMs;
+      if (mtimeMs !== lastConfigMtimeMs) {
+        const raw = readFileSync(configPath, "utf-8");
+        const parsed = JSON.parse(raw);
+        lastValidFileConfig = sanitizeFileConfig(parsed);
+        lastConfigMtimeMs = mtimeMs;
+      }
     } catch (err) {
       configWarn("config:parse", `~/.meet/config.json is invalid (${err instanceof Error ? err.message : String(err)}) — keeping last known-good config`);
     }
@@ -237,7 +286,7 @@ export function findRecordingStates(): RecordingState[] {
       .flatMap((e: string) => {
         try {
           const s = JSON.parse(readFileSync(join(e, "session.json"), "utf-8")) as Session;
-          if ((s.status === "finalizing" || s.status === "paused") && readFinalizerLock(e) !== null) return [];
+          if ((s.status === "finalizing" || s.status === "waiting") && readFinalizerLock(e) !== null) return [];
           return [s];
         } catch {
           return [];

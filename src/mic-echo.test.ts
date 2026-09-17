@@ -246,12 +246,14 @@ test("runMicEchoAttributionStep", async (t) => {
       assert.equal(result.dropped, 1);
       assert.ok(logs.some((l) => l.includes("voice-matched a remote speaker")));
 
-      // Mic chunks 1 and 2 are attributed to their matched speaker, mic 3
-      // remains audible "Me" time — all on the mic-concat timeline.
+      // Mic chunk 1 is attributed+relabeled; chunk 3 stays audible "Me" time.
+      // Chunk 2 was dropped as sys-covered echo — its span must NOT appear
+      // here, or computeTalkTime counts that speech once on the sys timeline
+      // and again on the mic timeline under the same "Speaker N" (B5).
       const segments = result.micSegments;
       assert.deepEqual(
         segments.map((s) => [s.speaker, s.start, s.end]),
-        [["Speaker 1", 0, 1], ["Speaker 2", 1, 2], ["Me", 2, 3]],
+        [["Speaker 1", 0, 1], ["Me", 2, 3]],
       );
 
       // Bookkeeping: entry assignments cover the relabeled mic chunk (keyed
@@ -262,7 +264,11 @@ test("runMicEchoAttributionStep", async (t) => {
       assert.ok(assignments.some((a) => a.source === "mic" && a.chunkIndex === 1 && a.speaker === "Алексей"));
       const segmentsRecord = speakersRecord.segments as Array<{ speaker: string }>;
       assert.ok(segmentsRecord.some((s) => s.speaker === "Me"));
-      assert.ok(segmentsRecord.some((s) => s.speaker === "Speaker 2"));
+      // The sys diarization segment survives the merge. "Speaker 2" does not:
+      // its only chunk was dropped as sys-covered echo, so it has no
+      // transcript text to rename and no talk-time span (B5).
+      assert.ok(segmentsRecord.some((s) => s.speaker === "Speaker 1"));
+      assert.ok(!segmentsRecord.some((s) => s.speaker === "Speaker 2"));
       const diag = speakersRecord.micEchoAttribution as { threshold: number; decisions: Array<{ chunkIndex: number; kind: string }> };
       assert.equal(diag.threshold, 0.7);
       assert.deepEqual(diag.decisions.map((d) => [d.chunkIndex, d.kind]), [

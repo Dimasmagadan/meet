@@ -257,6 +257,60 @@ describe("filterEntries", () => {
     assert.strictEqual(droppedEcho[0].source, "mic");
   });
 
+  it("populates the droppedEcho accumulator for a duplicate drop (B1)", () => {
+    // Duplicates are the same class as echo drops: without this record the
+    // finalize safety net sees a shrunk final pass and reverts the whole
+    // turbo transcript, re-admitting the echo it just filtered.
+    const droppedEcho: FinalChunkResult[] = [];
+    const results = [
+      makeResult("sys", 1, "Давайте обсудим квартальные цели"),
+      makeResult("mic", 1, "Давайте обсудим квартальные цели", -30),
+    ];
+    filterEntries(results, config, droppedEcho);
+    assert.strictEqual(droppedEcho.length, 1);
+    assert.strictEqual(droppedEcho[0].source, "mic");
+    assert.strictEqual(droppedEcho[0].index, 1);
+  });
+
+  it("populates the droppedEcho accumulator for an acknowledgement drop (B1)", () => {
+    const droppedEcho: FinalChunkResult[] = [];
+    const results = [
+      makeResult("sys", 1, "Нам нужно сделать презентацию к пятнице"),
+      makeResult("mic", 1, "ага", -30),
+    ];
+    filterEntries(results, config, droppedEcho);
+    assert.strictEqual(droppedEcho.length, 1);
+    assert.strictEqual(droppedEcho[0].source, "mic");
+  });
+
+  it("drops a mic echo covered only by the N-1 sys neighbourhood when same-index sys is empty (B6)", () => {
+    // Chunk boundaries aren't utterance-aligned: the sys counterpart lands in
+    // chunk 1 while sys-2 is silent. The coverage gate must still fire —
+    // previously the whole block was gated on sys[N] text and this mic entry
+    // kept the wrong "Me" label.
+    const droppedEcho: FinalChunkResult[] = [];
+    const results = [
+      makeResult("sys", 1, "Привет Мы хотели уточнить у тебя по разделу мероприятия"),
+      makeResult("sys", 2, ""),
+      makeResult("mic", 2, "Привет Мы хотели уточнить у тебя по разделу мероприятия", -30),
+    ];
+    const filtered = filterEntries(results, config, droppedEcho);
+    assert.strictEqual(filtered.filter((r) => r.source === "mic").length, 0);
+    assert.strictEqual(droppedEcho.length, 1);
+    assert.strictEqual(droppedEcho[0].index, 2);
+  });
+
+  it("keeps a distinct mic chunk when no same-index or neighbourhood sys text exists at all", () => {
+    // Coverage gate now runs outside the same-index guard, so confirm it
+    // doesn't over-fire on an empty neighbourhood (mic-only meeting).
+    const results = [
+      makeResult("mic", 1, "Я расскажу про новые фичи", -30),
+      makeResult("mic", 2, "И про архитектуру тоже", -30),
+    ];
+    const filtered = filterEntries(results, config);
+    assert.strictEqual(filtered.length, 2);
+  });
+
   it("handles multiple indices in order", () => {
     const results = [
       makeResult("sys", 1, "Первый"),

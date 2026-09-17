@@ -80,8 +80,59 @@ describe("computeTalkTime", () => {
     assert.deepStrictEqual(stats.speakers.map((s) => s.label), ["Me", "Speaker 1"]);
   });
 
-  it("handles the zero-speech edge without dividing by zero", () => {
+  it("counts chunks that only the final transcript has text for (B4)", () => {
+    // Default quit path (q/Ctrl-C/auto-stop): pipeline.close() doesn't drain,
+    // so the final pass is the only witness these chunks were audible —
+    // entries.jsonl has no record for them and talk time was undercounted.
+    const entryRecords: EntryRecord[] = [
+      { source: "mic", index: 1, timestamp: "00:00:00", text: "a", rmsDb: -30 },
+    ];
+    const textChunkKeys = new Set(["mic-002", "mic-003", "sys-002"]);
     const stats = computeTalkTime({
+      entryRecords,
+      textChunkKeys,
+      chunkDurationSeconds: 30,
+      micRmsThresholdDb: -60,
+      sysRmsThresholdDb: -65,
+      diarSegments: [],
+    });
+
+    // 1 stored mic chunk + 2 text-only mic chunks = 3 x 30s; 1 sys text chunk.
+    assert.strictEqual(stats.speakers.find((s) => s.label === "Me")!.seconds, 90);
+    assert.strictEqual(stats.speakers.find((s) => s.label === "Others")!.seconds, 30);
+  });
+
+  it("counts a chunk once when it has both a stored record and surviving text", () => {
+    const entryRecords: EntryRecord[] = [
+      { source: "mic", index: 1, timestamp: "00:00:00", text: "a", rmsDb: -30 },
+    ];
+    const textChunkKeys = new Set(["mic-001"]);
+    const stats = computeTalkTime({
+      entryRecords,
+      textChunkKeys,
+      chunkDurationSeconds: 15,
+      micRmsThresholdDb: -60,
+      sysRmsThresholdDb: -65,
+      diarSegments: [],
+    });
+    assert.strictEqual(stats.speakers.find((s) => s.label === "Me")!.seconds, 15);
+  });
+
+  it("ignores textChunkKeys when the mic channel was diarized (segments own the Me row)", () => {
+    const entryRecords: EntryRecord[] = [];
+    const textChunkKeys = new Set(["mic-001", "mic-002"]);
+    const stats = computeTalkTime({
+      entryRecords,
+      textChunkKeys,
+      chunkDurationSeconds: 15,
+      micRmsThresholdDb: -60,
+      sysRmsThresholdDb: -65,
+      diarSegments: [{ start: 0, end: 15, speaker: "Me" }],
+    });
+    assert.strictEqual(stats.speakers.find((s) => s.label === "Me")!.seconds, 15);
+  });
+
+  it("handles the zero-speech edge without dividing by zero", () => {    const stats = computeTalkTime({
       entryRecords: [],
       chunkDurationSeconds: 15,
       micRmsThresholdDb: -60,

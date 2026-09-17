@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { appendFile, readFile } from "node:fs/promises";
 import type { Session, TranscriptEntry } from "./types.js";
 import { writeAtomic } from "./storage.js";
+import { formatEntry } from "./assembler.js";
 import type { ResourcePressure } from "./system-monitor.js";
 
 export const MIN_ENTRIES_FOR_SUMMARY = 8;
@@ -261,15 +262,10 @@ function deriveParticipants(entries: TranscriptEntry[]): string[] {
   return out;
 }
 
-// Format identical to assembler.ts:formatEntry — kept in sync so a summary line
-// pastes verbatim into a transcript search. Mirrors the Me / Others / Speaker N
-// rules used by the live recording.
+// The transcript's own renderer, so a summary line pastes verbatim into a
+// transcript search (and one Me/Others/Speaker-N rule can't drift from it).
 function formatSummaryEntry(entry: TranscriptEntry): string {
-  if (entry.source === "file") {
-    return `**[${entry.timestamp}]** ${entry.text}`;
-  }
-  const label = entry.source === "mic" ? "Me" : (entry.speaker ?? "Others");
-  return `**[${entry.timestamp}] ${label}:** ${entry.text}`;
+  return formatEntry(entry).trimEnd();
 }
 
 function formatTimeOfDay(iso: string): string {
@@ -283,7 +279,7 @@ function formatTimeOfDay(iso: string): string {
 const FOOTER = `
 ---
 
-> Draft produced locally by extractive summarization. Final, higher-quality summary can be generated on demand with \`meet summary --full\` (post-finalize, future spec).
+> Draft produced locally by extractive summarization during recording. Labels follow the live Me/Others split and are not updated when the final pass relabels entries as Speaker N.
 `;
 
 export function formatSummaryMarkdown(
@@ -548,7 +544,7 @@ export async function appendPostFinalizeNote(session: Session): Promise<void> {
   try {
     const current = await readFile(path, "utf-8");
     if (current.includes(FINALIZE_NOTE_MARKER)) return;
-    const note = `\n> ${FINALIZE_NOTE_MARKER} the transcript has been rewritten with Speaker N labels and talk-time. This draft summary still uses Me/Others from the live recording; run \`meet summary --full\` (future) for an updated version.\n`;
+    const note = `\n> ${FINALIZE_NOTE_MARKER} the transcript has been rewritten with Speaker N labels and talk-time. This draft summary still uses Me/Others from the live recording.\n`;
     await appendFile(path, note, "utf-8");
   } catch {
     // Fail-open — finalize never blocks on this.

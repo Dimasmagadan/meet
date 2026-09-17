@@ -64,6 +64,22 @@ describe("concatSysChunks", () => {
     assert.strictEqual(offsets.has(1), false);
     assert.deepStrictEqual(offsets.get(2), { start: 0, end: 0.5 });
   });
+
+  it("uses the real byte count, not the header's claim, for a truncated chunk", async () => {
+    // A chunk cut short mid-write (crash / full disk / aborted finalize) keeps
+    // a header claiming the full duration. Trusting it over-read this chunk
+    // and shifted every later chunk's cursorSeconds, so the diarizer's segment
+    // times no longer lined up with the transcript.
+    const full = makeSineWav(440, 16000); // 1s
+    const truncated = full.subarray(0, full.length - 16000); // half the data gone
+    writeFileSync(join(testDir, "sys-001.wav"), truncated);
+    writeFileSync(join(testDir, "sys-002.wav"), makeSineWav(440, 16000)); // 1s
+
+    const { offsets } = await concatSysChunks(testDir);
+
+    assert.deepStrictEqual(offsets.get(1), { start: 0, end: 0.5 });
+    assert.deepStrictEqual(offsets.get(2), { start: 0.5, end: 1.5 });
+  });
 });
 
 describe("concatMicChunks", () => {

@@ -83,7 +83,18 @@ function runOpencode(config: Config, args: string[], timeout = 60_000): Promise<
           reject(new Error(msg));
           return;
         }
-        resolve(stdout.trim() || stderr.trim());
+        // opencode prints progress/diagnostics to stderr; on a zero-stdout run
+        // those are NOT an answer. Surfacing them would hand a stderr diagnostic
+        // to the user as if it were the LLM's answer.
+        const answer = stdout.trim();
+        if (!answer) {
+          const diag = stderr.trim();
+          reject(new Error(
+            diag ? `opencode produced no answer (stderr: ${diag.slice(0, 300)})` : "opencode produced no answer",
+          ));
+          return;
+        }
+        resolve(answer);
       },
     );
   });

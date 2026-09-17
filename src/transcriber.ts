@@ -1,8 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile, unlink, writeFile } from "node:fs/promises";
-import type { Config, TranscribeOptions, AudioMetrics } from "./types.js";
-import { readPcmSamples, computeRmsDb, computePeakDb } from "./audio-metrics.js";
-import { detectSpeech } from "./vad.js";
+import type { Config, TranscribeOptions } from "./types.js";
+import { readPcmSamples, computeRmsDb, computePeakDb, type AudioMetrics } from "./audio-metrics.js";
 import { getPhrasebook } from "./phrasebook.js";
 import { getVocabulary } from "./vocabulary.js";
 import { resolveWhisperBin, resolveModelPath } from "./storage.js";
@@ -75,8 +74,6 @@ export function cleanText(raw: string): string {
 
   return text;
 }
-
-export { readPcmSamples, computeRmsDb, computePeakDb };
 
 export interface WhisperArgsOptions {
   modelPath: string;
@@ -156,13 +153,6 @@ export async function transcribeChunk(
   if (config.silenceGate) {
     const threshold = source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     if (rawRmsDb < threshold) {
-      return { chunkIndex, source, text: "", metrics };
-    }
-  }
-
-  if (config.vadEnabled) {
-    const vad = await detectSpeech(wavPath, config);
-    if (!vad.speech) {
       return { chunkIndex, source, text: "", metrics };
     }
   }

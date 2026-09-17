@@ -6,10 +6,7 @@ import { getTriggers } from "./triggers.js";
 import { chunkToTimestamp } from "./assembler.js";
 import { escapeRegex } from "./regex-utils.js";
 
-export type AttentionAlertKind = "trigger";
-
 export type AttentionAlert = {
-  kind: AttentionAlertKind; // future: | "pause"
   trigger: string;
   snippet: string;
   timestamp: string;
@@ -34,7 +31,7 @@ export class AttentionMonitor {
   private session: AttentionSession;
   private now: () => number;
   private loadConfig: () => Config;
-  private lastAlertAt = new Map<AttentionAlertKind, number>();
+  private lastAlertAt: number | null = null;
 
   constructor(session: AttentionSession, deps?: AttentionMonitorDeps) {
     this.session = session;
@@ -50,10 +47,8 @@ export class AttentionMonitor {
     const match = triggers.match(text);
     if (!match) return null;
 
-    const kind: AttentionAlertKind = "trigger";
     const nowMs = this.now();
-    const last = this.lastAlertAt.get(kind);
-    if (last !== undefined && nowMs - last < config.attentionCooldownSeconds * 1000) {
+    if (this.lastAlertAt !== null && nowMs - this.lastAlertAt < config.attentionCooldownSeconds * 1000) {
       return null;
     }
 
@@ -62,10 +57,9 @@ export class AttentionMonitor {
       return null;
     }
 
-    this.lastAlertAt.set(kind, nowMs);
+    this.lastAlertAt = nowMs;
 
     return {
-      kind,
       trigger: match.trigger,
       snippet: match.snippet,
       timestamp: chunkToTimestamp(chunkIndex, this.session.chunkDurationSeconds, this.session.startedAt),

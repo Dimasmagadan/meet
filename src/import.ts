@@ -1,11 +1,11 @@
-import { execFile, execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, basename, extname, resolve } from "node:path";
 import chalk from "chalk";
 import { nanoid } from "nanoid";
 import type { Session, Config, TranscriptEntry } from "./types.js";
-import { loadConfig, expandPath, reserveOutputDir, getSessionsDir, resolveWhisperBin } from "./storage.js";
+import { loadConfig, expandPath, reserveOutputDir, getSessionsDir, resolveWhisperBin, ffmpegAvailable } from "./storage.js";
 import { cleanText, buildWhisperArgs } from "./transcriber.js";
 import { getPhrasebook } from "./phrasebook.js";
 import { assembleMarkdown } from "./assembler.js";
@@ -47,7 +47,7 @@ export async function transcribeImport(
     }
   }
 
-  if (!checkFfmpeg()) {
+  if (!ffmpegAvailable()) {
     console.log(chalk.red("ffmpeg not found. Install: brew install ffmpeg"));
     process.exit(1);
   }
@@ -113,9 +113,9 @@ async function processFile(
   isBatch: boolean,
 ): Promise<string> {
   const id = nanoid(8);
-    const sessionsDir = getSessionsDir();
-    const sessionDir = join(sessionsDir, `meet-import-${id}`);
-    await mkdir(sessionDir, { recursive: true });
+  const sessionsDir = getSessionsDir();
+  const sessionDir = join(sessionsDir, `meet-import-${id}`);
+  await mkdir(sessionDir, { recursive: true });
 
   try {
     let date: Date;
@@ -159,6 +159,10 @@ async function processFile(
 
     if (entries.length === 0) {
       console.log(chalk.yellow(`${prefix}No speech detected`));
+      // The output dir was reserved but nothing will land in it — leave no
+      // empty meeting behind (dashboard lists by dir, and a transcript-less
+      // dir is indistinguishable from a crashed one).
+      await rm(meetingDir, { recursive: true, force: true }).catch(() => {});
       return "";
     }
 
@@ -192,19 +196,20 @@ async function processFile(
         if (isBatch && !tags.some((t) => t.toLowerCase() === "batch-transcription")) {
           tags.unshift("batch-transcription");
         }
-        if (tags.length > 0) {
-          session.tags = tags;
-          await writeMetaFile(session, tags, isBatch ? { note: "Дата папки и заголовка транскрипта не соответствует дате звонка. Папка создана при массовой транскрипции." } : undefined);
-          console.log(chalk.green(`${prefix}Tags: ${tags.join(", ")}`));
-        }
+        session.tags = tags;
+        console.log(chalk.green(`${prefix}Tags: ${tags.length > 0 ? tags.join(", ") : "(none)"}`));
       } catch {
         console.log(chalk.gray(`${prefix}(tag picker skipped)`));
       }
     } else if (isBatch) {
       session.tags = ["batch-transcription"];
-      await writeMetaFile(session, session.tags, { note: "Дата папки и заголовка транскрипта не соответствует дате звонка. Папка создана при массовой транскрипции." });
       console.log(chalk.gray(`${prefix}Tags: batch-transcription`));
     }
+
+    // Always persist meta.md — matches the recorder's unconditional write. The
+    // dashboard lists meetings by meta.md, so skipping it when no tags are
+    // picked (or in non-TTY single-file imports) made the meeting invisible.
+    await writeMetaFile(session, session.tags ?? [], isBatch ? { note: "Дата папки и заголовка транскрипта не соответствует дате звонка. Папка создана при массовой транскрипции." } : undefined);
 
     if (!isBatch && options.index && entries.length > 0) {
       try {
@@ -455,15 +460,4 @@ export function selectModel(config: Config, preference?: "small" | "medium"): st
   if (existsSync(mediumPath)) return mediumPath;
 
   return expandPath(config.liveModelPath || config.modelPath);
-}
-
-function checkFfmpeg(): boolean {
-  const paths = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"];
-  if (paths.some((p) => existsSync(p))) return true;
-  try {
-    execSync("which ffmpeg", { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
 }

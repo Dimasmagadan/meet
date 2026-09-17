@@ -37,12 +37,18 @@ class RecordingController {
     // maxDurationMinutes/attendees: calendar auto-start (SPEC_CALENDAR_AUTOSTART_2026-08-04
     // §2.6/§3/§6.1). Manual Start keeps calling this with defaults, so nil/[] preserves
     // today's behavior (config.maxDurationMinutes via the CLI's own default, no --attendees).
-    func start(title: String, maxDurationMinutes: Int? = nil, attendees: [String] = []) {
-        guard state == .idle else { return }
+    // Returns true only when the recording process actually launched. Callers
+    // that need to record "this attempt is spent" (calendar auto-start's
+    // occurrence dedup) must not do so on a failed spawn — otherwise the
+    // occurrence is marked handled and never retried for the rest of the
+    // meeting (B8).
+    @discardableResult
+    func start(title: String, maxDurationMinutes: Int? = nil, attendees: [String] = []) -> Bool {
+        guard state == .idle else { return false }
 
         guard let runner = resolver.resolve() else {
             onStartFailed?("meet was not found. Run `meet setup` (and `npm link` if needed) so `meet bin-path` resolves.")
-            return
+            return false
         }
 
         var args = runner.args + ["start", title, "--headless"]
@@ -63,7 +69,7 @@ class RecordingController {
             try proc.run()
         } catch {
             onStartFailed?("Failed to start meet: \(error.localizedDescription)")
-            return
+            return false
         }
 
         process = proc
@@ -82,6 +88,8 @@ class RecordingController {
                 self?.handleTermination()
             }
         }
+
+        return true
     }
 
     func pause() {
@@ -225,9 +233,14 @@ class RecordingController {
     func attachToExistingSession(sessionDir: String) {
         guard state == .idle else { return }
 
+        // PID reuse (kern.pid_max wraparound on a busy machine) can leave a
+        // stale lock whose PID names an unrelated app — attaching would then
+        // deliver our Pause/Stop/Extend signals to that app. The recorder is
+        // always `node dist/main.js`, so a live lock PID must name node (B9).
         guard let json = ActiveLock.read(),
               let pid = json["pid"] as? Int32,
-              isPidAlive(pid) else { return }
+              isPidAlive(pid),
+              isNodeProcess(pid) else { return }
 
         attachedPid = pid
         terminationHandled = false
@@ -259,11 +272,46 @@ class RecordingController {
     // MARK: - Private
 
     private func sendSignal(_ signal: Int32, to pid: pid_t) {
+        // Re-verify immediately before signalling: the lock was validated at
+        // attach, but the PID can die and be reused between then and now (B9).
+        // A confirmed non-node command means this PID now belongs to an
+        // unrelated app — signalling it would Pause/Stop some other process,
+        // so treat the session as stale instead. ps failing or a dead PID
+        // stays fail-open: kill() on a dead PID is a harmless no-op.
+        if let comm = processComm(pid), comm != "node", !comm.hasSuffix("/node") {
+            handleTermination()
+            return
+        }
         kill(pid, signal)
     }
 
     private func isPidAlive(_ pid: pid_t) -> Bool {
         kill(pid, 0) == 0
+    }
+
+    // The PID's command name, or nil when it can't be determined (ps
+    // unavailable, or the PID is dead).
+    private func processComm(_ pid: pid_t) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-o", "comm=", "-p", "\(pid)"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        do {
+            try task.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
+            let comm = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (comm?.isEmpty == false) ? comm : nil
+        } catch {
+            return nil
+        }
+    }
+
+    private func isNodeProcess(_ pid: pid_t) -> Bool {
+        guard let comm = processComm(pid) else { return false }
+        return comm == "node" || comm.hasSuffix("/node")
     }
 
     private func currentSessionDir() -> String? {

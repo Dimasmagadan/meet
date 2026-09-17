@@ -230,6 +230,33 @@ describe("renameSpeaker", () => {
     assert.ok(totalBody > 0);
   });
 
+  it("recovers a crash between speakers.json write and the content rewrite", async () => {
+    // speakerNames persists first; a crash before the body rewrite leaves the
+    // transcript still showing the canonical id. The re-run must converge by
+    // matching the canonical id even though the stored label is now the name.
+    writeSpeakers(tmpDir, {
+      diarization: { ok: true },
+      segments: [{ speaker: "Speaker 1" }, { speaker: "Speaker 2" }],
+      entryAssignments: [{ speaker: "Speaker 1" }, { speaker: "Speaker 2" }],
+    });
+    writeFileSync(join(tmpDir, "transcript.md"), TRANSCRIPT, "utf-8");
+
+    // Simulate the crash: only the mapping is applied, transcript untouched.
+    writeSpeakers(tmpDir, {
+      diarization: { ok: true },
+      segments: [{ speaker: "Speaker 1" }, { speaker: "Speaker 2" }],
+      entryAssignments: [{ speaker: "Speaker 1" }, { speaker: "Speaker 2" }],
+      speakerNames: { "Speaker 1": "Женя" },
+    });
+
+    const res = await renameSpeaker(tmpDir, "Speaker 1", "Женя");
+    const body = readFileSync(join(tmpDir, "transcript.md"), "utf-8");
+    assert.ok(!body.includes("**[00:00:15] Speaker 1:**"), "canonical id still in the transcript");
+    assert.ok(body.includes("**[00:00:15] Женя:**"), "canonical id was renamed on recovery");
+    const totalBody = res.files.reduce((n, f) => n + f.bodyMatches, 0);
+    assert.ok(totalBody > 0, "recovery made a body match");
+  });
+
   describe("registry propagation", () => {
     let regDir: string;
 

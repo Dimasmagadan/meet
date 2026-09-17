@@ -114,7 +114,7 @@ export async function runFinalPass(
   const echoCorrelatedMicIndices = new Set<number>();
 
   // Per-~100ms-frame RMS envelope, keyed by chunk index (P2). Frame arrays are
-  // tiny (~150 floats per 15s chunk) — kept for the whole meeting, unlike the
+  // tiny (~300 floats per 30s chunk) — kept for the whole meeting, unlike the
   // raw samples they're derived from, which are discarded after each chunk.
   const frameSize = frameSizeForRate(16000);
   const micFramesByIndex = new Map<number, number[]>();

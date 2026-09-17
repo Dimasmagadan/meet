@@ -7,7 +7,7 @@ import { loadConfig, resolveModelPath, resolveAnalysisBin, writeAtomic } from ".
 import { Pipeline } from "./pipeline.js";
 import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
 import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcriptEntriesToMap } from "./assembler.js";
-import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock, readGlobalFinalPassLock } from "./locks.js";
+import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock, readGlobalFinalPassLock, acquireRegistryLock, releaseRegistryLock } from "./locks.js";
 import { analyzeWavFile } from "./audio-metrics.js";
 import { readEntryRecords } from "./entries-store.js";
 import { concatSysChunks, concatMicChunks, runDiarizer, assignSpeakers, assignLabeledSpeakers, relabelSegments, cleanupSysConcat, cleanupMicConcat, buildSpeakerLabelMap, buildEmbeddingsByLabel, type DiarSegment } from "./diarization.js";
@@ -16,6 +16,11 @@ import { computeTalkTime } from "./talk-time.js";
 import type { TalkTimeStats } from "./talk-time.js";
 import { chunkFileRegex } from "./regex-utils.js";
 import { runMicEchoAttributionStep } from "./mic-echo.js";
+import { runParakeetPass } from "./parakeet-pass.js";
+import { appendPostFinalizeNote } from "./summary.js";
+import { runOpencodeIndex } from "./opencode.js";
+import { makeDeadline, throttleHold, type PressureSensor } from "./system-monitor.js";
+import { loadRegistry, saveRegistry, applyRegistryToSpeakers, appendMatchesLog, matchesLogPath, matchSelf, registerSpeaker, type SpeakerBackend } from "./speaker-registry.js";
 
 // Re-applies the registry's display-name overrides to the Talk Time footer
 // rows. `computeTalkTime` reads canonical "Speaker N" labels off the segments
@@ -35,11 +40,6 @@ export function applyLabelOverridesToTalkTime(
   });
   return { ...stats, speakers };
 }
-import { runParakeetPass } from "./parakeet-pass.js";
-import { appendPostFinalizeNote } from "./summary.js";
-import { runOpencodeIndex } from "./opencode.js";
-import { makeDeadline, throttleHold, type PressureSensor } from "./system-monitor.js";
-import { loadRegistry, saveRegistry, applyRegistryToSpeakers, appendMatchesLog, matchesLogPath, matchSelf, registerSpeaker, type SpeakerBackend } from "./speaker-registry.js";
 
 const PROGRESS_WRITE_INTERVAL_MS = 1000;
 
@@ -123,7 +123,22 @@ export async function filterStoredEntriesByAudio(
   const filtered: TranscriptEntry[] = [];
 
   for (const entry of entries) {
-    const key = `${entry.source}-${String(entry.chunkIndex).padStart(3, "0")}`;
+    let source = entry.source;
+    const indexKey = String(entry.chunkIndex).padStart(3, "0");
+    // Markdown round-trip repair (B11): a mic chunk relabeled "Speaker N" by
+    // mic-diarization/mic-echo renders as `**[...] Speaker N:**`, and
+    // parseTranscriptEntries maps anything that isn't "Me" back to sys. On the
+    // crash-recovery path that entry then looks for a sys-NNN.wav that doesn't
+    // exist (mic mode has none), scored -Infinity and dropped — losing the
+    // text. Recover it to the source whose WAV actually exists.
+    if (!existsSync(join(session.sessionDir, `${source}-${indexKey}.wav`))) {
+      const other: "mic" | "sys" = source === "mic" ? "sys" : "mic";
+      if (existsSync(join(session.sessionDir, `${other}-${indexKey}.wav`))) {
+        source = other;
+      }
+    }
+
+    const key = `${source}-${indexKey}`;
     let rmsDb = stored.get(key);
     if (rmsDb === undefined) {
       // No entries.jsonl record for this chunk (crashed/partial run) — analyze
@@ -132,9 +147,9 @@ export async function filterStoredEntriesByAudio(
       const wavPath = join(session.sessionDir, `${key}.wav`);
       rmsDb = existsSync(wavPath) ? (await analyzeWavFile(wavPath)).rmsDb : -Infinity;
     }
-    const threshold = entry.source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
+    const threshold = source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     if (rmsDb >= threshold) {
-      filtered.push(entry);
+      filtered.push(source === entry.source ? entry : { ...entry, source });
     }
   }
 
@@ -190,12 +205,16 @@ async function waitForInactiveRecording(
   onProgress?: (msg: string) => void,
 ): Promise<void> {
   while (isActiveRecording()) {
-    session.status = "paused";
-    await progressWriter.update(makeProgress("paused", session.finalize?.done ?? 0, session.finalize?.total ?? 0, "active recording, waiting"));
-    onProgress?.("Paused: active recording, waiting...");
+    // "waiting", not "paused": "paused" means the USER paused a live recording
+    // (capture still alive, still owns the lock). This is a stopped session
+    // held by a finalize pass — recording-state.ts classifies the two
+    // differently, and conflating them made `meet status` need heuristics.
+    session.status = "waiting";
+    await progressWriter.update(makeProgress("waiting", session.finalize?.done ?? 0, session.finalize?.total ?? 0, "active recording, waiting"));
+    onProgress?.("Waiting: active recording...");
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
-  if (session.status === "paused") {
+  if (session.status === "waiting") {
     session.status = "finalizing";
     await progressWriter.update(makeProgress(phase, session.finalize?.done ?? 0, session.finalize?.total ?? 0));
   }
@@ -210,12 +229,12 @@ async function waitForGlobalFinalPassSlot(
   while (!acquireGlobalFinalPassLock(sessionDir)) {
     const existing = readGlobalFinalPassLock();
     const msg = existing ? `waiting for final pass in ${existing.sessionDir}` : "waiting for final pass lock";
-    session.status = "paused";
-    await progressWriter.update(makeProgress("paused", session.finalize?.done ?? 0, session.finalize?.total ?? 0, msg));
-    onProgress?.(`Paused: ${msg}...`);
+    session.status = "waiting";
+    await progressWriter.update(makeProgress("waiting", session.finalize?.done ?? 0, session.finalize?.total ?? 0, msg));
+    onProgress?.(`Waiting: ${msg}...`);
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
-  if (session.status === "paused") {
+  if (session.status === "waiting") {
     session.status = "finalizing";
     await progressWriter.update(makeProgress("final", session.finalize?.done ?? 0, session.finalize?.total ?? 0));
   }
@@ -360,6 +379,11 @@ async function applySpeakerRegistry(
 
   try {
     const registry = loadRegistry(config.speakerRegistryPath);
+    const registryLocked = acquireRegistryLock(`finalize ${session.id}`);
+    if (!registryLocked) {
+      warn("Registry busy (another speaker-registry write); skipping registry update");
+      return new Map();
+    }
     const { labelOverrides, speakerMeta, matches } = applyRegistryToSpeakers(
       embeddingsByLabel,
       session.id,
@@ -393,6 +417,8 @@ async function applySpeakerRegistry(
     const message = err instanceof Error ? err.message : String(err);
     warn(`Speaker registry update failed: ${message}`);
     return new Map();
+  } finally {
+    releaseRegistryLock();
   }
 }
 
@@ -459,6 +485,11 @@ export async function runMicDiarizationStep(
 
       const rawIds = [...new Set(rawSegments.map((s) => s.speaker))];
       const registry = loadRegistry(config.speakerRegistryPath);
+      const registryLocked = acquireRegistryLock(`finalize ${session.id}`);
+      if (!registryLocked) {
+        log("Registry busy (another speaker-registry write); skipping registry update");
+        return none;
+      }
 
       if (rawIds.length === 1) {
         // Whole mic channel is one voice — safe ground truth for "me".
@@ -574,6 +605,7 @@ export async function runMicDiarizationStep(
 
       return { entries: micEntries, micDiarSegments: relabeledSegments, labelOverrides };
     } finally {
+      releaseRegistryLock();
       await cleanupMicConcat(session.sessionDir);
     }
   } catch (err) {
@@ -832,7 +864,9 @@ export async function finalizeSession(
         : baseEntries;
       if (effectiveBaseEntries.length > 0 && entries.length < effectiveBaseEntries.length) {
         warn(`Final pass produced ${entries.length} entries vs ${effectiveBaseEntries.length} non-silent live/stored entries (excluding ${droppedEchoKeys.size} echo-filtered), keeping live`);
-        entries = baseEntries;
+        // Restoring effectiveBaseEntries (not raw baseEntries) — otherwise the
+        // recorded echo/duplicate/ack drops recorded above get un-done too.
+        entries = effectiveBaseEntries;
       }
 
       if (entries.length > 0) {
@@ -875,6 +909,13 @@ export async function finalizeSession(
         const talkTime = applyLabelOverridesToTalkTime(
           computeTalkTime({
             entryRecords: storedRecords,
+            // Chunks the final pass transcribed but the live queue never
+            // recorded (the default q/Ctrl-C/auto-stop paths drain via
+            // pipeline.close(), not stop()) have no entries.jsonl record —
+            // without this their text still proves they were audible, and
+            // talk time would be undercounted on essentially every
+            // default-quit session.
+            textChunkKeys: new Set(entries.map((e) => `${e.source}-${String(e.chunkIndex).padStart(3, "0")}`)),
             chunkDurationSeconds: session.chunkDurationSeconds,
             micRmsThresholdDb: config.micRmsThresholdDb,
             sysRmsThresholdDb: config.sysRmsThresholdDb,

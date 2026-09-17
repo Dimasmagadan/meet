@@ -13,10 +13,10 @@ export interface Chunk {
   speaker?: string;
 }
 
-export type SessionStatus = "recording" | "stopped" | "queued" | "finalizing" | "paused" | "done" | "error";
+export type SessionStatus = "recording" | "stopped" | "queued" | "finalizing" | "paused" | "waiting" | "done" | "error";
 
 export interface FinalizeProgress {
-  phase: "stopping" | "live" | "final" | "write" | "diarize" | "ab" | "done" | "paused" | "error";
+  phase: "stopping" | "live" | "final" | "write" | "diarize" | "ab" | "done" | "waiting" | "error";
   done: number;
   total: number;
   message: string | null;
@@ -82,12 +82,6 @@ export interface Config {
   // can stall the whole pipeline. Off by default; literal/word-boundary rules
   // (escaped, so no backtracking risk) are unaffected by this flag.
   phrasebookAllowRegex: boolean;
-  vadEnabled: boolean;
-  vadBin: string;
-  vadMinSpeechMs: number;
-  vadThreshold: number;
-  vadFailOpen: boolean;
-  vadTimeoutMs: number;
   diarizationEnabled: boolean;
   diarizationMinOverlap: number;
   // Cross-channel echo filtering (final pass only, SPEC_MIC_ECHO_FILTERING_2026-08-05).
@@ -201,12 +195,6 @@ export interface MeetingStats {
   monthKey: string;
 }
 
-export interface AudioMetrics {
-  rmsDb: number;
-  peakDb: number;
-  sampleCount?: number;
-}
-
 export interface TranscriptEntry {
   source: "mic" | "sys" | "file";
   chunkIndex: number;
@@ -256,12 +244,6 @@ export const DEFAULT_CONFIG: Config = {
   phrasebookPath: DEFAULT_PHRASEBOOK_PATH,
   phrasebookReload: true,
   phrasebookAllowRegex: false,
-  vadEnabled: false,
-  vadBin: "",
-  vadMinSpeechMs: 250,
-  vadThreshold: 0.5,
-  vadFailOpen: true,
-  vadTimeoutMs: 30_000,
   diarizationEnabled: true,
   diarizationMinOverlap: 0.3,
   micEchoCoverageThreshold: 0.75,

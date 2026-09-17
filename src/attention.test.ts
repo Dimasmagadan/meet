@@ -58,7 +58,6 @@ describe("AttentionMonitor.check", () => {
     const monitor = new AttentionMonitor(SESSION, { loadConfig: () => config, now: () => 0 });
     const alert = monitor.check(5, "Слушай, Дим, ты тут?", () => []);
     assert.ok(alert);
-    assert.strictEqual(alert!.kind, "trigger");
     assert.strictEqual(alert!.trigger, "Дим");
     assert.strictEqual(alert!.chunkIndex, 5);
   });
@@ -181,7 +180,6 @@ describe("buildRecap", () => {
 
 describe("formatRecap", () => {
   const alert: AttentionAlert = {
-    kind: "trigger",
     trigger: "Дим",
     snippet: "…слушай, Дим, что думаешь…",
     timestamp: "10:02:15",
@@ -258,7 +256,6 @@ describe("formatRecap", () => {
 describe("buildNotificationArgs", () => {
   it("uses the argv form and never interpolates text into -e source", () => {
     const alert: AttentionAlert = {
-      kind: "trigger",
       trigger: "Дим",
       snippet: "test",
       timestamp: "10:00:00",
@@ -275,7 +272,6 @@ describe("buildNotificationArgs", () => {
 
   it("passes quotes and backslashes in the message intact, unescaped", () => {
     const alert: AttentionAlert = {
-      kind: "trigger",
       trigger: 'Дим "the guy" \\ escaped',
       snippet: "test",
       timestamp: "10:00:00",
@@ -290,7 +286,6 @@ describe("buildNotificationArgs", () => {
 
   it("strips control characters like newlines from the message", () => {
     const alert: AttentionAlert = {
-      kind: "trigger",
       trigger: "Дим",
       snippet: "line one\nline two\ttabbed",
       timestamp: "10:00:00",
@@ -305,7 +300,6 @@ describe("buildNotificationArgs", () => {
 
   it("truncates long messages to ~150 chars", () => {
     const alert: AttentionAlert = {
-      kind: "trigger",
       trigger: "Дим",
       snippet: "a".repeat(300),
       timestamp: "10:00:00",
@@ -320,7 +314,6 @@ describe("buildNotificationArgs", () => {
 
   it("passes title and sound as separate argv items", () => {
     const alert: AttentionAlert = {
-      kind: "trigger",
       trigger: "Дим",
       snippet: "test",
       timestamp: "10:00:00",

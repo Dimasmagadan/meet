@@ -89,7 +89,6 @@ export class CaptureHealthMonitor {
   }
 
   checkMicMissing(): HealthWarning | null {
-    if (this.config.mode !== "full" && this.config.mode !== "mic") return null;
     if (this.warnedMicMissing) return null;
     if (this.micChunkCount > 0) return null;
 

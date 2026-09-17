@@ -220,29 +220,6 @@ export function makeDeadline(budgetMs: number): PressureDeadline {
   };
 }
 
-// Polls the sensor; while the host reports overloaded AND the pass still has
-// budget, sleeps pollMs and re-checks. Fail-opens (returns) when the sensor
-// throws or the pass budget is exhausted — heavy passes must never hang the
-// finalize process on a sustained load spike.
-export async function whenNotOverloaded(
-  deadline: PressureDeadline,
-  sensor: PressureSensor = getSystemPressure,
-): Promise<void> {
-  const pollMs = deadline.pollMs ?? DEFAULT_GATE_POLL_MS;
-  for (;;) {
-    let pressure: ResourcePressure;
-    try {
-      pressure = await sensor();
-    } catch {
-      return; // sensor unavailable → fail-open
-    }
-    if (!pressure.overloaded) return;
-    const remaining = deadline.remainingMs();
-    if (remaining <= 0) return; // pass budget exhausted → fail-open
-    await sleep(Math.min(pollMs, remaining));
-  }
-}
-
 // --- heavy-pass throttle: gate thresholds from config + recording pause ----
 
 // Auto load threshold as a fraction of the reported core count. loadavg is a
@@ -281,9 +258,7 @@ export interface ThrottleOptions {
 //      this pause deliberately ignores the pass deadline.
 //   2. host pressure (loadavg / free memory via resolveGateThresholds) — hold
 //      while the pass deadline still has budget, then fail-open so a
-//      sustained load spike can delay a pass but never starve it forever.
-// Replaces per-chunk whenNotOverloaded() calls; whenNotOverloaded stays
-// exported as the pressure-only primitive.
+//   sustained load spike can delay a pass but never starve it forever.
 export async function throttleHold(
   config: Config,
   deadline: PressureDeadline | null,

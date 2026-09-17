@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 export interface AudioMetrics {
   rmsDb: number;
   peakDb: number;
-  sampleCount: number;
+  // Present on the analyzeWavFile path; the live transcribe path computes
+  // RMS/peak inline and has no sample count to report.
+  sampleCount?: number;
 }
 
 export function readPcmSamples(wavBuffer: Buffer): Int16Array {
@@ -83,7 +85,7 @@ export async function analyzeWavFile(wavPath: string): Promise<AudioMetrics> {
 }
 
 // P2 echo gate (SPEC_MIC_ECHO_FILTERING_2026-08-05): per-~100ms-frame RMS
-// envelope. Frame arrays are tiny (~150 floats per 15s chunk) so they can be
+// envelope. Frame arrays are tiny (~300 floats per 30s chunk) so they can be
 // retained for a whole meeting without the memory cost of keeping raw samples.
 const SILENCE_FLOOR_DB = -90;
 

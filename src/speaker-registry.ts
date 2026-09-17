@@ -437,19 +437,6 @@ export function forgetSpeaker(registry: SpeakerRegistry, globalId: string): bool
   return true;
 }
 
-// Retires all entries of a backend (set on a backend flip) so they are kept for
-// audit but never matched again. Returns the count quarantined.
-export function quarantineByBackend(registry: SpeakerRegistry, backend: SpeakerBackend): number {
-  let n = 0;
-  for (const s of registry.speakers) {
-    if (s.backend === backend && !s.quarantined) {
-      s.quarantined = true;
-      n++;
-    }
-  }
-  return n;
-}
-
 export async function appendMatchesLog(path: string, lines: string[]): Promise<void> {
   if (lines.length === 0) return;
   const expanded = expandPath(path);

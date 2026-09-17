@@ -13,7 +13,7 @@ export interface FinalChunkResult {
 
 const ACKNOWLEDGEMENTS = new Set([
   "да", "ага", "угу", "ок", "окей", "понятно", "хорошо", "супер",
-  "ясно", "спасибо", "ага", "мм", "м", "ну", "так", "внешем",
+  "ясно", "спасибо", "мм", "м", "ну", "так", "внешем",
 ]);
 
 function normalizeForComparison(text: string): string {
@@ -137,21 +137,40 @@ export function filterEntries(
       continue;
     }
 
-    if (sys && sys.text) {
-      if (isDuplicate(mic.text, sys.text)) continue;
+    // isDuplicate needs the same-index sys chunk itself; the coverage check
+    // below doesn't (chunk boundaries aren't utterance-aligned, so a mic
+    // echo's sys counterpart often lands in N±1 — mic-echo.ts'
+    // hasSysCounterpart runs the same neighbourhood check with no same-index
+    // requirement). Gating the whole block on sys[N] text made that gate
+    // unreachable whenever the counterpart sat in an adjacent chunk.
+    const sameSys = sys && sys.text ? sys : null;
 
-      const neighbourhood = new Set<string>();
-      for (const n of [idx - 1, idx, idx + 1]) {
-        const tokens = sysTokensByIndex.get(n);
-        if (tokens) for (const t of tokens) neighbourhood.add(t);
-      }
+    if (sameSys && isDuplicate(mic.text, sameSys.text)) {
+      droppedEcho?.push(mic);
+      continue;
+    }
+
+    const neighbourhood = new Set<string>();
+    for (const n of [idx - 1, idx, idx + 1]) {
+      const tokens = sysTokensByIndex.get(n);
+      if (tokens) for (const t of tokens) neighbourhood.add(t);
+    }
+    if (neighbourhood.size > 0) {
       const micTokens = tokenize(mic.text);
       if (coverageRatio(micTokens, neighbourhood) >= coverageThreshold) {
         droppedEcho?.push(mic);
         continue;
       }
+    }
 
-      if (isAcknowledgement(mic.text)) continue;
+    // Duplicates and acknowledgements are the same class as echo drops — a
+    // mic "ага" over sys speech is bleed — so they go into the same
+    // accumulator. The finalize safety net compares final-pass entry count
+    // against base entries excluding recorded drops; bare `continue`s here
+    // made it see a shrunk final pass and revert the whole thing.
+    if (sameSys && isAcknowledgement(mic.text)) {
+      droppedEcho?.push(mic);
+      continue;
     }
 
     kept.push(mic);

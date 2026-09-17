@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { writeFile, mkdir } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import chalk from "chalk";
 import type { MeetingStats } from "./types.js";
 import { expandPath, loadConfig } from "./storage.js";
@@ -33,7 +33,7 @@ function parseMetaFile(metaPath: string): { title: string; date: Date; mode: str
   }
 }
 
-function parseTranscript(transcriptPath: string): { durationSeconds: number | null; wordCount: number; talkTime: MeetingStats["talkTime"] } {
+export function parseTranscript(transcriptPath: string): { durationSeconds: number | null; wordCount: number; talkTime: MeetingStats["talkTime"] } {
   try {
     const raw = readFileSync(transcriptPath, "utf-8");
     const timestamps = [...raw.matchAll(/\*\*\[(\d{2}):(\d{2}):(\d{2})\]/g)];
@@ -50,7 +50,11 @@ function parseTranscript(transcriptPath: string): { durationSeconds: number | nu
     }
 
     const textLines = raw.split("\n").filter(l => l.startsWith("**["));
-    const text = textLines.map(l => l.replace(/^\*\*\[\d{2}:\d{2}:\d{2}\]\*\s*\w+:\s*/, "")).join(" ");
+    // Both emitted shapes must be stripped: `**[14:30:00] Me:**` (live) and
+    // `**[00:00:05]**` (file import). The previous pattern expected a `**`
+    // right after `]` and never matched either, so every label ("Me",
+    // "Speaker 1", a registry name) inflated Avg Words by 1-2 per entry.
+    const text = textLines.map(l => l.replace(/^\*\*\[\d{2}:\d{2}:\d{2}\](?:\s+[^\[\]*]+:)?\*\*\s*/, "")).join(" ");
     const wordCount = text.split(/\s+/).filter(Boolean).length;
 
     return { durationSeconds, wordCount, talkTime: parseTalkTimeMarkdown(raw) };
@@ -404,6 +408,9 @@ export async function generateDashboard(outputPath?: string): Promise<void> {
 
   const html = generateHTML(meetings);
   const out = expandPath(outputPath ?? "~/Meetings/dashboard.html");
+  // A custom --output path may not exist yet (e.g. writing to a fresh reports
+  // dir) — without this the write throws ENOENT instead of producing a file.
+  await mkdir(dirname(out), { recursive: true });
   await writeFile(out, html, "utf-8");
   console.log(chalk.green(`Dashboard generated: ${out}`));
 }

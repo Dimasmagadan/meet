@@ -171,6 +171,11 @@ class SystemAudioCapture {
                         self.onChunkFinalized(name)
                     }
                     try self.wavWriter.startChunk()
+                    // A clean finalize+reopen proves storage is healthy again,
+                    // so the error budget is consecutive failures, not a
+                    // lifetime total (B7: isolated blips in a long meeting
+                    // otherwise halted the stream permanently).
+                    self.writerErrorCount = 0
                 }
             } catch {
                 self.writerErrorCount += 1
@@ -187,7 +192,9 @@ class SystemAudioCapture {
                 do {
                     self.wavWriter.abortCurrentChunk(preserveTemporary: true)
                     try self.wavWriter.startChunk()
-                    logJSON("warning", "sys_writer_recovered", ["attempt": self.writerErrorCount])
+                    let attempt = self.writerErrorCount
+                    self.writerErrorCount = 0
+                    logJSON("warning", "sys_writer_recovered", ["attempt": attempt])
                 } catch {
                     fputs("SystemAudioCapture writer recovery failed: \(error)\n", stderr)
                 }

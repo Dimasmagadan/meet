@@ -8,6 +8,13 @@ export interface TalkTimeStats {
 
 export interface ComputeTalkTimeParams {
   entryRecords: EntryRecord[];
+  // Keys ("${source}-${paddedIndex}") of chunks whose text survived to the
+  // final transcript. The default quit paths (q/Ctrl-C/auto-stop) drain via
+  // pipeline.close() rather than stop(), so the final pass is the only
+  // witness that those chunks were audible — entries.jsonl has no record for
+  // them and the raw chunk count would undercount talk time. Same signal
+  // mic-echo.ts uses for its own fallback.
+  textChunkKeys?: Set<string>;
   chunkDurationSeconds: number;
   micRmsThresholdDb: number;
   sysRmsThresholdDb: number;
@@ -22,19 +29,35 @@ function activeChunkSeconds(
   source: "mic" | "sys",
   thresholdDb: number,
   chunkDurationSeconds: number,
+  textChunkKeys?: Set<string>,
 ): number {
-  const count = entryRecords.filter((r) => r.source === source && r.rmsDb >= thresholdDb).length;
-  return count * chunkDurationSeconds;
+  // Union, not sum: a chunk can have both a stored RMS record and surviving
+  // transcript text and must count once.
+  const counted = new Set<string>();
+  for (const r of entryRecords) {
+    if (r.source === source && r.rmsDb >= thresholdDb) {
+      counted.add(`${r.source}-${String(r.index).padStart(3, "0")}`);
+    }
+  }
+  if (textChunkKeys) {
+    for (const key of textChunkKeys) {
+      if (key.startsWith(`${source}-`)) counted.add(key);
+    }
+  }
+  return counted.size * chunkDurationSeconds;
 }
 
-function speakerSortKey(label: string): number {
+// Sort order for speaker rows/lists: "Me" first, then Speaker 1..N, then
+// anything else. speaker-rename.ts shares this for its "available speakers"
+// error listing.
+export function speakerSortKey(label: string): number {
   if (label === "Me") return -1;
   const m = /^Speaker (\d+)$/.exec(label);
   return m ? parseInt(m[1], 10) : Infinity;
 }
 
 export function computeTalkTime(params: ComputeTalkTimeParams): TalkTimeStats {
-  const { entryRecords, chunkDurationSeconds, micRmsThresholdDb, sysRmsThresholdDb, diarSegments } = params;
+  const { entryRecords, textChunkKeys, chunkDurationSeconds, micRmsThresholdDb, sysRmsThresholdDb, diarSegments } = params;
 
   // Mic-diarization (runMicDiarizationStep) already produced a diarization-derived
   // "Me" row among diarSegments when it split the mic channel into self/other —
@@ -43,7 +66,7 @@ export function computeTalkTime(params: ComputeTalkTimeParams): TalkTimeStats {
   const micWasDiarized = diarSegments.some((s) => s.speaker === "Me");
   const rows: Array<{ label: string; seconds: number }> = micWasDiarized
     ? []
-    : [{ label: "Me", seconds: activeChunkSeconds(entryRecords, "mic", micRmsThresholdDb, chunkDurationSeconds) }];
+    : [{ label: "Me", seconds: activeChunkSeconds(entryRecords, "mic", micRmsThresholdDb, chunkDurationSeconds, textChunkKeys) }];
 
   if (diarSegments.length > 0) {
     const bySpeaker = new Map<string, number>();
@@ -56,7 +79,7 @@ export function computeTalkTime(params: ComputeTalkTimeParams): TalkTimeStats {
       .sort((a, b) => speakerSortKey(a.label) - speakerSortKey(b.label));
     rows.push(...speakerRows);
   } else {
-    const othersSeconds = activeChunkSeconds(entryRecords, "sys", sysRmsThresholdDb, chunkDurationSeconds);
+    const othersSeconds = activeChunkSeconds(entryRecords, "sys", sysRmsThresholdDb, chunkDurationSeconds, textChunkKeys);
     rows.push({ label: "Others", seconds: othersSeconds });
   }
 

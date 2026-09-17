@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { expandPath } from "./paths.js";
 
 export const DEFAULT_TRIGGERS_PATH = resolve(import.meta.dirname, "..", "triggers.json");
 
@@ -96,10 +96,6 @@ function buildSnippet(text: string, matchIndex: number, matchLength: number): st
   const prefix = start > 0 ? "…" : "";
   const suffix = end < text.length ? "…" : "";
   return `${prefix}${text.slice(start, end)}${suffix}`;
-}
-
-function expandPath(p: string): string {
-  return p.startsWith("~/") || p === "~" ? p.replace(/^~/, homedir()) : p;
 }
 
 let _cached: Triggers | null = null;

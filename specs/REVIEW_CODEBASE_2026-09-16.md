@@ -138,7 +138,7 @@ Additional Swift findings (P3): `terminationHandler` assigned after `proc.run()`
 
 Calibration: overall comment density is healthy (2-17% per module), the EN/RU docs markers are byte-identical (verified by diff), and the place an AI would most plausibly hallucinate — the whisper.cpp `--metal` flag — is handled **correctly** in `compute-device.ts:29-31` and `cli.ts:580-584` (no flag emitted; `-ngl` correctly identified as llama.cpp). The slop is concentrated, not blanket.
 
-1. **Raw NUL bytes committed in source where `\0` escapes belong** — `diarization-ab.ts:44,51` each contain a literal NUL byte (`` `${p.speaker}<0x00>${o.speaker}` `` and `key.split("<0x00>")`). Works at runtime by accident; `file(1)` classifies the .ts as "data" and text tooling refuses the file. A human never checks in control characters.
+1. ~~**Raw NUL bytes committed in source where `\0` escapes belong** — `diarization-ab.ts:44,51` each contain a literal NUL byte (`` `${p.speaker}<0x00>${o.speaker}` `` and `key.split("<0x00>")`). Works at runtime by accident; `file(1)` classifies the .ts as "data" and text tooling refuses the file. A human never checks in control characters.~~ **RETRACTED — see verification pass below.** Current source uses a plain space-joined key (`` `${p.speaker} ${o.speaker}` `` / `key.split(" ")`); no NUL byte exists in the file (`grep -P '\x00' src/diarization-ab.ts` returns nothing). False positive, not a fixed-since-review case (no diff shows this line ever changing).
 2. **Comment claims two functions are identical; they aren't** — `summary.ts:264-273` opens "Format identical to assembler.ts:formatEntry — kept in sync", but `assembler.ts:37-46` resolves a mic label as `entry.speaker ?? "Me"` while summary hardcodes `entry.source === "mic" ? "Me" : (entry.speaker ?? "Others")` (`attention.ts:95` is a third copy). The same chunk renders "Speaker 2" in transcript.md, "Me" in summary.md, and "Me" in an attention recap.
 3. **Shipped transcripts reference a nonexistent command** — `meet summary --full` in `summary.ts:286,551` and `README.md:173`; no `summary` command exists in `cli.ts`, and `summary.test.ts:297` pins the dangling reference.
 4. **A whole speculative VAD subsystem** — `vad.ts` + 6 config keys (`types.ts:85-90`, `storage.ts:79-83`) + a wrapper wired into `transcriber.ts:163-168`. No VAD binary exists in `native/`, no CLI/UI surface, no docs; with `vadBin: ""` it can only ever return `{speech: true}`. Delete or build it.
@@ -164,4 +164,18 @@ Calibration: overall comment density is healthy (2-17% per module), the EN/RU do
 5. **B4/B5** (talk-time correctness) — the finalize drain question is architectural (A2); the spans fix is small.
 6. **B6-B11** + the outstanding 2026-09-11 items (recorder `'error'` listener + kill-in-catch, lock reclaim atomicity, `copyWavData`, status buckets).
 7. **Docs sync batch** — one pass over README/AGENTS/docs/docs-ru per the contract; consider generating the config table from `DEFAULT_CONFIG`.
-8. **Slop cleanup** — NUL bytes, `formatEntry` dedup, dead VAD, dangling `meet summary` reference, `expandPath` consolidation.
+8. **Slop cleanup** — `formatEntry` dedup, dead VAD, dangling `meet summary` reference, `expandPath` consolidation. (NUL-byte item dropped — see verification pass.)
+
+---
+
+## Verification pass — 2026-09-16 (second pass, against current source)
+
+Independent re-check of every P1/P2 bug (B1-B11), all 13 architecture findings, the test-coverage/engineering-practices facts, the Swift known-issues verdict table, and 5 of the 12 AI-slop findings. Four parallel read-only passes, each re-reading cited files/lines directly (not trusting the original citations).
+
+**Result: 33 of 34 checked items confirmed** (line numbers accurate or drifted by 1-3 lines from incidental edits since the review — substance unchanged in every case). **One retraction:**
+
+- **Slop finding #1 (NUL bytes in `diarization-ab.ts:44,51`) does not hold.** Current source pairs speakers with a plain space-joined string (`` `${p.speaker} ${o.speaker}` `` / `key.split(" ")`); `grep -P '\x00' src/diarization-ab.ts` finds nothing. No NUL byte exists in the file — this looks like a slop-pass hallucination rather than a since-fixed issue (nothing in `git log -p` on that line suggests a NUL byte was ever there). Struck through above.
+
+Everything else — B1's `droppedEcho`/`effectiveBaseEntries` gap, B2's commander negation trap (confirmed directly against `node_modules/commander`'s `Option`/`attributeName` logic) plus the `hasMeaningfulText` guard, B3's `queue: nil` config-change observer, B4-B11 in full, all 13 architecture findings including exact line counts (`finalize.ts` 984 lines, `recorder.ts` 853 lines), the coverage facts (81 files, 18,863 lines, 4 deps, 1 CI workflow), and the spot-checked Swift verdict rows — held up exactly as written.
+
+**Conclusion: the review is reliable.** Proceed with the suggested implementation order as-is, minus the NUL-byte cleanup item.

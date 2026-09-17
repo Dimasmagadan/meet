@@ -15,16 +15,15 @@ export function classifyRecordingSessions(
   return sessions
     .filter((session) => session.status !== "done")
     .map((session) => {
-      // "paused" covers both a paused live recording (togglePause — capture
-      // process stays alive, still owns the active lock) and a session
-      // waiting mid-finalization (waitForInactiveRecording/waitForGlobalFinalPassSlot).
-      // Both must be checked here or a paused recording whose controller dies
-      // is silently classified "stale", missed as an orphan by `meet start`.
-      const isRecordingOrPaused = session.status === "recording" || session.status === "paused";
-      if (isRecordingOrPaused && lock && resolve(lock.sessionDir) === resolve(session.sessionDir)) {
+      // "paused" is the user's pause (togglePause — the capture process stays
+      // alive and still owns the active lock). A finalize pass held back by an
+      // active recording uses the distinct "waiting" status, so this no longer
+      // needs to guess whether a "paused" session is live or mid-finalize.
+      const isLive = session.status === "recording" || session.status === "paused";
+      if (isLive && lock && resolve(lock.sessionDir) === resolve(session.sessionDir)) {
         return { kind: "active", session, lock } as RecordingState;
       }
-      if (isRecordingOrPaused && Number.isSafeInteger(session.capturePid) && session.capturePid! > 0 && isPidAlive(session.capturePid!)) {
+      if (isLive && Number.isSafeInteger(session.capturePid) && session.capturePid! > 0 && isPidAlive(session.capturePid!)) {
         return { kind: "orphan", session, capturePid: session.capturePid! } as RecordingState;
       }
       return { kind: "stale", session } as RecordingState;

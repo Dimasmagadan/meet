@@ -6,7 +6,6 @@ import {
   getSystemPressure,
   isWhisperRunning,
   isAudioAnalysisRunning,
-  whenNotOverloaded,
   makeDeadline,
   resolveGateThresholds,
   throttleHold,
@@ -175,63 +174,6 @@ describe("makeDeadline", () => {
     const d = makeDeadline(30);
     await new Promise((r) => setTimeout(r, 40));
     assert.strictEqual(d.remainingMs(), 0);
-  });
-});
-
-describe("whenNotOverloaded", () => {
-  it("resolves immediately when not overloaded (sensor called once)", async () => {
-    let calls = 0;
-    const sensor: PressureSensor = async () => {
-      calls++;
-      return makePressure({ overloaded: false });
-    };
-    const t0 = Date.now();
-    await whenNotOverloaded(makeDeadline(10_000), sensor);
-    const elapsed = Date.now() - t0;
-    assert.strictEqual(calls, 1);
-    assert.ok(elapsed < 50, `expected no wait, took ${elapsed}ms`);
-  });
-
-  it("awaits and re-polls while overloaded, then resolves once load drops", async () => {
-    let calls = 0;
-    const sensor: PressureSensor = async () => {
-      calls++;
-      return makePressure({ overloaded: calls < 3 });
-    };
-    const d = makeDeadline(10_000);
-    d.pollMs = 5;
-    await whenNotOverloaded(d, sensor);
-    assert.ok(calls >= 3, `expected >=3 sensor calls, got ${calls}`);
-  });
-
-  it("resolves once the pass budget is exhausted even if still overloaded", async () => {
-    let calls = 0;
-    const sensor: PressureSensor = async () => {
-      calls++;
-      return makePressure({ overloaded: true, reason: "cpu 9.0/8c" });
-    };
-    const d = makeDeadline(40);
-    d.pollMs = 5;
-    const t0 = Date.now();
-    await whenNotOverloaded(d, sensor);
-    const elapsed = Date.now() - t0;
-    // Budget bounds total wait: ~40ms (+ a little slop), never the 10s default.
-    assert.ok(elapsed < 500, `expected ~40ms budget-bound wait, took ${elapsed}ms`);
-    assert.ok(d.remainingMs() === 0);
-    assert.ok(calls >= 2);
-  });
-
-  it("fail-opens immediately when the sensor throws", async () => {
-    let calls = 0;
-    const sensor: PressureSensor = async () => {
-      calls++;
-      throw new Error("sensor unavailable");
-    };
-    const t0 = Date.now();
-    await whenNotOverloaded(makeDeadline(10_000), sensor);
-    const elapsed = Date.now() - t0;
-    assert.strictEqual(calls, 1);
-    assert.ok(elapsed < 50, `expected no wait, took ${elapsed}ms`);
   });
 });
 

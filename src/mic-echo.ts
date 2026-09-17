@@ -5,6 +5,7 @@ import type { ChunkOffset, DiarSegment } from "./diarization.js";
 import { cleanupMicConcat, concatMicChunks } from "./diarization.js";
 import { runEmbedder } from "./live-speakers.js";
 import {
+  AMBIGUITY_MARGIN,
   cosineSimilarity,
   isValidEmbedding,
   loadRegistry,
@@ -35,7 +36,9 @@ const BACKEND: SpeakerBackend = "diarizer-manager";
 // Chunk-level voiceprints compared against single-speaker centroids are
 // degraded by the speaker -> room -> mic path, so the bar sits below
 // speakerMatchThreshold (0.75) — same rationale as liveSpeakerMatchThreshold.
-const AMBIGUITY_MARGIN = 0.05;
+// AMBIGUITY_MARGIN is the exported one from speaker-registry (same 0.05, same
+// top-2 gap guard) — this path is read-only, so it shares the single tuning
+// knob instead of a private twin.
 
 const EMPTY_REGISTRY: SpeakerRegistry = { version: 1, speakers: [] };
 
@@ -237,7 +240,7 @@ export async function runMicEchoAttributionStep(
       const textIndices = new Set(
         entries.filter((e) => e.source === "mic" && e.text).map((e) => e.chunkIndex),
       );
-      micSegments = buildMicSegments(offsets, attributed, storedRmsMap, textIndices, config.micRmsThresholdDb);
+      micSegments = buildMicSegments(offsets, attributed, drops, storedRmsMap, textIndices, config.micRmsThresholdDb);
     } finally {
       await cleanupMicConcat(session.sessionDir);
     }
@@ -275,12 +278,17 @@ export async function runMicEchoAttributionStep(
 function buildMicSegments(
   offsets: Map<number, ChunkOffset>,
   attributed: Map<number, string>,
+  // Chunks dropped as echo-covered: the sys timeline already accounts for this
+  // speech under the same canonical "Speaker N", so emitting a mic-timeline
+  // span for it too lets computeTalkTime double-count the same audio (B5).
+  drops: Set<number>,
   storedRmsMap: Map<string, number>,
   micTextIndices: Set<number>,
   micRmsThresholdDb: number,
 ): DiarSegment[] {
   const segments: DiarSegment[] = [];
   for (const [index, range] of offsets) {
+    if (drops.has(index)) continue;
     const label = attributed.get(index);
     if (!label) {
       const rmsDb = storedRmsMap.get(`mic-${String(index).padStart(3, "0")}`);

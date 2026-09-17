@@ -24,10 +24,10 @@ export function showStatus(): void {
   const orphaned = recordingStates.filter((state) => state.kind === "orphan");
 
   const activeFinalizers = sessions.filter(
-    (s) => (s.status === "finalizing" || s.status === "paused") && readFinalizerLock(s.sessionDir) !== null
+    (s) => (s.status === "finalizing" || s.status === "waiting") && readFinalizerLock(s.sessionDir) !== null
   );
   const queued = sessions.filter(
-    (s) => s.status === "queued" || ((s.status === "finalizing" || s.status === "paused") && readFinalizerLock(s.sessionDir) === null)
+    (s) => s.status === "queued" || ((s.status === "finalizing" || s.status === "waiting") && readFinalizerLock(s.sessionDir) === null)
   );
   const errors = sessions.filter((s) => s.status === "error");
   const stopped = sessions.filter((s) => s.status === "stopped");
@@ -76,8 +76,8 @@ export function showStatus(): void {
       const progress = s.finalize;
       let progressStr = "";
       if (progress) {
-        const phaseStr = progress.phase === "paused"
-          ? chalk.yellow("paused")
+        const phaseStr = progress.phase === "waiting"
+          ? chalk.yellow("waiting")
           : progress.phase;
         progressStr = `  ${phaseStr} ${progress.done}/${progress.total}`;
         if (progress.message) progressStr += `  ${progress.message}`;

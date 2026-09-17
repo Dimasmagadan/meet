@@ -167,6 +167,41 @@ test("filterStoredEntriesByAudio", async (t) => {
       rmSync(sessionDir, { recursive: true, force: true });
     }
   });
+
+  // B11: a mic chunk relabeled "Speaker N" by mic-diarization/mic-echo parses
+  // back from markdown as sys; without a sys-NNN.wav it was scored -Infinity
+  // and its text dropped from the recovered transcript.
+  await t.test("repairs a relabeled mic entry whose parsed sys WAV is absent (B11)", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-filter-stored-"));
+    try {
+      const session = makeSession(sessionDir);
+      writeFileSync(join(sessionDir, "mic-001.wav"), makeSineWav(440, 16000, 16000, 0.9));
+      const entries: TranscriptEntry[] = [
+        { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "удалённый голос через микрофон", speaker: "Speaker 1" },
+      ];
+      const result = await filterStoredEntriesByAudio(entries, new Map(), session, DEFAULT_CONFIG);
+      assert.deepStrictEqual(result, [
+        { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "удалённый голос через микрофон", speaker: "Speaker 1" },
+      ]);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("leaves a correctly-attributed sys entry alone when its WAV exists", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-filter-stored-"));
+    try {
+      const session = makeSession(sessionDir);
+      writeFileSync(join(sessionDir, "sys-002.wav"), makeSineWav(440, 16000, 16000, 0.9));
+      const entries: TranscriptEntry[] = [
+        { source: "sys", chunkIndex: 2, timestamp: "14:30:15", text: "настоящий системный звук", speaker: "Speaker 1" },
+      ];
+      const result = await filterStoredEntriesByAudio(entries, new Map(), session, DEFAULT_CONFIG);
+      assert.deepStrictEqual(result, entries);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
 });
 
 test("runDiarizationStep", async (t) => {

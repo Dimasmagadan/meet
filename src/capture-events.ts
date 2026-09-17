@@ -3,7 +3,12 @@ export type CaptureEvent =
   | { level: "info"; event: "chunk_finalized"; source: "mic" | "sys"; filename: string; index: number; t: number }
   | { level: "info" | "warning" | "error"; event: "stream_started"; source: "mic" | "sys"; t: number }
   | { level: "info" | "warning" | "error"; event: "stream_error"; source?: "mic" | "sys"; message: string; t: number }
-  | { level: "info"; event: "capture_stopped"; t: number }
+  | { level: "info" | "warning" | "error"; event: "capture_stopped"; t: number; reason?: string }
+  // Unknown/future events from the Swift capture. `event: string` is
+  // deliberate — a closed union would make the parser reject events a newer
+  // AudioCapture emits. The cost is that `ev.event === "chunk_finalized"`
+  // cannot narrow through this member, so use isChunkFinalized()/eventMessage()
+  // rather than `as any` at call sites.
   | { level: "info" | "warning" | "error"; event: string; t: number; [key: string]: unknown };
 
 export type ChunkFinalizedEvent = {
@@ -14,6 +19,19 @@ export type ChunkFinalizedEvent = {
   index: number;
   t: number;
 };
+
+// Type predicate — the only place the union's catch-all member is pierced.
+export function isChunkFinalized(ev: CaptureEvent): ev is ChunkFinalizedEvent {
+  return ev.event === "chunk_finalized";
+}
+
+// Prefers the structured message (stream_error emits one); otherwise the
+// event name is the best available summary. Only `stream_error` and the
+// catch-all member carry `message`, so this is the one contained cast.
+export function eventMessage(ev: CaptureEvent): string {
+  const msg = (ev as { [key: string]: unknown }).message;
+  return typeof msg === "string" && msg.length > 0 ? msg : ev.event;
+}
 
 function isValidChunkSource(s: unknown): s is "mic" | "sys" {
   return s === "mic" || s === "sys";

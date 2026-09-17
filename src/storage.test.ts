@@ -1,9 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { generateSlug, formatStartTime, getOutputDir, getOutputPath, reserveOutputDir, expandPath, findStaleSessions, getSessionsDir, sanitizeFileConfig } from "./storage.js";
+import { generateSlug, formatStartTime, getOutputDir, getOutputPath, reserveOutputDir, expandPath, findStaleSessions, getSessionsDir, sanitizeFileConfig, loadConfig, updateConfigFile } from "./storage.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import { join } from "node:path";
-import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { Session } from "./types.js";
@@ -218,5 +218,39 @@ describe("findStaleSessions", () => {
       "utf-8"
     );
     assert.ok(!findStaleSessions().includes(sessionDir));
+  });
+});
+
+describe("loadConfig mtime guard", () => {
+  const configPath = join(getSessionsDir(), "..", "config.json");
+  let original: string | null = null;
+
+  beforeEach(() => {
+    if (existsSync(configPath)) original = readFileSync(configPath, "utf-8");
+  });
+
+  afterEach(() => {
+    // Restore the user's real config.json — this test writes through the
+    // normal path so the mtime guard must observe it.
+    if (original !== null) {
+      writeFileSync(configPath, original, "utf-8");
+      original = null;
+    } else {
+      try { unlinkSync(configPath); } catch {}
+    }
+  });
+
+  it("picks up a value written through updateConfigFile", async () => {
+    await updateConfigFile({ outputDir: "~/meet-test-mtime-" + Date.now() });
+    const config = loadConfig();
+    assert.ok(config.outputDir.startsWith("~/meet-test-mtime-"), "mtime guard did not observe the write");
+  });
+
+  it("reuses the cached parse when the file is unchanged", async () => {
+    await updateConfigFile({ language: "ru" });
+    const first = loadConfig();
+    const second = loadConfig();
+    assert.strictEqual(first.language, second.language);
+    assert.strictEqual(second.language, "ru");
   });
 });
