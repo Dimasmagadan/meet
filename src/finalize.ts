@@ -119,6 +119,7 @@ export async function filterStoredEntriesByAudio(
   stored: Map<string, number>,
   session: Session,
   config: Config,
+  recoveredSources = new Map<string, "mic" | "sys">(),
 ): Promise<TranscriptEntry[]> {
   const filtered: TranscriptEntry[] = [];
 
@@ -132,16 +133,17 @@ export async function filterStoredEntriesByAudio(
     // exist (mic mode has none), scored -Infinity and dropped — losing the
     // text. Recover it to the source whose WAV actually exists.
     //
-    // Mic mode only: in full mode a sys entry whose sys WAV is missing is a
-    // genuine capture/write failure, not a round-trip artifact — reattributing
-    // it to mic would silently relabel real remote speech as "Me" and mask the
-    // failure. Keep the declared source and let the RMS fallback below drop it.
-    if (
-      session.mode === "mic" &&
-      !existsSync(join(session.sessionDir, `${source}-${indexKey}.wav`))
-    ) {
+    // In full mode, only trust the persisted entry assignment from a prior
+    // finalization. A missing sys WAV alone is ambiguous: it could be a lost
+    // remote-audio chunk or a mic entry rendered under a Speaker N label.
+    if (!existsSync(join(session.sessionDir, `${source}-${indexKey}.wav`))) {
       const other: "mic" | "sys" = source === "mic" ? "sys" : "mic";
-      if (existsSync(join(session.sessionDir, `${other}-${indexKey}.wav`))) {
+      const assignmentKey = entry.speaker ? `${entry.chunkIndex}\u0000${entry.speaker}` : "";
+      const assignedSource = recoveredSources.get(assignmentKey);
+      if (
+        existsSync(join(session.sessionDir, `${other}-${indexKey}.wav`)) &&
+        (session.mode === "mic" || assignedSource === other)
+      ) {
         source = other;
       }
     }
@@ -162,6 +164,33 @@ export async function filterStoredEntriesByAudio(
   }
 
   return filtered;
+}
+
+async function readRecoveredSources(outputFile: string): Promise<Map<string, "mic" | "sys">> {
+  try {
+    const raw = JSON.parse(await readFile(join(dirname(outputFile), "speakers.json"), "utf-8")) as {
+      speakerNames?: Record<string, string>;
+      entryAssignments?: Array<{ source?: "mic" | "sys"; chunkIndex?: number; speaker?: string | null }>;
+    };
+    const canonicalByLabel = new Map<string, string>();
+    const labelByCanonical = new Map<string, string>();
+    for (const [canonical, label] of Object.entries(raw.speakerNames ?? {})) {
+      canonicalByLabel.set(label, canonical);
+      labelByCanonical.set(canonical, label);
+    }
+    const sources = new Map<string, "mic" | "sys">();
+    for (const assignment of raw.entryAssignments ?? []) {
+      if (!assignment.source || !Number.isSafeInteger(assignment.chunkIndex) || !assignment.speaker) continue;
+      const canonical = canonicalByLabel.get(assignment.speaker) ?? assignment.speaker;
+      sources.set(`${assignment.chunkIndex}\u0000${canonical}`, assignment.source);
+      sources.set(`${assignment.chunkIndex}\u0000${assignment.speaker}`, assignment.source);
+      const displayLabel = labelByCanonical.get(canonical);
+      if (displayLabel) sources.set(`${assignment.chunkIndex}\u0000${displayLabel}`, assignment.source);
+    }
+    return sources;
+  } catch {
+    return new Map();
+  }
 }
 
 // Recovery merge: entriesFromSession only covers chunks listed as done in
@@ -802,7 +831,8 @@ export async function finalizeSession(
     // fallback when the final pass is unavailable/fails, and as the safety-net
     // comparison below (previously compared only against markdown, which is
     // empty whenever entries.jsonl exists).
-    const baseEntries = await filterStoredEntriesByAudio(sessionEntries, storedRmsMap, session, config);
+    const recoveredSources = await readRecoveredSources(session.outputFile);
+    const baseEntries = await filterStoredEntriesByAudio(sessionEntries, storedRmsMap, session, config, recoveredSources);
 
     const fallbackAudioEntries = async (): Promise<TranscriptEntry[]> => {
       if (baseEntries.length > 0) return baseEntries;

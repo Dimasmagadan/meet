@@ -206,6 +206,24 @@ test("filterStoredEntriesByAudio", async (t) => {
     }
   });
 
+  await t.test("reattributes a full-mode Speaker N entry when speakers.json records it as mic", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-filter-stored-"));
+    try {
+      const session = makeSession(sessionDir);
+      writeFileSync(join(sessionDir, "mic-001.wav"), makeSineWav(440, 16000, 16000, 0.9));
+      const entries: TranscriptEntry[] = [
+        { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "голос через микрофон", speaker: "Speaker 1" },
+      ];
+      const recoveredSources = new Map([["1\u0000Speaker 1", "mic" as const]]);
+      const result = await filterStoredEntriesByAudio(entries, new Map(), session, DEFAULT_CONFIG, recoveredSources);
+      assert.deepStrictEqual(result, [
+        { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "голос через микрофон", speaker: "Speaker 1" },
+      ]);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
   await t.test("leaves a correctly-attributed sys entry alone when its WAV exists", async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-filter-stored-"));
     try {
