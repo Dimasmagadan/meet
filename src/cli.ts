@@ -88,8 +88,12 @@ export function createProgram(): Command {
     .action(async (sessionDir: string, opts: { background?: boolean }) => {
       if (opts.background) {
         const pid = spawnBackgroundFinalizer(sessionDir);
-        console.log(chalk.green(`Background finalizer started${pid !== undefined ? ` (pid ${pid})` : ""}`));
-        console.log(chalk.gray(`Progress: meet status`));
+        if (pid === undefined) {
+          console.log(chalk.red("Background finalizer failed to start (node binary or entry point missing) — run in the foreground to finalize"));
+        } else {
+          console.log(chalk.green(`Background finalizer started (pid ${pid})`));
+          console.log(chalk.gray(`Progress: meet status`));
+        }
       } else {
         await runForegroundFinalize(sessionDir);
       }

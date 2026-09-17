@@ -14,10 +14,18 @@ export interface ComputeTalkTimeParams {
   // witness that those chunks were audible — entries.jsonl has no record for
   // them and the raw chunk count would undercount talk time. Same signal
   // mic-echo.ts uses for its own fallback.
-  textChunkKeys?: Set<string>;
+  textChunkKeys: Set<string>;
   chunkDurationSeconds: number;
   micRmsThresholdDb: number;
   sysRmsThresholdDb: number;
+  // True when the mic channel was segmented by mic-diarization or mic-echo
+  // attribution, so diarSegments already accounts for every audible mic span
+  // (attributed chunks as "Speaker N", the rest as "Me" — buildMicSegments
+  // emits both). Without this, a full mic leak (every mic chunk attributed)
+  // leaves no "Me" segment, this flag reads false, and the chunk-count
+  // fallback re-counts the same relabeled mic keys toward "Me" while
+  // diarSegments already sums them into a remote speaker.
+  micSegmented?: boolean;
   // Relabeled ("Speaker 1", ...) diarization segments; empty when diarization
   // is disabled or failed, in which case sys talk time falls back to the same
   // chunk-counting method used for mic, reported as a single "Others" row.
@@ -29,7 +37,7 @@ function activeChunkSeconds(
   source: "mic" | "sys",
   thresholdDb: number,
   chunkDurationSeconds: number,
-  textChunkKeys?: Set<string>,
+  textChunkKeys: Set<string>,
 ): number {
   // Union, not sum: a chunk can have both a stored RMS record and surviving
   // transcript text and must count once.
@@ -39,10 +47,8 @@ function activeChunkSeconds(
       counted.add(`${r.source}-${String(r.index).padStart(3, "0")}`);
     }
   }
-  if (textChunkKeys) {
-    for (const key of textChunkKeys) {
-      if (key.startsWith(`${source}-`)) counted.add(key);
-    }
+  for (const key of textChunkKeys) {
+    if (key.startsWith(`${source}-`)) counted.add(key);
   }
   return counted.size * chunkDurationSeconds;
 }
@@ -57,13 +63,16 @@ export function speakerSortKey(label: string): number {
 }
 
 export function computeTalkTime(params: ComputeTalkTimeParams): TalkTimeStats {
-  const { entryRecords, textChunkKeys, chunkDurationSeconds, micRmsThresholdDb, sysRmsThresholdDb, diarSegments } = params;
+  const { entryRecords, textChunkKeys, chunkDurationSeconds, micRmsThresholdDb, sysRmsThresholdDb, diarSegments, micSegmented } = params;
 
   // Mic-diarization (runMicDiarizationStep) already produced a diarization-derived
   // "Me" row among diarSegments when it split the mic channel into self/other —
   // using that instead of the raw chunk count avoids counting the other party's
-  // mic time as "Me".
-  const micWasDiarized = diarSegments.some((s) => s.speaker === "Me");
+  // mic time as "Me". micSegmented covers the full-leak case mic-diarization
+  // can't express: when mic-echo attributed every audible mic chunk there is no
+  // "Me" segment at all, but the raw fallback would re-count those same
+  // (still source:"mic") keys toward "Me" on top of their "Speaker N" row.
+  const micWasDiarized = micSegmented === true || diarSegments.some((s) => s.speaker === "Me");
   const rows: Array<{ label: string; seconds: number }> = micWasDiarized
     ? []
     : [{ label: "Me", seconds: activeChunkSeconds(entryRecords, "mic", micRmsThresholdDb, chunkDurationSeconds, textChunkKeys) }];

@@ -131,7 +131,15 @@ export async function filterStoredEntriesByAudio(
     // crash-recovery path that entry then looks for a sys-NNN.wav that doesn't
     // exist (mic mode has none), scored -Infinity and dropped — losing the
     // text. Recover it to the source whose WAV actually exists.
-    if (!existsSync(join(session.sessionDir, `${source}-${indexKey}.wav`))) {
+    //
+    // Mic mode only: in full mode a sys entry whose sys WAV is missing is a
+    // genuine capture/write failure, not a round-trip artifact — reattributing
+    // it to mic would silently relabel real remote speech as "Me" and mask the
+    // failure. Keep the declared source and let the RMS fallback below drop it.
+    if (
+      session.mode === "mic" &&
+      !existsSync(join(session.sessionDir, `${source}-${indexKey}.wav`))
+    ) {
       const other: "mic" | "sys" = source === "mic" ? "sys" : "mic";
       if (existsSync(join(session.sessionDir, `${other}-${indexKey}.wav`))) {
         source = other;
@@ -904,6 +912,11 @@ export async function finalizeSession(
           : echoOutcome.micSegments.length > 0
             ? [...segments, ...echoOutcome.micSegments]
             : segments;
+        // Either mic pass segmenting the channel means diarSegments already
+        // accounts for every audible mic span — the chunk-count fallback in
+        // computeTalkTime must then be skipped or it double-counts relabeled
+        // (still source:"mic") keys toward "Me".
+        const micSegmented = micOutcome.micDiarSegments.length > 0 || echoOutcome.micSegments.length > 0;
         const mergedLabelOverrides = new Map([...labelOverrides, ...micOutcome.labelOverrides]);
 
         const talkTime = applyLabelOverridesToTalkTime(
@@ -920,6 +933,7 @@ export async function finalizeSession(
             micRmsThresholdDb: config.micRmsThresholdDb,
             sysRmsThresholdDb: config.sysRmsThresholdDb,
             diarSegments: talkTimeDiarSegments,
+            micSegmented,
           }),
           mergedLabelOverrides,
         );

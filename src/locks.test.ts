@@ -1,9 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { acquireFinalizerLock, releaseFinalizerLock, isPidAlive, readFinalizerLock, acquireRegistryLock, releaseRegistryLock } from "./locks.js";
+import { acquireFinalizerLock, releaseFinalizerLock, isPidAlive, readFinalizerLock, acquireRegistryLock, releaseRegistryLock, releaseAllRegistryLocks } from "./locks.js";
 import { getSessionsDir } from "./storage.js";
 
 describe("isPidAlive", () => {
@@ -133,9 +133,9 @@ describe("readFinalizerLock", () => {
 
 describe("acquireRegistryLock", () => {
   afterEach(() => {
-    // A leaked registry lock would block every later test that touches the
-    // registry, so always release.
-    releaseRegistryLock();
+    // A leaked registry lock (or a leaked nesting level) would block every
+    // later test that touches the registry, so drain the whole depth.
+    releaseAllRegistryLocks();
   });
 
   it("acquires when no lock exists", () => {
@@ -145,6 +145,31 @@ describe("acquireRegistryLock", () => {
   it("is re-entrant: a second acquire from the same process succeeds", () => {
     assert.strictEqual(acquireRegistryLock("test-a"), true);
     assert.strictEqual(acquireRegistryLock("test-b"), true);
+  });
+
+  it("nested release does not unlink the lock while the outer hold continues", () => {
+    const lockPath = join(getSessionsDir(), "registry.lock");
+    assert.strictEqual(acquireRegistryLock("outer"), true);
+    assert.strictEqual(acquireRegistryLock("inner"), true);
+    releaseRegistryLock(); // inner
+    // Outer still holds it — the file must still name us and re-acquire stays true.
+    assert.ok(existsSync(lockPath), "nested release unlinked the outer holder's lock");
+    assert.strictEqual(acquireRegistryLock("inner-2"), true);
+  });
+
+  it("release without a successful acquire is a no-op", () => {
+    // finalize.ts' registry steps call releaseRegistryLock() from a finally
+    // even when the acquire returned false — that must not drop another
+    // process's lock.
+    const lockPath = join(getSessionsDir(), "registry.lock");
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 99999998, token: "someone-else", reason: "concurrent rename", startedAt: new Date().toISOString() }),
+      "utf-8",
+    );
+    releaseRegistryLock();
+    const held = readFileSync(lockPath, "utf-8");
+    assert.ok(held.includes("someone-else"), "release dropped a lock we never acquired");
   });
 
   it("reclaiming a stale lock from a dead pid succeeds", () => {

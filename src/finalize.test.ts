@@ -174,7 +174,7 @@ test("filterStoredEntriesByAudio", async (t) => {
   await t.test("repairs a relabeled mic entry whose parsed sys WAV is absent (B11)", async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-filter-stored-"));
     try {
-      const session = makeSession(sessionDir);
+      const session = { ...makeSession(sessionDir), mode: "mic" as const };
       writeFileSync(join(sessionDir, "mic-001.wav"), makeSineWav(440, 16000, 16000, 0.9));
       const entries: TranscriptEntry[] = [
         { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "удалённый голос через микрофон", speaker: "Speaker 1" },
@@ -183,6 +183,24 @@ test("filterStoredEntriesByAudio", async (t) => {
       assert.deepStrictEqual(result, [
         { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "удалённый голос через микрофон", speaker: "Speaker 1" },
       ]);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  // The B11 repair must not fire in full mode: there a sys entry with a missing
+  // sys WAV is a real capture failure, and reattributing it to mic would mask
+  // it by silently relabeling remote speech as "Me".
+  await t.test("does not reattribute a full-mode sys entry whose WAV is missing", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-filter-stored-"));
+    try {
+      const session = makeSession(sessionDir);
+      writeFileSync(join(sessionDir, "mic-001.wav"), makeSineWav(440, 16000, 16000, 0.9));
+      const entries: TranscriptEntry[] = [
+        { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "настоящий системный звук", speaker: "Speaker 1" },
+      ];
+      const result = await filterStoredEntriesByAudio(entries, new Map(), session, DEFAULT_CONFIG);
+      assert.deepStrictEqual(result, []);
     } finally {
       rmSync(sessionDir, { recursive: true, force: true });
     }

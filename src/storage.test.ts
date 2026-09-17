@@ -1,9 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { generateSlug, formatStartTime, getOutputDir, getOutputPath, reserveOutputDir, expandPath, findStaleSessions, getSessionsDir, sanitizeFileConfig, loadConfig, updateConfigFile } from "./storage.js";
+import { generateSlug, formatStartTime, getOutputDir, getOutputPath, reserveOutputDir, expandPath, findStaleSessions, getSessionsDir, sanitizeFileConfig, loadConfig, updateConfigFile, setConfigPathForTest } from "./storage.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import { join } from "node:path";
-import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, unlinkSync, mkdtempSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { Session } from "./types.js";
@@ -222,22 +222,20 @@ describe("findStaleSessions", () => {
 });
 
 describe("loadConfig mtime guard", () => {
-  const configPath = join(getSessionsDir(), "..", "config.json");
-  let original: string | null = null;
+  // Redirected to a temp dir so the suite never backs up/restores the user's
+  // real ~/.meet/config.json — a crash mid-test would leave it clobbered.
+  let configDir: string;
+  let configPath: string;
 
   beforeEach(() => {
-    if (existsSync(configPath)) original = readFileSync(configPath, "utf-8");
+    configDir = mkdtempSync(join(tmpdir(), "meet-test-config-"));
+    configPath = join(configDir, "config.json");
+    setConfigPathForTest(configPath);
   });
 
   afterEach(() => {
-    // Restore the user's real config.json — this test writes through the
-    // normal path so the mtime guard must observe it.
-    if (original !== null) {
-      writeFileSync(configPath, original, "utf-8");
-      original = null;
-    } else {
-      try { unlinkSync(configPath); } catch {}
-    }
+    setConfigPathForTest(null);
+    rmSync(configDir, { recursive: true, force: true });
   });
 
   it("picks up a value written through updateConfigFile", async () => {
@@ -252,5 +250,24 @@ describe("loadConfig mtime guard", () => {
     const second = loadConfig();
     assert.strictEqual(first.language, second.language);
     assert.strictEqual(second.language, "ru");
+  });
+
+  it("does not re-read an unparseable config on every call", async () => {
+    // A malformed file must degrade to the last known-good values without
+    // re-reading + re-parsing it on every per-chunk loadConfig().
+    writeFileSync(configPath, "{ not json", "utf-8");
+    const first = loadConfig();
+    const second = loadConfig();
+    assert.strictEqual(first.language, DEFAULT_CONFIG.language);
+    assert.strictEqual(second.language, DEFAULT_CONFIG.language);
+  });
+
+  it("recovers once the malformed file is fixed", async () => {
+    writeFileSync(configPath, "{ not json", "utf-8");
+    assert.strictEqual(loadConfig().language, DEFAULT_CONFIG.language);
+    // Corrected by hand (updateConfigFile can't patch a file it can't parse) —
+    // the mtime moved, so the guard must re-read and pick the new value up.
+    writeFileSync(configPath, JSON.stringify({ language: "ru" }), "utf-8");
+    assert.strictEqual(loadConfig().language, "ru");
   });
 });

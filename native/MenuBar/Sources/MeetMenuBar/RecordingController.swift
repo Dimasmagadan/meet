@@ -237,10 +237,14 @@ class RecordingController {
         // stale lock whose PID names an unrelated app — attaching would then
         // deliver our Pause/Stop/Extend signals to that app. The recorder is
         // always `node dist/main.js`, so a live lock PID must name node (B9).
+        // ps failing (nil comm) can't disprove that, so stay fail-open and
+        // attach — sendSignal re-checks before every kill anyway, and refusing
+        // here would silently drop every attach on a ps-restricted machine.
         guard let json = ActiveLock.read(),
               let pid = json["pid"] as? Int32,
-              isPidAlive(pid),
-              isNodeProcess(pid) else { return }
+              isPidAlive(pid) else { return }
+
+        if let comm = processComm(pid), !isNodeComm(comm) { return }
 
         attachedPid = pid
         terminationHandled = false
@@ -278,7 +282,7 @@ class RecordingController {
         // unrelated app — signalling it would Pause/Stop some other process,
         // so treat the session as stale instead. ps failing or a dead PID
         // stays fail-open: kill() on a dead PID is a harmless no-op.
-        if let comm = processComm(pid), comm != "node", !comm.hasSuffix("/node") {
+        if let comm = processComm(pid), !isNodeComm(comm) {
             handleTermination()
             return
         }
@@ -309,8 +313,10 @@ class RecordingController {
         }
     }
 
-    private func isNodeProcess(_ pid: pid_t) -> Bool {
-        guard let comm = processComm(pid) else { return false }
+    // Shared by attach (fail-closed only on a confirmed non-node comm) and
+    // sendSignal's per-kill re-check.
+    private func isNodeComm(_ comm: String?) -> Bool {
+        guard let comm else { return false }
         return comm == "node" || comm.hasSuffix("/node")
     }
 

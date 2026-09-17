@@ -325,6 +325,12 @@ export interface RegistryLock {
 }
 
 let registryLockToken: string | null = null;
+// Re-entrant acquire nesting. Without this, a nested acquire (which shares
+// the one module-global token) returns true and the matching release unlinks
+// the lock while an outer holder still needs it — and both finalize.ts
+// registry steps call releaseRegistryLock() from a finally even when the
+// acquire failed, which would otherwise unlink a lock we never owned.
+let registryLockDepth = 0;
 
 function registryLockPath(): string {
   return join(sessionsDir(), "registry.lock");
@@ -342,6 +348,7 @@ export function acquireRegistryLock(reason: string): boolean {
 
   if (publishLockAtomically(lockPath, lockData)) {
     registryLockToken = token;
+    registryLockDepth = 1;
     return true;
   }
 
@@ -349,16 +356,29 @@ export function acquireRegistryLock(reason: string): boolean {
   // rename nested inside a finalize-registry step in the same process).
   try {
     const existing = JSON.parse(readFileSync(lockPath, "utf-8")) as RegistryLock;
-    if (existing.pid === process.pid && existing.token === registryLockToken) return true;
+    if (existing.pid === process.pid && existing.token === registryLockToken) {
+      registryLockDepth += 1;
+      return true;
+    }
     if (existing && isPidAlive(existing.pid, { comm: "node" })) return false;
   } catch {}
 
   if (!cleanStaleLock(lockPath) || !publishLockAtomically(lockPath, lockData)) return false;
   registryLockToken = token;
+  registryLockDepth = 1;
   return true;
 }
 
 export function releaseRegistryLock(): void {
+  // Never acquired, or a finally ran after a failed acquire: unlinking here
+  // would drop a lock owned by another process.
+  if (registryLockDepth === 0) return;
+  // Only the outermost release may unlink — a nested one would orphan the
+  // outer holder.
+  if (registryLockDepth > 1) {
+    registryLockDepth -= 1;
+    return;
+  }
   const lockPath = registryLockPath();
   try {
     const existing = JSON.parse(readFileSync(lockPath, "utf-8")) as RegistryLock;
@@ -368,4 +388,11 @@ export function releaseRegistryLock(): void {
   }
   try { unlinkSync(lockPath); } catch {}
   registryLockToken = null;
+  registryLockDepth = 0;
+}
+
+// Releases every nesting level of a re-entrant hold; tests use it in
+// afterEach so a leaked depth can't block later suites.
+export function releaseAllRegistryLocks(): void {
+  while (registryLockDepth > 0) releaseRegistryLock();
 }

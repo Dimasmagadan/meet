@@ -142,6 +142,20 @@ describe("filterEntries", () => {
     assert.strictEqual(filtered[0].source, "sys");
   });
 
+  it("records the quiet-mic drop in droppedEcho so the finalize safety net excludes it", () => {
+    // An unrecorded drop makes finalize.ts see a shrunk final pass and restore
+    // the silent chunk (same class as the echo/duplicate drops).
+    const droppedEcho: FinalChunkResult[] = [];
+    const results = [
+      makeResult("sys", 1, "Текст"),
+      makeResult("mic", 1, "Тоже текст", -80),
+    ];
+    filterEntries(results, config, droppedEcho);
+    assert.strictEqual(droppedEcho.length, 1);
+    assert.strictEqual(droppedEcho[0].source, "mic");
+    assert.strictEqual(droppedEcho[0].index, 1);
+  });
+
   it("drops duplicate mic matching sys", () => {
     const results = [
       makeResult("sys", 1, "Давайте обсудим квартальные цели"),

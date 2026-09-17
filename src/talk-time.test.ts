@@ -14,6 +14,7 @@ describe("computeTalkTime", () => {
     ];
     const stats = computeTalkTime({
       entryRecords,
+      textChunkKeys: new Set(),
       chunkDurationSeconds: 15,
       micRmsThresholdDb: -60,
       sysRmsThresholdDb: -65,
@@ -38,6 +39,7 @@ describe("computeTalkTime", () => {
     ];
     const stats = computeTalkTime({
       entryRecords,
+      textChunkKeys: new Set(),
       chunkDurationSeconds: 15,
       micRmsThresholdDb: -60,
       sysRmsThresholdDb: -65,
@@ -67,6 +69,7 @@ describe("computeTalkTime", () => {
     ];
     const stats = computeTalkTime({
       entryRecords,
+      textChunkKeys: new Set(),
       chunkDurationSeconds: 15,
       micRmsThresholdDb: -60,
       sysRmsThresholdDb: -65,
@@ -132,8 +135,34 @@ describe("computeTalkTime", () => {
     assert.strictEqual(stats.speakers.find((s) => s.label === "Me")!.seconds, 15);
   });
 
+  it("does not double-count the mic channel when mic-echo attributed every chunk (full leak)", () => {
+    // No-headset call: the remote party leaked onto every mic chunk, mic-echo
+    // relabeled them all "Speaker 1". The entries keep source:"mic", so
+    // textChunkKeys still holds mic-001/mic-002 — without micSegmented the
+    // chunk-count fallback re-counts them as "Me" on top of the Speaker 1 row.
+    const entryRecords: EntryRecord[] = [
+      { source: "mic", index: 1, timestamp: "00:00:00", text: "a", rmsDb: -30 },
+      { source: "mic", index: 2, timestamp: "00:00:15", text: "b", rmsDb: -30 },
+    ];
+    const textChunkKeys = new Set(["mic-001", "mic-002"]);
+    const stats = computeTalkTime({
+      entryRecords,
+      textChunkKeys,
+      chunkDurationSeconds: 15,
+      micRmsThresholdDb: -60,
+      sysRmsThresholdDb: -65,
+      diarSegments: [{ start: 0, end: 30, speaker: "Speaker 1" }],
+      micSegmented: true,
+    });
+
+    assert.strictEqual(stats.speakers.find((s) => s.label === "Me"), undefined);
+    assert.strictEqual(stats.speakers.find((s) => s.label === "Speaker 1")!.seconds, 30);
+    assert.strictEqual(stats.totalSeconds, 30);
+  });
+
   it("handles the zero-speech edge without dividing by zero", () => {    const stats = computeTalkTime({
       entryRecords: [],
+      textChunkKeys: new Set(),
       chunkDurationSeconds: 15,
       micRmsThresholdDb: -60,
       sysRmsThresholdDb: -65,
@@ -153,6 +182,7 @@ describe("computeTalkTime", () => {
     const diarSegments: DiarSegment[] = [{ start: 0, end: 15, speaker: "Speaker 1" }];
     const stats = computeTalkTime({
       entryRecords,
+      textChunkKeys: new Set(),
       chunkDurationSeconds: 15,
       micRmsThresholdDb: -60,
       sysRmsThresholdDb: -65,

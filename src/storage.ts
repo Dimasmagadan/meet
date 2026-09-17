@@ -2,7 +2,7 @@ import { execFile, execSync, spawn } from "node:child_process";
 import { mkdir, writeFile, readFile, rename, unlink } from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, basename } from "node:path";
 import type { Chunk, Session, Config, TranscriptEntry } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import { isPidAlive, readActiveRecordingLock, readFinalizerLock } from "./locks.js";
@@ -63,9 +63,19 @@ export function getSessionsDir(): string {
 // implementation. Returns the pid, or undefined if the spawn itself failed.
 export function spawnBackgroundFinalizer(sessionDir: string): number | undefined {
   const binPath = process.argv[1];
+  // Fail closed on a missing entry point instead of letting spawn emit an
+  // async 'error' the caller can't observe — cli.ts would otherwise print a
+  // pid for a finalizer that never ran.
+  if (!existsSync(process.execPath) || !existsSync(binPath)) return undefined;
   const child = spawn(process.execPath, [binPath, "finalize", sessionDir], {
     detached: true,
     stdio: "ignore",
+  });
+  // spawn() reports async failures (ENOENT/EACCES) as an 'error' event, not a
+  // throw; without a listener Node re-throws it as an uncaught exception
+  // (recorder.ts wires the same listener for its capture child).
+  child.on("error", (err) => {
+    console.error(`[meet] background finalizer failed to start: ${err instanceof Error ? err.message : String(err)}`);
   });
   child.unref();
   return child.pid;
@@ -140,19 +150,41 @@ function isValidConfigValue(key: string, value: unknown): boolean {
 // pattern). lastValidFileConfig still holds the last good values.
 let lastConfigMtimeMs: number | null = null;
 
+// Tests redirect this so the mtime-guard suite never touches the user's real
+// ~/.meet/config.json. Also the single injection point both loadConfig and
+// updateConfigFile resolve through.
+let configPathOverride: string | null = null;
+
+export function setConfigPathForTest(path: string | null): void {
+  configPathOverride = path;
+  // Drop the mtime cache too, otherwise a cached parse from the real config
+  // survives the switch and the guard never observes the new path.
+  lastConfigMtimeMs = null;
+  lastValidFileConfig = {};
+}
+
+function getConfigPath(): string {
+  return configPathOverride ?? expandPath("~/.meet/config.json");
+}
+
 export function loadConfig(overrides?: Partial<Config>): Config {
-  const configPath = expandPath("~/.meet/config.json");
+  const configPath = getConfigPath();
   if (existsSync(configPath)) {
     try {
       const mtimeMs = statSync(configPath).mtimeMs;
       if (mtimeMs !== lastConfigMtimeMs) {
+        // Cache the mtime *before* parsing. A file that fails to parse must
+        // not be re-read and re-parsed on every per-chunk call forever — it
+        // stays cached until the mtime moves again, degrading to the last
+        // known-good values (or defaults), which is the whole point of the
+        // guard.
+        lastConfigMtimeMs = mtimeMs;
         const raw = readFileSync(configPath, "utf-8");
         const parsed = JSON.parse(raw);
         lastValidFileConfig = sanitizeFileConfig(parsed);
-        lastConfigMtimeMs = mtimeMs;
       }
     } catch (err) {
-      configWarn("config:parse", `~/.meet/config.json is invalid (${err instanceof Error ? err.message : String(err)}) — keeping last known-good config`);
+      configWarn("config:parse", `${configPath} is invalid (${err instanceof Error ? err.message : String(err)}) — keeping last known-good config`);
     }
   }
   return { ...DEFAULT_CONFIG, ...lastValidFileConfig, ...overrides };
@@ -196,7 +228,7 @@ export async function writeSession(session: Session): Promise<void> {
 // preserving unrelated keys. Running sessions pick the change up on their
 // next loadConfig() — the live pipeline re-reads it per chunk.
 export async function updateConfigFile(patch: Partial<Config>): Promise<void> {
-  const configPath = expandPath("~/.meet/config.json");
+  const configPath = getConfigPath();
   let raw: Record<string, unknown> = {};
   if (existsSync(configPath)) {
     raw = JSON.parse(await readFile(configPath, "utf-8")) as Record<string, unknown>;
@@ -292,7 +324,13 @@ export function findRecordingStates(): RecordingState[] {
           return [];
         }
       });
-    return classifyRecordingSessions(sessions, readActiveRecordingLock(), isPidAlive);
+    // The capture PID's comm is the capture binary's basename (default
+    // "AudioCapture"), never "node" — a bare isPidAlive trusts process.kill(
+    // pid, 0) alone, so PID reuse (kern.pid_max wraparound) can make a stale
+    // session.json's capturePid name an unrelated app and look "orphan" (B9).
+    // ps failing stays fail-open inside isPidAlive.
+    const captureComm = basename(getCaptureBinPath(loadConfig()));
+    return classifyRecordingSessions(sessions, readActiveRecordingLock(), (pid) => isPidAlive(pid, { comm: captureComm }));
   } catch {
     return [];
   }

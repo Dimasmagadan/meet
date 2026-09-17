@@ -130,7 +130,14 @@ export function filterEntries(
 
     if (!mic || !mic.text) continue;
 
-    if (mic.rmsDb < config.micRmsThresholdDb) continue;
+    // Same accumulator as the echo/duplicate drops below: the finalize safety
+    // net (finalize.ts) compares the final-pass entry count against base
+    // entries excluding recorded drops, so an unrecorded drop here makes it
+    // see a shrunk final pass and restore this silent chunk.
+    if (mic.rmsDb < config.micRmsThresholdDb) {
+      droppedEcho?.push(mic);
+      continue;
+    }
 
     if (mic.micEchoScore !== undefined && mic.micEchoScore >= echoFractionThreshold) {
       droppedEcho?.push(mic);
