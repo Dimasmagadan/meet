@@ -28,6 +28,7 @@ import { generateDashboard } from "./dashboard.js";
 import { getTriggers } from "./triggers.js";
 import { sendMacNotification, type AttentionAlert } from "./attention.js";
 import { writeTagsState, readTagsState, readTags, appendTagToFile, hasTagCaseInsensitive } from "./tags.js";
+import { VERSION } from "./version.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -35,7 +36,7 @@ export function createProgram(): Command {
   program
     .name("meet")
     .description("Local meeting transcription tool")
-    .version("0.1.0");
+    .version(VERSION);
 
   program
     .command("start")

@@ -13,6 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **Type check** | `npm run lint` |
 | **Run app** | `node dist/main.js start "Title"` |
 | **Build Swift** | `./native/AudioCapture/scripts/build.sh` |
+| **Release** | `npm run release -- patch\|minor\|major` (see `RELEASING.md`) |
 
 ## Architecture Overview
 
