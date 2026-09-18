@@ -1,0 +1,147 @@
+# Changelog
+
+All notable changes to this project are documented here.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
+
+## [Unreleased]
+
+## [1.0.0] - 2026-09-18
+
+### Added
+- **release:** add versioning/changelog tooling and release workflow
+- **menubar:** dropdown tag/title picker anchored to the tray
+- **menubar:** model switcher in settings window
+- **quality:** 30s chunks, turbo final, throttle
+- **menubar:** silent start + tag-window renames
+- **speakers:** live per-chunk identification + multi-centroid registry
+- **menubar:** notch panel Ask AI mode + attendee header
+- split "Me" from other speakers on mic-only calls (phone recordings)
+- cross-channel mic echo filtering (final pass)
+- default mic echo cancellation on, document settings options
+- **menubar:** settings window for the curated hot-path config options
+- **menubar:** calendar auto-start recording + speaker-name suggestions
+- **menubar:** notch panel on any display, deferred meeting naming
+- **menubar:** hover-revealed live-transcript panel at the notch
+- **menubar:** tag picker with existing tags + reliable field focus
+- **tcc:** Core Audio process tap system capture, drop Screen Recording TCC
+- **tags:** add tags any time during a recording
+- **menubar:** signed Dock-less .app bundle with launch-at-login
+- **docs:** hero image in 2-column layout (EN + RU)
+- **docs:** bilingual EN/RU site with language switcher
+- **docs:** GitHub Pages site (Jekyll + clamp-size, Actions deploy)
+- **recorder:** live-queue lag warning (P5)
+- **diarize:** opt-in offline-VBx diarizer A/B pass (S2)
+- **phrasebook:** raw-regex mode with backrefs (L2)
+- **perf:** Metal compute probe + taskpolicy QoS (P2+P3)
+- **link:** git repo auto-detect + meet link (L1)
+- **registry:** cross-session speaker recognition (S1)
+- **diarize:** emit per-speaker embeddings (S1-spike resolved)
+- **perf:** gate heavy batch passes on system pressure
+- **finalize:** wire opencode index pass into recordings
+- **rename:** add meet rename CLI for post-finalize speaker labels
+- **vocabulary:** hot-reload custom whisper terms
+- **summary:** add live extractive summary with system pressure monitoring
+- **attention:** recap last 3 entries with trigger highlight, move config to project root
+- add live trigger-word attention alerts
+- bold hotkey hints, support Russian keyboard layout for hotkeys
+- add speaker diarization, talk-time stats, and Parakeet A/B pass
+- add menu bar app, Raycast script, and signal-based control
+- **dashboard:** add HTML meeting stats dashboard
+- improve transcription quality with pass-conditional whisper flags
+- fix stacked-call finalization (pause-resume)
+- implement entries.jsonl for reliable transcription recovery (Phase 1)
+- add pause, cap extension, and concurrent finalization to live recording
+- **import:** auto-tag batch transcriptions, skip index
+- **import:** add meet transcribe for audio/video files
+- background finalization + progress display + meet status
+- **pipeline:** final retranscription pass with duplicate/echo filtering
+- phrasebook, VAD wrapper, JSON capture logging, 73 tests
+- **tags:** interactive tag picker after call finalization
+- **lifecycle:** transcript-based auto-stop replaces audio silence timeout
+- improve transcription quality — silence gate, normalization, stricter thresholds
+- s hotkey stops recording and creates cataloged index.md via opencode
+- add opencode integration — summarize/ask hotkeys during recording
+- subfolder per meeting, incremental transcript, stronger noise filter
+- improve whisper transcription quality — suppress noise, filter hallucinations
+- add q-to-quit and 5-min silence auto-stop
+- scaffold full meet project — Swift audio capture + Node pipeline + CLI
+
+### Changed
+- **menubar:** runModalAsRegularApp helper + activate in showAlert
+- extract shared escapeRegex into regex-utils
+- extract Recorder class from startSession
+- unify whisper binary discovery and model path resolution
+
+### Fixed
+- recover full-mode Speaker N entries via persisted speakers.json assignment
+- implement 2026-09-17 code review findings
+- implement 2026-09-16 code review findings
+- **menubar:** re-order notch panel on Space switch
+- **recording:** preserve recoverable audio
+- **recorder:** persist retitle before finalization
+- **speakers:** preserve live identity labels
+- **capture:** survive chunk destination collisions
+- **reliability:** harden recording recovery
+- **menubar:** re-arm notch panel when the notch screen reappears
+- **cli:** make `meet setup` read-only by default, gate ~1GB model download behind --enhanced
+- **setup:** resolve repo root from script location, build AudioCapture, exit nonzero on failure
+- **install:** mark package private to block accidental npm publish
+- **install:** scope npm package name to avoid collision with unrelated "meet"
+- **import:** make opencode index generation opt-in, disclose before sending
+- **transcriber:** scope hallucination patterns to boilerplate phrases
+- **phrasebook:** disable raw regex rules by default (ReDoS)
+- **storage:** validate config.json values, fall back to last known-good on error
+- **finalize:** key Parakeet A/B speaker assignments by source + chunk index
+- **filters:** stop unconditionally dropping short mic text with a same-index sys entry
+- **pipeline:** track in-flight chunk to prevent double transcription on stop()
+- **finalize:** always merge markdown recovery, not only when entries.jsonl is empty
+- match chunk filenames at any digit width, not just exactly 3
+- **dashboard:** escape HTML, safely embed script JSON, drop inline handlers
+- **cli:** use execFileSync for configurable analysisBin, not a shell string
+- **native:** serialize wavWriter access, move file I/O off real-time threads
+- **native:** safe signal handling + fail-fast on full-mode stream failure
+- **locks:** close the active-recording check-then-write race
+- **storage:** atomically reserve output dirs to prevent transcript overwrites
+- **transcriber:** reject when whisper output file is missing, not silent-empty
+- **finalize:** run the live-transcript safety net even on total final-pass failure
+- **recorder:** track real capture exit instead of ChildProcess.killed
+- **menubar:** force dark appearance on notch panel
+- **menubar:** allow keyboard layout switching in title/tag modals
+- remove startPolling from setMode, fix last silent hotkey
+- notch panel Ask AI review findings
+- revert mic echo cancellation default back to off
+- **tags:** replace append-only tag inbox with full-selection state
+- **menubar:** focus title/tag input, prompt for tags on Stop
+- **tags:** append-only tag inbox + catch fire-and-forget writes
+- **tcc:** stable code signing for TCC grant persistence
+- **menubar:** pin TCC preflight Task to MainActor
+- **recorder:** style nit + doc gap from P5 review
+- **phrasebook:** empty-match guard, honest cap naming, docs (L2 review)
+- **perf:** address P2+P3 review round 2
+- **perf:** address P2+P3 review findings
+- **link:** address review findings (L1 follow-up)
+- **registry:** talk-time sync, same-run collapse, rename by display name
+- **diarize:** drop segment-less phantom speakers from embeddings
+- **attention:** guard buildRecap against count <= 0
+- Parakeet A/B pass producing empty transcripts
+- make entries.jsonl the source of truth, fix signal/timing bugs
+- resolve menu bar app signal mapping, node path, and stop() for attached sessions
+- **cli:** enforce single recording owner, run foreground finalization on Ctrl-C
+- **storage:** move sessions from /tmp to ~/.meet/sessions/
+- **transcribe:** improve import quality for file transcription
+- **sys:** restart SCStream on delegate error
+- **mic:** restart capture after engine changes
+- **audio:** gate silent chunks and add doctor
+- harden background finalization recovery
+- midnight rollover in timestampToChunkIndex
+- derive real chunkIndex in transcript fallback parser
+- atomic finalizer lock + preserve live transcript fallback
+- **mic:** safe channel selection for interleaved VP buffers, show tag picker before final pass
+- session.json.tmp rename race on auto-stop causes ENOENT crash
+- WAV header corruption and readPcmSamples out-of-range crash
+- pipeline drain waits for active work, guards empty transcript overwrite
+- silence gate runs after normalization, lower thresholds, catch writeSession errors
+- correct opencode run arg order — prompt before -f flag
+- restore recording status after opencode hotkeys and clean error output
+- disable VoiceProcessing IO by default to prevent mic volume drop and echo during calls
+- correct audio capture — float32 sys audio, 9-ch mic, timestamps
