@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -91,7 +91,17 @@ function createDebouncedProgressWriter(session: Session) {
     await flush();
   };
 
-  return { update, forceFlush };
+  // Cancels a pending debounced flush without running it. Terminal
+  // session.json writes (status done/error) already carry the final
+  // progress state, so a stale scheduled flush firing after them — possibly
+  // mid `rm(sessionDir)`, or clobbering the error write with old progress
+  // (N3) — serves no purpose and must not run.
+  const dispose = () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    pendingProgress = null;
+  };
+
+  return { update, forceFlush, dispose };
 }
 
 async function filterEntriesByAudio(
@@ -415,12 +425,16 @@ async function applySpeakerRegistry(
   if (embeddingsByLabel.size === 0) return new Map();
 
   try {
-    const registry = loadRegistry(config.speakerRegistryPath);
+    // Acquire before load (N7): loading first left a window where a
+    // concurrent `meet rename`/`forget` (which correctly load under the lock)
+    // could commit between this load and the eventual saveRegistry below,
+    // and that commit would be silently overwritten (lost update).
     const registryLocked = acquireRegistryLock(`finalize ${session.id}`);
     if (!registryLocked) {
       warn("Registry busy (another speaker-registry write); skipping registry update");
       return new Map();
     }
+    const registry = loadRegistry(config.speakerRegistryPath);
     const { labelOverrides, speakerMeta, matches } = applyRegistryToSpeakers(
       embeddingsByLabel,
       session.id,
@@ -521,12 +535,13 @@ export async function runMicDiarizationStep(
       if (rawSegments.length === 0) return none;
 
       const rawIds = [...new Set(rawSegments.map((s) => s.speaker))];
-      const registry = loadRegistry(config.speakerRegistryPath);
+      // Acquire before load (N7) — see applySpeakerRegistry's identical fix.
       const registryLocked = acquireRegistryLock(`finalize ${session.id}`);
       if (!registryLocked) {
         log("Registry busy (another speaker-registry write); skipping registry update");
         return none;
       }
+      const registry = loadRegistry(config.speakerRegistryPath);
 
       if (rawIds.length === 1) {
         // Whole mic channel is one voice — safe ground truth for "me".
@@ -897,14 +912,30 @@ export async function finalizeSession(
       // failure) — previously scoped inside `if (entries.length > 0)`, so the
       // worst case it exists to catch was exactly the one case it never ran for,
       // and a total final-pass failure fell straight through to WAV cleanup.
-      const effectiveBaseEntries = droppedEchoKeys.size > 0
-        ? baseEntries.filter((e) => !droppedEchoKeys.has(`${e.source}-${String(e.chunkIndex).padStart(3, "0")}`))
-        : baseEntries;
-      if (effectiveBaseEntries.length > 0 && entries.length < effectiveBaseEntries.length) {
-        warn(`Final pass produced ${entries.length} entries vs ${effectiveBaseEntries.length} non-silent live/stored entries (excluding ${droppedEchoKeys.size} echo-filtered), keeping live`);
-        // Restoring effectiveBaseEntries (not raw baseEntries) — otherwise the
-        // recorded echo/duplicate/ack drops recorded above get un-done too.
-        entries = effectiveBaseEntries;
+      //
+      // Per-key, not by count (N2): a whole-pass count comparison both threw
+      // away the entire high-quality transcript for a single chunk the final
+      // model *successfully* transcribed to empty text (a real, intentional
+      // loss — different decode thresholds than the live pass, types.ts), and
+      // could hide genuine losses when undrained live-only chunks inflated the
+      // final count past the base count. Restore only the base entries that
+      // are actually missing and weren't an intentional drop or an empty
+      // final-pass verdict.
+      const finalKeys = new Set(entries.map((e) => `${e.source}-${String(e.chunkIndex).padStart(3, "0")}`));
+      const restoredEntries: TranscriptEntry[] = [];
+      for (const e of baseEntries) {
+        const key = `${e.source}-${String(e.chunkIndex).padStart(3, "0")}`;
+        if (finalKeys.has(key)) continue;
+        if (droppedEchoKeys.has(key)) continue;
+        if (finalPassCompletedKeys.has(key)) continue;
+        restoredEntries.push(e);
+      }
+      if (restoredEntries.length > 0) {
+        warn(`Final pass is missing ${restoredEntries.length} entries present in the live/stored transcript (not echo-filtered, not an empty final-pass verdict); restoring from base`);
+        entries = [...entries, ...restoredEntries].sort((a, b) => {
+          if (a.chunkIndex !== b.chunkIndex) return a.chunkIndex - b.chunkIndex;
+          return a.source === "mic" ? -1 : 1;
+        });
       }
 
       if (entries.length > 0) {
@@ -934,6 +965,7 @@ export async function finalizeSession(
         const echoOutcome = await runMicEchoAttributionStep(
           session, config, entries, embeddingsByLabel, labelOverrides,
           echoCorrelatedMicIndices, storedRmsMap, speakersRecord, warn, log,
+          droppedEchoKeys,
         );
         entries = echoOutcome.entries;
 
@@ -964,12 +996,19 @@ export async function finalizeSession(
             sysRmsThresholdDb: config.sysRmsThresholdDb,
             diarSegments: talkTimeDiarSegments,
             micSegmented,
+            droppedEchoKeys,
           }),
           mergedLabelOverrides,
         );
         speakersRecord.talkTime = talkTime;
 
         const outputDir = dirname(session.outputFile);
+        // The meeting's output folder can be missing at this point (retitle
+        // race, manual deletion — N4): nothing else recreates it, so the
+        // first write below (writeAtomic's tmp-then-rename) throws ENOENT and
+        // finalize fails every retry the same way even though the audio is
+        // intact.
+        await mkdir(outputDir, { recursive: true });
         await writeAtomic(join(outputDir, "speakers.json"), JSON.stringify(speakersRecord, null, 2)).catch(() => {});
 
         await rewriteMarkdown(session.outputFile, session.title, session.startedAt, entries, talkTime);
@@ -997,6 +1036,12 @@ export async function finalizeSession(
         releaseGlobalFinalPassLock();
       }
     }
+
+    // Cancel any still-pending debounced progress flush before the terminal
+    // writes below (including the later error write if unrecoveredKeys is
+    // non-empty) — otherwise it can fire mid `rm(sessionDir)` or clobber
+    // whichever terminal status wins the race (N3).
+    progressWriter.dispose();
 
     session.status = "done";
     session.finalize = makeProgress("done", entries.length, entries.length);
@@ -1027,7 +1072,7 @@ export async function finalizeSession(
     }
     for (const key of finalPassFailedKeys) {
       if (successfulKeys.has(key)) continue;
-      const [source, index] = key.split("-");
+      const [source] = key.split("-");
       if (source !== "mic" && source !== "sys") continue;
       await considerKey(source, key, `${key}.wav`);
     }
@@ -1058,6 +1103,10 @@ export async function finalizeSession(
 
     return { session, entries, warnings };
   } catch (err) {
+    // Same rationale as the success path's dispose() above — an exception
+    // raised before that point means this is the first chance to cancel a
+    // pending flush, and it must happen before the error write below.
+    progressWriter.dispose();
     session.status = "error";
     session.lastError = err instanceof Error ? err.message : String(err);
     session.finalize = makeProgress("error", 0, 0, session.lastError);

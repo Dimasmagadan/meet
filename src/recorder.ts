@@ -82,7 +82,7 @@ export class Recorder {
 
   async run(): Promise<{ startNextMeeting: boolean }> {
     this.initPipeline();
-    this.startCapture();
+    await this.startCapture();
 
     await new Promise<void>((resolve) => {
       this.resolveRun = resolve;
@@ -149,7 +149,7 @@ export class Recorder {
     this.setupSignalHandlers();
   }
 
-  private startCapture(): void {
+  private async startCapture(): Promise<void> {
     const captureBin = getCaptureBinPath(this.config);
     const captureArgs = [
       "--output-dir", this.session.sessionDir,
@@ -182,7 +182,11 @@ export class Recorder {
     try {
       this.captureProcess = captureProcess;
       this.session.capturePid = captureProcess.pid ?? null;
-      writeAtomic(
+      // Awaited (N6): startCapture used to be sync and fire this without
+      // await, so a disk-full rejection bypassed the catch below entirely —
+      // it surfaced as an unhandled rejection (crashing Node >=15) instead of
+      // the kill-child-and-clear-lock handling handleCaptureStartFailure does.
+      await writeAtomic(
         join(this.session.sessionDir, "session.json"),
         JSON.stringify(this.session, null, 2),
       );
@@ -479,8 +483,12 @@ export class Recorder {
       // mutating the same session.json + entries.jsonl this pipeline instance
       // may still be mid-write to.
       await this.pipeline.close();
-      spawnBackgroundFinalizer(this.session.sessionDir);
-      console.log(chalk.green(`Finalizer started in background (meet status to check)`));
+      const finalizerPid = spawnBackgroundFinalizer(this.session.sessionDir);
+      if (finalizerPid === undefined) {
+        console.log(chalk.red(`Background finalizer failed to start (node binary or entry point missing) — run \`meet finalize ${this.session.sessionDir}\` manually`));
+      } else {
+        console.log(chalk.green(`Finalizer started in background (meet status to check)`));
+      }
       console.log(chalk.gray(`Transcript: ${this.outputFile}`));
       process.exit(0);
     } catch (err) {
@@ -525,8 +533,12 @@ export class Recorder {
 
       await this.summaryScheduler?.flush();
       await this.promptTags();
-      spawnBackgroundFinalizer(this.session.sessionDir);
-      console.log(chalk.green(`Final pass running in background (meet status to check)`));
+      const finalizerPid = spawnBackgroundFinalizer(this.session.sessionDir);
+      if (finalizerPid === undefined) {
+        console.log(chalk.red(`Background finalizer failed to start (node binary or entry point missing) — run \`meet finalize ${this.session.sessionDir}\` manually`));
+      } else {
+        console.log(chalk.green(`Final pass running in background (meet status to check)`));
+      }
       console.log(chalk.gray(`Transcript: ${this.outputFile}`));
       process.exit(0);
     } catch (err) {
@@ -549,8 +561,12 @@ export class Recorder {
       // See shutdown()'s identical await: this must land before the detached
       // finalizer starts touching the same session files.
       await this.pipeline.close();
-      spawnBackgroundFinalizer(this.session.sessionDir);
-      console.log(chalk.green(`Finalizer running in background (meet status to check)`));
+      const finalizerPid = spawnBackgroundFinalizer(this.session.sessionDir);
+      if (finalizerPid === undefined) {
+        console.log(chalk.red(`Background finalizer failed to start (node binary or entry point missing) — run \`meet finalize ${this.session.sessionDir}\` manually`));
+      } else {
+        console.log(chalk.green(`Finalizer running in background (meet status to check)`));
+      }
     } catch (err) {
       console.log(chalk.red(`Failed: ${formatError(err)}`));
       this.startNextMeeting = false;

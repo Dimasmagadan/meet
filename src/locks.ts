@@ -5,10 +5,27 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Session } from "./types.js";
 
+// Tests redirect this so the lock suites never touch the real
+// ~/.meet/sessions (N8) — same seam shape as storage.ts's
+// setConfigPathForTest. Every lock path in this module (active-recording,
+// finalizer, global final-pass, registry) resolves through sessionsDir(), so
+// one override isolates all of them.
+let sessionsDirOverride: string | null = null;
+
+export function setSessionsDirForTest(dir: string | null): void {
+  sessionsDirOverride = dir;
+}
+
 function sessionsDir(): string {
-  const dir = join(homedir(), ".meet", "sessions");
+  const dir = sessionsDirOverride ?? join(homedir(), ".meet", "sessions");
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+// Exposed for tests that need to compute a lock's on-disk path directly
+// (e.g. writing a fake owner) without duplicating the override logic above.
+export function getLocksSessionsDirForTest(): string {
+  return sessionsDir();
 }
 
 function activeLockPath(): string {
@@ -382,8 +399,19 @@ export function releaseRegistryLock(): void {
   const lockPath = registryLockPath();
   try {
     const existing = JSON.parse(readFileSync(lockPath, "utf-8")) as RegistryLock;
-    if (existing.pid !== process.pid || existing.token !== registryLockToken) return;
+    if (existing.pid !== process.pid || existing.token !== registryLockToken) {
+      // Not ours (any more) — nothing to unlink, but we no longer hold it
+      // either way. Leaving depth > 0 here made releaseAllRegistryLocks'
+      // `while (registryLockDepth > 0)` loop forever (N8).
+      registryLockToken = null;
+      registryLockDepth = 0;
+      return;
+    }
   } catch {
+    // Lock file gone or unreadable: same reasoning — we can't own a lock
+    // that isn't there, so reset instead of leaving depth stuck at 1.
+    registryLockToken = null;
+    registryLockDepth = 0;
     return;
   }
   try { unlinkSync(lockPath); } catch {}

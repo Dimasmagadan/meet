@@ -169,7 +169,10 @@ function main() {
 
   git(["add", "package.json", "package-lock.json", "CHANGELOG.md"]);
   git(["commit", "-m", `chore(release): v${nextVersion}`]);
-  git(["tag", "-a", `v${nextVersion}`, "-m", newSection]);
+  // Without --cleanup=verbatim, `git tag -a` defaults to --cleanup=strip,
+  // which deletes every #-prefixed line — including the ## / ### changelog
+  // headings in newSection, so Added/Fixed items run together in the tag body.
+  git(["tag", "-a", `v${nextVersion}`, "-m", newSection, "--cleanup=verbatim"]);
 
   console.log(`\nCommitted and tagged v${nextVersion}. Review with:\n  git show HEAD\n  git show v${nextVersion}`);
   console.log(`\nWhen ready, push with:\n  git push && git push origin v${nextVersion}`);

@@ -30,6 +30,13 @@ export interface ComputeTalkTimeParams {
   // is disabled or failed, in which case sys talk time falls back to the same
   // chunk-counting method used for mic, reported as a single "Others" row.
   diarSegments: DiarSegment[];
+  // Keys of mic chunks the final pass dropped as cross-channel echo (P1/P2).
+  // The live pipeline still records an RMS for these (and, pre-drop, may have
+  // stored text for them too) — without excluding them here, a loud
+  // echo-dropped chunk is unioned into "Me" even though its text never
+  // survived, while the same audio is also counted on the sys side under
+  // "Speaker N" (N1). Mic-only; sys entries are never echo-dropped.
+  droppedEchoKeys?: Set<string>;
 }
 
 function activeChunkSeconds(
@@ -38,6 +45,7 @@ function activeChunkSeconds(
   thresholdDb: number,
   chunkDurationSeconds: number,
   textChunkKeys: Set<string>,
+  droppedEchoKeys: Set<string>,
 ): number {
   // Union, not sum: a chunk can have both a stored RMS record and surviving
   // transcript text and must count once.
@@ -50,6 +58,7 @@ function activeChunkSeconds(
   for (const key of textChunkKeys) {
     if (key.startsWith(`${source}-`)) counted.add(key);
   }
+  for (const key of droppedEchoKeys) counted.delete(key);
   return counted.size * chunkDurationSeconds;
 }
 
@@ -63,7 +72,8 @@ export function speakerSortKey(label: string): number {
 }
 
 export function computeTalkTime(params: ComputeTalkTimeParams): TalkTimeStats {
-  const { entryRecords, textChunkKeys, chunkDurationSeconds, micRmsThresholdDb, sysRmsThresholdDb, diarSegments, micSegmented } = params;
+  const { entryRecords, textChunkKeys, chunkDurationSeconds, micRmsThresholdDb, sysRmsThresholdDb, diarSegments, micSegmented, droppedEchoKeys } = params;
+  const droppedEcho = droppedEchoKeys ?? new Set<string>();
 
   // Mic-diarization (runMicDiarizationStep) already produced a diarization-derived
   // "Me" row among diarSegments when it split the mic channel into self/other —
@@ -75,7 +85,7 @@ export function computeTalkTime(params: ComputeTalkTimeParams): TalkTimeStats {
   const micWasDiarized = micSegmented === true || diarSegments.some((s) => s.speaker === "Me");
   const rows: Array<{ label: string; seconds: number }> = micWasDiarized
     ? []
-    : [{ label: "Me", seconds: activeChunkSeconds(entryRecords, "mic", micRmsThresholdDb, chunkDurationSeconds, textChunkKeys) }];
+    : [{ label: "Me", seconds: activeChunkSeconds(entryRecords, "mic", micRmsThresholdDb, chunkDurationSeconds, textChunkKeys, droppedEcho) }];
 
   if (diarSegments.length > 0) {
     const bySpeaker = new Map<string, number>();
@@ -88,7 +98,7 @@ export function computeTalkTime(params: ComputeTalkTimeParams): TalkTimeStats {
       .sort((a, b) => speakerSortKey(a.label) - speakerSortKey(b.label));
     rows.push(...speakerRows);
   } else {
-    const othersSeconds = activeChunkSeconds(entryRecords, "sys", sysRmsThresholdDb, chunkDurationSeconds, textChunkKeys);
+    const othersSeconds = activeChunkSeconds(entryRecords, "sys", sysRmsThresholdDb, chunkDurationSeconds, textChunkKeys, droppedEcho);
     rows.push({ label: "Others", seconds: othersSeconds });
   }
 

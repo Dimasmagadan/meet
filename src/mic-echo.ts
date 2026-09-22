@@ -144,6 +144,13 @@ export async function runMicEchoAttributionStep(
   speakersRecord: Record<string, unknown>,
   warn: (msg: string) => void,
   log: (msg: string) => void,
+  // Keys ("mic-NNN") the final pass already dropped as cross-channel echo
+  // (P1/P2). Those chunks never reach `entries` (candidates below), so they
+  // can't be attributed/relabeled here — but buildMicSegments still needs
+  // them excluded, or a loud dropped chunk gets a "Me" span from its RMS
+  // record alone even though the final pass already decided it wasn't the
+  // user's speech (N1).
+  droppedEchoKeys: Set<string> = new Set(),
 ): Promise<MicEchoAttributionOutcome> {
   const none: MicEchoAttributionOutcome = { entries, micSegments: [], relabeled: 0, dropped: 0 };
 
@@ -240,7 +247,12 @@ export async function runMicEchoAttributionStep(
       const textIndices = new Set(
         entries.filter((e) => e.source === "mic" && e.text).map((e) => e.chunkIndex),
       );
-      micSegments = buildMicSegments(offsets, attributed, drops, storedRmsMap, textIndices, config.micRmsThresholdDb);
+      const droppedEchoIndices = new Set(
+        [...droppedEchoKeys]
+          .filter((k) => k.startsWith("mic-"))
+          .map((k) => parseInt(k.slice(4), 10)),
+      );
+      micSegments = buildMicSegments(offsets, attributed, drops, storedRmsMap, textIndices, config.micRmsThresholdDb, droppedEchoIndices);
     } finally {
       await cleanupMicConcat(session.sessionDir);
     }
@@ -285,10 +297,16 @@ function buildMicSegments(
   storedRmsMap: Map<string, number>,
   micTextIndices: Set<number>,
   micRmsThresholdDb: number,
+  // Chunks the final pass (P1/P2) already dropped as echo, independent of
+  // this step's own `drops` — same rationale as `drops` above: the sys
+  // timeline already accounts for (or the chunk was outright discarded as)
+  // this audio, so a "Me" span here would count it a second time (N1).
+  droppedEchoIndices: Set<number> = new Set(),
 ): DiarSegment[] {
   const segments: DiarSegment[] = [];
   for (const [index, range] of offsets) {
     if (drops.has(index)) continue;
+    if (droppedEchoIndices.has(index)) continue;
     const label = attributed.get(index);
     if (!label) {
       const rmsDb = storedRmsMap.get(`mic-${String(index).padStart(3, "0")}`);

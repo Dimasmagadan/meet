@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { acquireFinalizerLock, releaseFinalizerLock, isPidAlive, readFinalizerLock, acquireRegistryLock, releaseRegistryLock, releaseAllRegistryLocks } from "./locks.js";
-import { getSessionsDir } from "./storage.js";
+import { acquireFinalizerLock, releaseFinalizerLock, isPidAlive, readFinalizerLock, acquireRegistryLock, releaseRegistryLock, releaseAllRegistryLocks, setSessionsDirForTest, getLocksSessionsDirForTest } from "./locks.js";
 
 describe("isPidAlive", () => {
   it("returns true for current process", () => {
@@ -132,10 +131,23 @@ describe("readFinalizerLock", () => {
 });
 
 describe("acquireRegistryLock", () => {
+  let testSessionsDir: string;
+
+  beforeEach(() => {
+    // N8: this suite used to write fake lock owners straight over the real
+    // ~/.meet/sessions/registry.lock — running it while a real finalizer or
+    // `meet rename` held that lock would clobber a live process's lock.
+    testSessionsDir = join(tmpdir(), `meet-test-sessions-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(testSessionsDir, { recursive: true });
+    setSessionsDirForTest(testSessionsDir);
+  });
+
   afterEach(() => {
     // A leaked registry lock (or a leaked nesting level) would block every
     // later test that touches the registry, so drain the whole depth.
     releaseAllRegistryLocks();
+    setSessionsDirForTest(null);
+    try { rmSync(testSessionsDir, { recursive: true, force: true }); } catch {}
   });
 
   it("acquires when no lock exists", () => {
@@ -148,7 +160,7 @@ describe("acquireRegistryLock", () => {
   });
 
   it("nested release does not unlink the lock while the outer hold continues", () => {
-    const lockPath = join(getSessionsDir(), "registry.lock");
+    const lockPath = join(getLocksSessionsDirForTest(), "registry.lock");
     assert.strictEqual(acquireRegistryLock("outer"), true);
     assert.strictEqual(acquireRegistryLock("inner"), true);
     releaseRegistryLock(); // inner
@@ -161,7 +173,7 @@ describe("acquireRegistryLock", () => {
     // finalize.ts' registry steps call releaseRegistryLock() from a finally
     // even when the acquire returned false — that must not drop another
     // process's lock.
-    const lockPath = join(getSessionsDir(), "registry.lock");
+    const lockPath = join(getLocksSessionsDirForTest(), "registry.lock");
     writeFileSync(
       lockPath,
       JSON.stringify({ pid: 99999998, token: "someone-else", reason: "concurrent rename", startedAt: new Date().toISOString() }),
@@ -174,12 +186,43 @@ describe("acquireRegistryLock", () => {
 
   it("reclaiming a stale lock from a dead pid succeeds", () => {
     // Simulate a holder that died without releasing (kill -9 during a rename).
-    const lockPath = join(getSessionsDir(), "registry.lock");
+    const lockPath = join(getLocksSessionsDirForTest(), "registry.lock");
     writeFileSync(
       lockPath,
       JSON.stringify({ pid: 99999999, reason: "crashed rename", startedAt: new Date().toISOString() }),
       "utf-8",
     );
     assert.strictEqual(acquireRegistryLock("after-crash"), true);
+  });
+
+  // Regression for N8: releaseRegistryLock used to return early (without
+  // resetting registryLockDepth to 0) when depth === 1 and the lock file was
+  // gone or unreadable, which made releaseAllRegistryLocks' while-loop spin
+  // forever. Deleting the file out from under an active hold reproduces it.
+  it("releaseRegistryLock resets depth instead of looping when the lock file is gone", () => {
+    assert.strictEqual(acquireRegistryLock("vanishing"), true);
+    const lockPath = join(getLocksSessionsDirForTest(), "registry.lock");
+    rmSync(lockPath, { force: true });
+    releaseRegistryLock();
+    // If depth weren't reset, this call would hang forever.
+    releaseAllRegistryLocks();
+    assert.strictEqual(acquireRegistryLock("after-vanish"), true);
+  });
+
+  it("releaseRegistryLock resets depth instead of looping when another owner holds the file", () => {
+    assert.strictEqual(acquireRegistryLock("stolen"), true);
+    const lockPath = join(getLocksSessionsDirForTest(), "registry.lock");
+    // A different (dead) pid/token now on disk — as if our descriptor got
+    // reclaimed and republished out from under us. releaseRegistryLock must
+    // not unlink someone else's lock, but it also must not get stuck at
+    // depth 1 forever just because it isn't the owner any more.
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 99999998, token: "not-ours", reason: "someone else", startedAt: new Date().toISOString() }),
+      "utf-8",
+    );
+    releaseRegistryLock();
+    releaseAllRegistryLocks();
+    assert.strictEqual(acquireRegistryLock("after-steal"), true);
   });
 });

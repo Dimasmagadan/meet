@@ -314,6 +314,39 @@ test("runMicEchoAttributionStep", async (t) => {
     }
   });
 
+  await t.test("excludes chunks the final pass already dropped as echo from Me segments (N1)", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-mic-echo-"));
+    try {
+      writeFileSync(join(sessionDir, "mic-001.wav"), makeSineWav(440, 16000, 16000, 0.9));
+      writeFileSync(join(sessionDir, "mic-002.wav"), makeSineWav(440, 16000, 16000, 0.9));
+      writeFileSync(join(sessionDir, "mic-003.wav"), makeSineWav(440, 16000, 16000, 0.9));
+      const config: Config = { ...baseConfig, analysisBin: writeFakeAnalysisBin(sessionDir) };
+      const session = makeSession(sessionDir);
+      // mic-002 was dropped by the final pass's P1/P2 echo filter before this
+      // step ever runs — it has no surviving text, so it's not a candidate,
+      // but its live RMS record is still loud. Without droppedEchoKeys it
+      // would get a spurious "Me" span from that RMS alone, double-counting
+      // audio the sys timeline already attributes to Speaker 1.
+      const entries: TranscriptEntry[] = [
+        { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "хвостовая реплика" },
+        { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "совсем другой текст" },
+        { source: "mic", chunkIndex: 3, timestamp: "14:31:00", text: "пользователь говорит сам" },
+      ];
+      const speakersRecord: Record<string, unknown> = {};
+      const storedRms = new Map([["mic-002", -20], ["mic-003", -40]]);
+      const result = await runMicEchoAttributionStep(
+        session, config, entries, SPEAKERS, new Map(), null, storedRms, speakersRecord, noop, noop,
+        new Set(["mic-002"]),
+      );
+      assert.deepEqual(
+        result.micSegments.map((s) => [s.speaker, s.start, s.end]),
+        [["Speaker 1", 0, 1], ["Me", 2, 3]],
+      );
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
   await t.test("an enrolled self print keeps the user's chunk as Me", async () => {    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-mic-echo-"));
     try {
       writeFileSync(join(sessionDir, "mic-001.wav"), makeSineWav(440, 16000, 16000, 0.9));

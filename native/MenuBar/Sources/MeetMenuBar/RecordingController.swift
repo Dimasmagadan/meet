@@ -94,14 +94,19 @@ class RecordingController {
 
     func pause() {
         guard state == .recording, let pid = attachedPid else { return }
-        sendSignal(SIGUSR1, to: pid)
-        state = .paused
+        // sendSignal can detect PID reuse and call handleTermination(), which
+        // sets state = .idle — only move to .paused when the signal actually
+        // went to our recorder, or this overwrites that idle state right back.
+        if sendSignal(SIGUSR1, to: pid) {
+            state = .paused
+        }
     }
 
     func resume() {
         guard state == .paused, let pid = attachedPid else { return }
-        sendSignal(SIGUSR2, to: pid)
-        state = .recording
+        if sendSignal(SIGUSR2, to: pid) {
+            state = .recording
+        }
     }
 
     func stop() {
@@ -275,7 +280,12 @@ class RecordingController {
 
     // MARK: - Private
 
-    private func sendSignal(_ signal: Int32, to pid: pid_t) {
+    // Returns false when the signal was withheld because handleTermination()
+    // fired instead (PID reuse) — callers that set state after signalling
+    // (pause/resume) must skip that update in this case, or they'd stomp the
+    // .idle state handleTermination() just set.
+    @discardableResult
+    private func sendSignal(_ signal: Int32, to pid: pid_t) -> Bool {
         // Re-verify immediately before signalling: the lock was validated at
         // attach, but the PID can die and be reused between then and now (B9).
         // A confirmed non-node command means this PID now belongs to an
@@ -284,9 +294,10 @@ class RecordingController {
         // stays fail-open: kill() on a dead PID is a harmless no-op.
         if let comm = processComm(pid), !isNodeComm(comm) {
             handleTermination()
-            return
+            return false
         }
         kill(pid, signal)
+        return true
     }
 
     private func isPidAlive(_ pid: pid_t) -> Bool {

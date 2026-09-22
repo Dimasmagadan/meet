@@ -160,6 +160,34 @@ describe("computeTalkTime", () => {
     assert.strictEqual(stats.totalSeconds, 30);
   });
 
+  it("excludes echo-dropped mic chunks from Me so they aren't double-counted with Speaker N (N1)", () => {
+    // No-headset call: remote speech leaks into the mic on chunks 1-3 and gets
+    // dropped there by the final pass's P1/P2 echo filter (droppedEchoKeys),
+    // while the same audio survives on the sys channel as Speaker 1. The user
+    // only actually speaks in chunk 4. Without excluding droppedEchoKeys, the
+    // loud (but text-less) mic-001..003 RMS records still union into "Me".
+    const entryRecords: EntryRecord[] = [
+      { source: "mic", index: 1, timestamp: "00:00:00", text: "", rmsDb: -20 },
+      { source: "mic", index: 2, timestamp: "00:00:30", text: "", rmsDb: -20 },
+      { source: "mic", index: 3, timestamp: "00:01:00", text: "", rmsDb: -20 },
+      { source: "mic", index: 4, timestamp: "00:01:30", text: "d", rmsDb: -20 },
+    ];
+    const diarSegments: DiarSegment[] = [{ start: 0, end: 90, speaker: "Speaker 1" }];
+    const droppedEchoKeys = new Set(["mic-001", "mic-002", "mic-003"]);
+    const stats = computeTalkTime({
+      entryRecords,
+      textChunkKeys: new Set(),
+      chunkDurationSeconds: 30,
+      micRmsThresholdDb: -60,
+      sysRmsThresholdDb: -65,
+      diarSegments,
+      droppedEchoKeys,
+    });
+
+    assert.strictEqual(stats.speakers.find((s) => s.label === "Me")!.seconds, 30);
+    assert.strictEqual(stats.speakers.find((s) => s.label === "Speaker 1")!.seconds, 90);
+  });
+
   it("handles the zero-speech edge without dividing by zero", () => {    const stats = computeTalkTime({
       entryRecords: [],
       textChunkKeys: new Set(),
