@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-28
+
+### Added
+- **calendar:** auto-extend active recordings
+
+### Fixed
+- implement 2026-09-23 code review findings
+
 ## [1.0.0] - 2026-09-18
 
 ### Added
