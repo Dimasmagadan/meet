@@ -36,7 +36,7 @@ export interface Session {
   status: SessionStatus;
   processedChunks: Chunk[];
   lastError: string | null;
-  autoStopReason: "max_duration" | "no_text_timeout" | null;
+  autoStopReason: "max_duration" | "no_text_timeout" | "calendar_hard_cap" | null;
   latestProcessedOffsetSeconds: number;
   lastMeaningfulTextAtOffsetSeconds: number | null;
   hasMeaningfulText: boolean;
@@ -75,6 +75,11 @@ export interface Config {
   finalBestOf: number;
   maxDurationMinutes: number;
   noTextTimeoutMinutes: number;
+  calendarCapAutoExtend: boolean;
+  calendarCapAutoExtendStepMinutes: number;
+  calendarCapAutoExtendActivityWindowMinutes: number;
+  calendarCapAutoExtendMaxLagChunks: number;
+  calendarCapWarningLeadMinutes: number;
   phrasebookPath: string;
   phrasebookReload: boolean;
   // Raw regex rules (entry.regex: true) run unsandboxed on the live
@@ -241,6 +246,11 @@ export const DEFAULT_CONFIG: Config = {
   finalBestOf: 3,
   maxDurationMinutes: 75,
   noTextTimeoutMinutes: 10,
+  calendarCapAutoExtend: true,
+  calendarCapAutoExtendStepMinutes: 5,
+  calendarCapAutoExtendActivityWindowMinutes: 3,
+  calendarCapAutoExtendMaxLagChunks: 2,
+  calendarCapWarningLeadMinutes: 5,
   phrasebookPath: DEFAULT_PHRASEBOOK_PATH,
   phrasebookReload: true,
   phrasebookAllowRegex: false,

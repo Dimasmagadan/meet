@@ -9,9 +9,8 @@ final class CalendarAutoStartController: NSObject {
     private static let enabledKey = "calendarAutoRecordEnabled"
     private static let maxLatenessKey = "calendarAutoRecordMaxLatenessMinutes"
     private static let defaultMaxLatenessMinutes = 5
-    // Widened past the ±5min live-detection window purely to see a back-to-back successor
-    // for the cap-grace lookahead (§2.7) — costs nothing on a fetch that's already happening.
-    private static let lookaheadMinutes = 90.0
+    // Cover the full 2× extension ceiling for events up to two hours.
+    private static let lookaheadMinutes = 240.0
     private static let backWindowMinutes = 15.0
 
     // Fires when calendar access is denied at enable time — caller flips the toggle back off
@@ -232,9 +231,18 @@ final class CalendarAutoStartController: NSObject {
 
         let nextStart = CalendarMatch.nextStart(after: candidate.end, starts: qualifying.compactMap { $0.startDate })
         let cap = CalendarMatch.capMinutes(now: now, end: candidate.end, nextStart: nextStart)
+        let otherCandidates = qualifying.compactMap { item -> Candidate? in
+            guard let start = item.startDate, let end = item.endDate else { return nil }
+            let key = CalendarMatch.occurrenceKey(eventIdentifier: item.eventIdentifier, occurrenceDate: item.occurrenceDate ?? start)
+            return Candidate(key: key, title: resolvedTitle(item), start: start, end: end)
+        }
+        let extensionNextStart = CalendarMatch.extensionNextStart(winnerKey: candidate.key, now: now, candidates: otherCandidates, resolvedKeys: resolvedOccurrences)
+        let untilNext = extensionNextStart.map { Int(floor($0.timeIntervalSince(now) / 60)) }
+        let scheduledMinutes = Int(ceil(candidate.end.timeIntervalSince(candidate.start) / 60))
+        let hardCap = CalendarMatch.hardCapMinutes(scheduledMinutes: scheduledMinutes, softCapMinutes: cap, minutesUntilNextStart: untilNext, horizonMinutes: Int(Self.lookaheadMinutes))
         // Only a confirmed launch closes out this occurrence; a failed spawn
         // leaves it live for the next poll to retry (B8).
-        if recordingController.start(title: candidate.title, maxDurationMinutes: cap, attendees: attendeeNames(for: event)) {
+        if recordingController.start(title: candidate.title, maxDurationMinutes: cap, attendees: attendeeNames(for: event), hardCapMinutes: hardCap) {
             resolvedOccurrences.insert(candidate.key)
         }
     }

@@ -59,6 +59,7 @@ export async function writeMetaFile(session: Session, tags: string[], options?: 
   if (session.gitContext) {
     lines.push(formatRepoLine(session.gitContext));
   }
+  if (session.autoStopReason) lines.push(`- Auto-stop: ${session.autoStopReason}`);
 
   if (options?.note) {
     lines.push("", options.note);

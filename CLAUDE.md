@@ -61,6 +61,7 @@ meet start "Title"
 - `start --attendees "Name A,Name B"` — comma-separated attendee names (from calendar auto-start, `native/MenuBar/`); folded into the whisper prompt and persisted to `speakers.json` as `calendarAttendees`
 
 **src/pipeline.ts** — Core event loop
+**src/auto-stop.ts** — Pure calendar cap extension and auto-stop decision logic
 - Watches WAV files with chokidar
 - Maintains sequential whisper-cli queue
 - Deduplicates chunks

@@ -45,15 +45,16 @@ export function createProgram(): Command {
     .option("--mic", "Mic-only mode (no system audio)")
     .option("--silence <seconds>", "Silence timeout for audio capture (0 = disabled)", parseNonNegativeInteger, 0)
     .option("--max-duration <minutes>", "Auto-stop after N minutes (0 = disabled)", parseNonNegativeInteger)
+    .option("--calendar-hard-cap <minutes>", "Internal calendar launcher ceiling for adaptive cap extension", parsePositiveInteger)
     .option("--text-timeout <minutes>", "Auto-stop after N processed minutes without transcript (0 = disabled)", parseNonNegativeInteger)
     .option("--voice-processing", "Enable VoiceProcessing IO echo cancellation (default: off — conflicts with the call app's own AEC/AGC on the same mic and can drop your volume for other participants; verify before relying on it)")
     .option("--headless", "Run without terminal interaction (for menu bar app / automation)")
     .option("--no-summary", "Disable live extractive summary during recording")
     .option("--repo <path>", "Attach git repo context from <path> (default: current working directory)")
     .option("--attendees <names>", "Comma-separated attendee names (from calendar auto-start)")
-    .action(async (title: string | undefined, opts: { mic?: boolean; silence?: number; maxDuration?: number; textTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string; attendees?: string }) => {
+    .action(async (title: string | undefined, opts: { mic?: boolean; silence?: number; maxDuration?: number; calendarHardCap?: number; textTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string; attendees?: string }) => {
       const mode = opts.mic ? "mic" as const : "full" as const;
-      await startSessionLoop(title ?? "meeting", mode, opts.silence ?? 0, opts.maxDuration, opts.textTimeout, opts.voiceProcessing, opts.headless, opts.summary, opts.repo, opts.attendees);
+      await startSessionLoop(title ?? "meeting", mode, opts.silence ?? 0, opts.maxDuration, opts.textTimeout, opts.voiceProcessing, opts.headless, opts.summary, opts.repo, opts.attendees, opts.calendarHardCap);
     });
 
   program
@@ -276,11 +277,12 @@ async function runModelCommand(model: string | undefined, isFinal: boolean): Pro
     : "Applies from the next transcribed chunk — safe to change mid-recording."));
 }
 
-async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string) {
+async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string, calendarHardCapMinutes?: number) {
   let title = initialTitle;
 
   while (true) {
-    const result = await startSession(title, mode, silenceTimeout, maxDurationMinutes, noTextTimeoutMinutes, voiceProcessing, headless, summary, repoOverride, attendeesOverride);
+    const result = await startSession(title, mode, silenceTimeout, maxDurationMinutes, noTextTimeoutMinutes, voiceProcessing, headless, summary, repoOverride, attendeesOverride, calendarHardCapMinutes);
+    calendarHardCapMinutes = undefined;
     if (!result.startNextMeeting) {
       break;
     }
@@ -289,7 +291,8 @@ async function startSessionLoop(initialTitle: string, mode: "full" | "mic", sile
   }
 }
 
-async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string): Promise<{ startNextMeeting: boolean }> {
+async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string, calendarHardCapMinutes?: number): Promise<{ startNextMeeting: boolean }> {
+  validateCalendarHardCap(maxDurationMinutes, calendarHardCapMinutes);
   const summaryEnabled = summary === false ? false : true;
   const config = loadConfig({ ...(summaryEnabled ? {} : { summaryEnabled: false }) });
 
@@ -423,12 +426,22 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
   const recorder = new Recorder(session, config, {
     silenceTimeout,
     maxDurationMinutes: maxDurationMinutes ?? config.maxDurationMinutes,
+    calendarHardCapMinutes,
     noTextTimeoutMinutes: noTextTimeoutMinutes ?? config.noTextTimeoutMinutes,
     voiceProcessing: voiceProcessing ?? config.micVoiceProcessing,
     headless: headless ?? false,
   });
 
   return await recorder.run();
+}
+
+export function validateCalendarHardCap(maxDurationMinutes?: number, calendarHardCapMinutes?: number): void {
+  if (calendarHardCapMinutes === undefined) return;
+  if (!Number.isSafeInteger(calendarHardCapMinutes) || calendarHardCapMinutes <= 0 ||
+      !Number.isSafeInteger(maxDurationMinutes) || maxDurationMinutes === undefined || maxDurationMinutes <= 0 ||
+      calendarHardCapMinutes <= maxDurationMinutes) {
+    throw new InvalidArgumentError("--calendar-hard-cap requires a positive --max-duration smaller than the hard cap");
+  }
 }
 
 function parseInteger(value: string, label: string, allowZero: boolean): number {

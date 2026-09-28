@@ -11,6 +11,8 @@ struct Candidate: Equatable {
 }
 
 enum CalendarMatch {
+    static let maxGraceMinutes = 8
+    static let hardCapMultiplier = 2
     static let callLinkSubstrings = [
         "zoom.us", "zoomgov.com", "meet.google.com", "teams.microsoft.com", "teams.live.com",
         "webex.com", "whereby.com", "meet.jit.si", "telemost.yandex.ru", "jazz.sber.ru", "talk.kontur.ru",
@@ -56,11 +58,23 @@ enum CalendarMatch {
         let grace: Int
         if let nextStart {
             let gapMinutes = Int(floor(nextStart.timeIntervalSince(end) / 60)) - 1
-            grace = min(max(gapMinutes, 0), 8)
+            grace = min(max(gapMinutes, 0), maxGraceMinutes)
         } else {
-            grace = 8
+            grace = maxGraceMinutes
         }
         return max(1, remaining + grace)
+    }
+
+    static func extensionNextStart(winnerKey: String, now: Date, candidates: [Candidate], resolvedKeys: Set<String>) -> Date? {
+        candidates.filter { $0.key != winnerKey && !resolvedKeys.contains($0.key) && $0.start > now }
+            .map(\.start).min()
+    }
+
+    static func hardCapMinutes(scheduledMinutes: Int, softCapMinutes: Int, minutesUntilNextStart: Int?, horizonMinutes: Int) -> Int? {
+        var ceiling = scheduledMinutes * hardCapMultiplier
+        if let minutesUntilNextStart { ceiling = min(ceiling, minutesUntilNextStart - 1) }
+        ceiling = min(ceiling, horizonMinutes)
+        return ceiling > softCapMinutes ? ceiling : nil
     }
 
     // §2.4 — deterministic overlap resolution: latest start first, then shortest duration,
@@ -98,6 +112,19 @@ enum CalendarMatch {
         assert(capMinutes(now: now, end: end5, nextStart: end5) == 5 + 0, "next event immediately after end: grace 0")
         let pastEnd = now.addingTimeInterval(-10 * 60)
         assert(capMinutes(now: now, end: pastEnd, nextStart: pastEnd) == 1, "never returns 0")
+        assert(hardCapMinutes(scheduledMinutes: 30, softCapMinutes: 38, minutesUntilNextStart: nil, horizonMinutes: 240) == 60)
+        assert(hardCapMinutes(scheduledMinutes: 45, softCapMinutes: 53, minutesUntilNextStart: nil, horizonMinutes: 240) == 90)
+        assert(hardCapMinutes(scheduledMinutes: 3, softCapMinutes: 11, minutesUntilNextStart: nil, horizonMinutes: 240) == nil)
+        assert(hardCapMinutes(scheduledMinutes: 8, softCapMinutes: 16, minutesUntilNextStart: nil, horizonMinutes: 240) == nil)
+        assert(hardCapMinutes(scheduledMinutes: 10, softCapMinutes: 18, minutesUntilNextStart: nil, horizonMinutes: 240) == 20)
+        assert(hardCapMinutes(scheduledMinutes: 60, softCapMinutes: 68, minutesUntilNextStart: 105, horizonMinutes: 240) == 104)
+        assert(hardCapMinutes(scheduledMinutes: 30, softCapMinutes: 38, minutesUntilNextStart: 38, horizonMinutes: 240) == nil)
+        assert(hardCapMinutes(scheduledMinutes: 180, softCapMinutes: 188, minutesUntilNextStart: nil, horizonMinutes: 240) == 240)
+        let fractionalNext = now.addingTimeInterval(105 * 60 + 30)
+        let fractionalBudget = Int(floor(fractionalNext.timeIntervalSince(now) / 60))
+        assert(hardCapMinutes(scheduledMinutes: 60, softCapMinutes: 68, minutesUntilNextStart: fractionalBudget, horizonMinutes: 240) == 104)
+        let fractionalScheduled = Int(ceil((30 * 60 + 1) / 60.0))
+        assert(hardCapMinutes(scheduledMinutes: fractionalScheduled, softCapMinutes: 39, minutesUntilNextStart: nil, horizonMinutes: 240) == 62)
 
         // rankCandidates
         let now2 = Date(timeIntervalSince1970: 2_000_000)
@@ -113,6 +140,10 @@ enum CalendarMatch {
         let zeta = Candidate(key: "f", title: "Zeta", start: now2, end: now2.addingTimeInterval(900))
         let alpha = Candidate(key: "g", title: "Alpha", start: now2, end: now2.addingTimeInterval(900))
         assert(rankCandidates([zeta, alpha], now: now2).first?.key == "g", "identical span: lexicographic title")
+        let winner = Candidate(key: "winner", title: "Winner", start: now2, end: now2.addingTimeInterval(3600))
+        let overlap = Candidate(key: "overlap", title: "Overlap", start: now2.addingTimeInterval(3000), end: now2.addingTimeInterval(4800))
+        assert(extensionNextStart(winnerKey: winner.key, now: now2, candidates: [winner, overlap], resolvedKeys: []) == overlap.start)
+        assert(extensionNextStart(winnerKey: winner.key, now: now2, candidates: [winner, overlap], resolvedKeys: [overlap.key]) == nil)
 
         // Lateness gate
         let start = Date(timeIntervalSince1970: 3_000_000)

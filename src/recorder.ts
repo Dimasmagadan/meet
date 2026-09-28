@@ -5,7 +5,8 @@ import { dirname, basename, join } from "node:path";
 import type { Session, Config, TranscriptEntry } from "./types.js";
 import { Pipeline } from "./pipeline.js";
 import { appendEntry, chunkToTimestamp, entriesFromSession } from "./assembler.js";
-import { AttentionMonitor, buildRecap, formatRecap, sendMacNotification } from "./attention.js";
+import { AttentionMonitor, buildRecap, formatRecap, sendMacNotification, sendPlainNotification } from "./attention.js";
+import { calendarCapConfig, decideAutoStop } from "./auto-stop.js";
 import { runOpencodeQuestion } from "./opencode.js";
 import { runTagPicker, writeMetaFile, readTagsState, hasTagCaseInsensitive } from "./tags.js";
 import { parseCaptureLine, isChunkFinalized, eventMessage } from "./capture-events.js";
@@ -21,6 +22,7 @@ export interface RecorderOptions {
   noTextTimeoutMinutes: number;
   voiceProcessing: boolean;
   headless: boolean;
+  calendarHardCapMinutes?: number;
 }
 
 export class Recorder {
@@ -32,7 +34,11 @@ export class Recorder {
   private captureExited = false;
   private micChunks = 0;
   private sysChunks = 0;
-  private autoStopReason: "max_duration" | "no_text_timeout" | null = null;
+  private autoStopReason: Session["autoStopReason"] = null;
+  private manualCapOverride = false;
+  private hardCapWarningSent = false;
+  private autoExtendCount = 0;
+  private readonly capConfig: ReturnType<typeof calendarCapConfig>;
   private shuttingDown = false;
   private statusInterval: ReturnType<typeof setInterval> | null = null;
   private opencodeRunning = false;
@@ -56,6 +62,7 @@ export class Recorder {
   constructor(session: Session, config: Config, opts: RecorderOptions) {
     this.session = session;
     this.config = config;
+    this.capConfig = calendarCapConfig(config);
     this.opts = opts;
     this.startedAt = new Date(session.startedAt);
     this.outputFile = session.outputFile;
@@ -474,7 +481,8 @@ export class Recorder {
     try {
       await this.stopRecording();
       if (this.autoStopReason) {
-        const label = this.autoStopReason === "max_duration" ? "max duration" : "no text timeout";
+        const label = this.autoStopReason === "max_duration" ? "max duration"
+          : this.autoStopReason === "calendar_hard_cap" ? "calendar hard limit" : "no text timeout";
         console.log(chalk.yellow(`Auto-stopped (${label}).`));
       }
       await this.summaryScheduler?.flush();
@@ -583,35 +591,37 @@ export class Recorder {
   private checkAutoStop(): void {
     if (this.shuttingDown || this.autoStopReason) return;
 
-    const elapsedSec = this.effectiveElapsedMs() / 1000;
-
-    if (
-      this.opts.maxDurationMinutes > 0 &&
-      elapsedSec >= this.opts.maxDurationMinutes * 60
-    ) {
-      this.autoStopReason = "max_duration";
-      this.session.autoStopReason = "max_duration";
-      console.log(
-        chalk.yellow(
-          `Max duration reached: ${this.opts.maxDurationMinutes} minutes. Finalizing...`,
-        ),
-      );
+    const stats = this.pipeline.getStats();
+    const decision = decideAutoStop({
+      elapsedSec: this.effectiveElapsedMs() / 1000,
+      noTextGapSec: this.noTextGapSec(),
+      queueLagChunks: Math.max(0, this.micChunks + this.sysChunks - stats.totalDone),
+      autoExtendCount: this.autoExtendCount,
+      manualCapOverride: this.manualCapOverride,
+      hardCapWarningSent: this.hardCapWarningSent,
+    }, this.opts, this.capConfig);
+    if (decision.kind === "stop") {
+      this.autoStopReason = decision.reason;
+      this.session.autoStopReason = decision.reason;
+      const message = decision.reason === "calendar_hard_cap"
+        ? "Calendar hard limit reached. Finalizing..."
+        : decision.reason === "max_duration"
+          ? `Max duration reached: ${this.opts.maxDurationMinutes} minutes. Finalizing...`
+          : `No meaningful transcript for ${this.opts.noTextTimeoutMinutes} processed minutes. Finalizing...`;
+      console.log(chalk.yellow(message));
       void this.shutdown();
       return;
     }
-
-    if (
-      this.opts.noTextTimeoutMinutes > 0 &&
-      this.noTextGapSec() >= this.opts.noTextTimeoutMinutes * 60
-    ) {
-      this.autoStopReason = "no_text_timeout";
-      this.session.autoStopReason = "no_text_timeout";
-      console.log(
-        chalk.yellow(
-          `No meaningful transcript for ${this.opts.noTextTimeoutMinutes} processed minutes. Finalizing...`,
-        ),
-      );
-      void this.shutdown();
+    if (decision.extension) {
+      this.opts.maxDurationMinutes = decision.extension.newMaxDurationMinutes;
+      this.autoExtendCount++;
+      console.log(chalk.green(`Calendar cap extended to ${this.opts.maxDurationMinutes.toFixed(2)}m (${decision.extension.cause})`));
+    }
+    if (decision.warning) {
+      this.hardCapWarningSent = true;
+      const message = `Calendar limit in ~${decision.warning.minutesLeft} min; recording may stop sooner on silence. Menu bar → Extend +15m to raise the limit.`;
+      void sendPlainNotification("meet — calendar limit", message, "Glass")
+        .catch((err) => this.warn("calendar cap notification failed", err));
     }
   }
 
@@ -661,6 +671,9 @@ export class Recorder {
           this.opts.maxDurationMinutes * 60 - elapsed,
         );
         capStr = ` | cap: ${formatClock(remaining)}`;
+        if (this.capConfig.calendarCapAutoExtend && !this.manualCapOverride && this.autoExtendCount > 0 && this.opts.calendarHardCapMinutes !== undefined) {
+          capStr = ` | cap: ${formatClock(remaining)} (ext, hard ${formatClock(Math.max(0, this.opts.calendarHardCapMinutes * 60 - elapsed))})`;
+        }
       }
 
       let noTextStr = "";
@@ -733,6 +746,7 @@ export class Recorder {
 
   private extendCap(): void {
     if (this.shuttingDown) return;
+    this.manualCapOverride = true;
     const EXTEND_MINUTES = 15;
     if (this.opts.maxDurationMinutes > 0) {
       this.opts.maxDurationMinutes += EXTEND_MINUTES;

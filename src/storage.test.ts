@@ -117,6 +117,19 @@ describe("reserveOutputDir", () => {
 });
 
 describe("sanitizeFileConfig", () => {
+  it("rejects unsafe calendar cap settings and accepts zero queue lag threshold", () => {
+    const clean = sanitizeFileConfig({
+      calendarCapAutoExtendStepMinutes: 0,
+      calendarCapAutoExtendActivityWindowMinutes: -1,
+      calendarCapAutoExtendMaxLagChunks: 0,
+      calendarCapWarningLeadMinutes: 1.5,
+    });
+    assert.equal(clean.calendarCapAutoExtendStepMinutes, undefined);
+    assert.equal(clean.calendarCapAutoExtendActivityWindowMinutes, undefined);
+    assert.equal(clean.calendarCapAutoExtendMaxLagChunks, 0);
+    assert.equal(clean.calendarCapWarningLeadMinutes, undefined);
+    assert.equal(sanitizeFileConfig({ calendarCapAutoExtendMaxLagChunks: -1 }).calendarCapAutoExtendMaxLagChunks, undefined);
+  });
   it("keeps values matching the default type", () => {
     const clean = sanitizeFileConfig({ micRmsThresholdDb: -55, finalRetranscribe: false, language: "en" });
     assert.deepStrictEqual(clean, { micRmsThresholdDb: -55, finalRetranscribe: false, language: "en" });

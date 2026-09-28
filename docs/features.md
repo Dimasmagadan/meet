@@ -13,7 +13,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 
 - **Menu bar app** — `native/MenuBar/` builds a Dock-less `Meet.app` that drives `meet` headlessly from the menu bar: click Start and recording begins instantly under a default title — no naming popup; rename via "Rename Meeting…" or the title field in either tag window, with start/stop/pause/extend all without a terminal. Optional launch-at-login; reuses the full pipeline via shell-out + POSIX signals.
 - **Notch transcript panel** (14"/16" MacBook Pro, M1 Pro+) — while recording, hover the physical notch to reveal a scrollable live tail of the transcript; hides again when you move away.
-- **Calendar auto-start** — enable "Auto-Record Calendar Calls" in the menu bar to auto-start recording the moment a scheduled event with a Zoom/Meet/Teams/Webex/Whereby/Telemost/Jazz/Kontur link begins. No confirmation dialog; declined events, all-day events, and Free/OOO blocks are skipped. Auto-stops at the event's scheduled end (+ grace, trimmed for back-to-back meetings). The idle menu shows the next qualifying event so the feature stays observable.
+- **Calendar auto-start** — enable "Auto-Record Calendar Calls" in the menu bar to auto-start recording the moment a scheduled event with a Zoom/Meet/Teams/Webex/Whereby/Telemost/Jazz/Kontur link begins. No confirmation dialog; declined events, all-day events, and Free/OOO blocks are skipped. An active call can extend in 5-minute steps past its scheduled end plus grace, up to a 2× scheduled-length ceiling trimmed before a known next event. Silence stops at the current cap; manual Extend +15m takes control. The idle menu shows the next qualifying event.
 - **Foreground meeting recording** — `meet start "Title"` records mic + system audio, transcribes chunks live, and blocks the terminal until you stop.
 - **Mic-only mode** — `meet start --mic "Title"` for in-person meetings, interviews, or a phone on speaker.
 - **Dual-channel capture** — Swift `AudioCapture` records mic (AVAudioEngine + VoiceProcessing IO) and system audio (ScreenCaptureKit) in parallel into atomic 30s WAV chunks; `excludesCurrentProcessAudio` prevents feedback loops.
@@ -96,6 +96,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 
 - **File-based locks** — active-recording, per-session finalizer (`O_EXCL`), and a global final-pass lock that serializes heavy medium-model passes system-wide. All auto-clean stale entries via `isPidAlive`.
 - **Atomic writes** — every persistent write is `.tmp` → `rename()`.
+- **Calendar cap evidence** — `meta.md` retains the auto-stop reason; a one-shot macOS notification warns near the calendar hard ceiling.
 - **Append-only transcript log** — `entries.jsonl` is the durable source of truth; live-transcribed text is never lost, even if the final model is missing.
 - **Stale-session detection** — `meet start` warns about orphaned sessions and prints the `meet finalize` recovery command.
 - **System-pressure gates** — heavy passes back off under load; the **live path stays un-gated** so recording never stalls.
@@ -138,6 +139,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `--mic` | Mic-only mode | off |
 | `--silence <sec>` | Capture silence timeout (0 = off) | 0 |
 | `--max-duration <min>` | Auto-stop after N minutes | 75 |
+| `--calendar-hard-cap <min>` | Internal calendar launcher ceiling; requires a smaller explicit `--max-duration` | none |
 | `--text-timeout <min>` | Auto-stop after N processed min with no text | 10 |
 | `--voice-processing` | Enable VoiceProcessing IO echo cancellation | off |
 | `--allow-degraded` | Start with degraded audio (one channel) if the other fails | off |
@@ -157,6 +159,11 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | Flag | Default | Category |
 |---|---|---|
 | `finalRetranscribe` | `true` | Final retranscription pass |
+| `calendarCapAutoExtend` | `true` | Adaptive extension for eligible calendar recordings |
+| `calendarCapAutoExtendStepMinutes` | `5` | Minutes granted per extension |
+| `calendarCapAutoExtendActivityWindowMinutes` | `3` | Recent processed-text activity window |
+| `calendarCapAutoExtendMaxLagChunks` | `2` | Queue lag above which a silent cap decision is deferred |
+| `calendarCapWarningLeadMinutes` | `5` | Warning window before the hard ceiling |
 | `chunkDurationSeconds` | `30` | Audio chunk duration (matches whisper's 30s window) |
 | `silenceGate` | `true` | Silence gating |
 | `diarizationEnabled` | `true` | Speaker diarization |

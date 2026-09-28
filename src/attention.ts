@@ -111,21 +111,31 @@ function highlightTrigger(text: string, pattern: RegExp): string {
 
 export function buildNotificationArgs(alert: AttentionAlert, sound: string): string[] {
   const raw = `«${alert.trigger}» — "${alert.snippet}"`;
-  const message = truncate(stripControlChars(raw), NOTIFICATION_MAX_LEN);
+  return buildPlainNotificationArgs("meet — attention", raw, sound);
+}
 
+export function buildPlainNotificationArgs(title: string, rawMessage: string, sound: string): string[] {
   return [
     "-e", "on run argv",
     "-e", "display notification (item 1 of argv) with title (item 2 of argv) sound name (item 3 of argv)",
     "-e", "end run",
-    message,
-    "meet — attention",
-    sound,
+    truncate(stripControlChars(rawMessage), NOTIFICATION_MAX_LEN),
+    stripControlChars(title),
+    stripControlChars(sound),
   ];
 }
 
 export function sendMacNotification(alert: AttentionAlert, sound = "Glass"): Promise<void> {
+  return runNotification(buildNotificationArgs(alert, sound));
+}
+
+export function sendPlainNotification(title: string, message: string, sound: string): Promise<void> {
+  return runNotification(buildPlainNotificationArgs(title, message, sound));
+}
+
+function runNotification(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile("osascript", buildNotificationArgs(alert, sound), { timeout: 10_000 }, (err) => {
+    execFile("osascript", args, { timeout: 10_000 }, (err) => {
       if (err) reject(err);
       else resolve();
     });

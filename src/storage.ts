@@ -124,7 +124,9 @@ const positiveIntegers = new Set([
   "attentionCooldownSeconds", "attentionRecapEntries", "summaryIntervalChunks", "summaryTopN",
   "summaryWindowMaxEntries", "summaryMinEntries", "summaryMemThresholdMb", "summaryCatchupIntervalMs",
   "gateBudgetMs", "gatePollMs", "liveQueueLagWarnChunks",
+  "calendarCapAutoExtendStepMinutes", "calendarCapAutoExtendActivityWindowMinutes", "calendarCapWarningLeadMinutes",
 ]);
+const nonNegativeIntegers = new Set(["calendarCapAutoExtendMaxLagChunks"]);
 const nonNegativeNumbers = new Set(["maxDurationMinutes", "noTextTimeoutMinutes", "gateLoadAvg", "gateFreeMemMb"]);
 const unitIntervals = new Set([
   "whisperNoSpeechThreshold", "finalNoSpeechThreshold", "diarizationMinOverlap",
@@ -138,6 +140,7 @@ const nonEmptyStrings = new Set(["outputDir", "whisperBin", "language", "modelPa
 function isValidConfigValue(key: string, value: unknown): boolean {
   const number = value as number;
   if (positiveIntegers.has(key)) return Number.isSafeInteger(number) && number > 0;
+  if (nonNegativeIntegers.has(key)) return Number.isSafeInteger(number) && number >= 0;
   if (nonNegativeNumbers.has(key)) return Number.isFinite(number) && number >= 0;
   if (unitIntervals.has(key)) return Number.isFinite(number) && number >= 0 && number <= 1;
   if (finiteNumbers.has(key)) return Number.isFinite(number);

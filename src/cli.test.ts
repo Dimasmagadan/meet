@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Command } from "commander";
-import { createProgram, parseNonNegativeInteger, parsePositiveInteger } from "./cli.js";
+import { createProgram, parseNonNegativeInteger, parsePositiveInteger, validateCalendarHardCap } from "./cli.js";
 
 // The real option definitions are what's under test, so each case builds the
 // actual program and swaps only the action body for a capture stub (commander
@@ -36,6 +36,18 @@ test("start: --max-duration and --silence parse as non-negative integers", async
   const opts = await captureStart(["--max-duration", "90", "--silence", "30"]);
   assert.equal(opts.maxDuration, 90);
   assert.equal(opts.silence, 30);
+});
+
+test("start: calendar hard cap parses and validates before side effects", async () => {
+  const opts = await captureStart(["--max-duration", "23", "--calendar-hard-cap", "30"]);
+  assert.equal(opts.calendarHardCap, 30);
+  assert.doesNotThrow(() => validateCalendarHardCap(23, 30));
+  for (const pair of [[undefined, 30], [0, 30], [30, 30], [31, 30], [23, 0], [23, Infinity], [23, 2.5]] as const) {
+    assert.throws(() => validateCalendarHardCap(pair[0], pair[1]));
+  }
+  for (const bad of ["0", "-1", "1.5", "Infinity"]) {
+    assert.throws(() => parsePositiveInteger(bad));
+  }
 });
 
 test("start: --no-summary lands under the negated key as false (the working case)", async () => {

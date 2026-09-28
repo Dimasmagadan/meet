@@ -43,7 +43,7 @@ class RecordingController {
     // occurrence is marked handled and never retried for the rest of the
     // meeting (B8).
     @discardableResult
-    func start(title: String, maxDurationMinutes: Int? = nil, attendees: [String] = []) -> Bool {
+    func start(title: String, maxDurationMinutes: Int? = nil, attendees: [String] = [], hardCapMinutes: Int? = nil) -> Bool {
         guard state == .idle else { return false }
 
         guard let runner = resolver.resolve() else {
@@ -54,6 +54,9 @@ class RecordingController {
         var args = runner.args + ["start", title, "--headless"]
         if let maxDurationMinutes {
             args += ["--max-duration", "\(maxDurationMinutes)"]
+        }
+        if let hardCapMinutes {
+            args += ["--calendar-hard-cap", "\(hardCapMinutes)"]
         }
         if !attendees.isEmpty {
             args += ["--attendees", attendees.joined(separator: ",")]

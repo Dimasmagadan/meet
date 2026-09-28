@@ -320,4 +320,21 @@ describe("writeMetaFile integration", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("persists auto-stop reasons and omits the line for manual stops", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-meta-"));
+    try {
+      const session = makeSession(dir, null);
+      for (const reason of ["max_duration", "no_text_timeout", "calendar_hard_cap"] as const) {
+        session.autoStopReason = reason;
+        await writeMetaFile(session, []);
+        assert.match(readFileSync(join(dir, "meta.md"), "utf-8"), new RegExp(`- Auto-stop: ${reason}`));
+      }
+      session.autoStopReason = null;
+      await writeMetaFile(session, []);
+      assert.doesNotMatch(readFileSync(join(dir, "meta.md"), "utf-8"), /- Auto-stop:/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

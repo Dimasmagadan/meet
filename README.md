@@ -99,6 +99,7 @@ meet model [name]               List whisper models / hot-swap live (--final: fi
 | `--mic` | Mic-only mode (no system audio) | off |
 | `--silence <sec>` | Audio capture silence timeout (0 = disabled) | 0 |
 | `--max-duration <min>` | Auto-stop after N minutes | 75 |
+| `--calendar-hard-cap <min>` | Internal calendar launcher ceiling; requires a smaller explicit `--max-duration` | none |
 | `--text-timeout <min>` | Auto-stop after N processed minutes without transcript | 10 |
 | `--voice-processing` | Enable VoiceProcessing IO echo cancellation | off |
 | `--allow-degraded` | Start with degraded audio (one channel) if the other fails | off |
@@ -145,7 +146,7 @@ open native/MenuBar/.build/Meet.app    # NOT the raw binary — LaunchServices m
 - Mic/Screen TCC prompts are pre-requested from the app before capture starts; granting them lets the spawned `AudioCapture` record.
 - **Launch at Login** toggle (via `SMAppService`) so the app survives reboots.
 - **Notch transcript panel** (14"/16" MacBook Pro, M1 Pro+ only) — while recording, hover the physical notch to reveal a scrollable live tail of the transcript; moves away to hide again. See `specs/SPEC_NOTCH_TRANSCRIPT_PANEL_2026-08-03.md`.
-- **Auto-Record Calendar Calls** toggle — polls Calendar every 20s and auto-starts recording when a scheduled event with a Zoom/Meet/Teams/Webex/Whereby/Telemost/Jazz/Kontur link begins, no confirmation dialog (menu bar icon + notch panel are the only signals). Auto-stops at the event's scheduled end (+ grace). Non-attendee participant names from the event are folded into the whisper prompt and saved to `speakers.json` so `meet speakers suggest <dir>` can propose name assignments after finalize. See `specs/SPEC_CALENDAR_AUTOSTART_2026-08-04.md`. Participants are **not** notified that the meeting is being recorded — disclose it yourself if your jurisdiction requires it, and note that attendee names are PII that lands in `speakers.json`/the transcript text, local-only but shared if you share the transcript.
+- **Auto-Record Calendar Calls** toggle — polls Calendar every 20s and auto-starts recording when a scheduled event with a Zoom/Meet/Teams/Webex/Whereby/Telemost/Jazz/Kontur link begins, no confirmation dialog (menu bar icon + notch panel are the only signals). An active conversation can extend beyond the scheduled end plus grace in 5-minute steps, up to a 2× scheduled-length ceiling trimmed before a known next event. Silence stops at the current cap; manual Extend +15m takes control. A warning appears near the ceiling, and `meta.md` records the auto-stop reason. Non-attendee participant names from the event are folded into the whisper prompt and saved to `speakers.json` so `meet speakers suggest <dir>` can propose name assignments after finalize. See `specs/SPEC_CALENDAR_AUTOSTART_2026-08-04.md`. Participants are **not** notified that the meeting is being recorded — disclose it yourself if your jurisdiction requires it, and note that attendee names are PII that lands in `speakers.json`/the transcript text, local-only but shared if you share the transcript.
 - `meet bin-path` prints the resolved `{node, main, meet}` paths the app uses; set `menuBarMeetBin` in config to override the runner.
 - Ad-hoc signature: keep the bundle at a stable path (e.g. `cp -R native/MenuBar/.build/Meet.app ~/Applications/Meet.app`) — moving or rebuilding it re-prompts TCC.
 
@@ -248,6 +249,11 @@ Config file: `~/.meet/config.json` (written by `meet model`, read with defaults 
 | `chunkDurationSeconds` | `30` | Audio chunk duration |
 | `language` | `ru` | Whisper language code |
 | `prompt` | Russian consultation prompt | Whisper context prompt |
+| `calendarCapAutoExtend` | `true` | Adaptive extension for eligible calendar recordings |
+| `calendarCapAutoExtendStepMinutes` | `5` | Minutes granted per extension |
+| `calendarCapAutoExtendActivityWindowMinutes` | `3` | Recent processed-text activity window |
+| `calendarCapAutoExtendMaxLagChunks` | `2` | Queue lag above which a silent cap decision is deferred |
+| `calendarCapWarningLeadMinutes` | `5` | Warning window before the hard ceiling |
 | `finalRetranscribe` | `true` | Run high-quality final pass |
 | `silenceGate` | `true` | Skip silent chunks |
 | `phrasebookPath` | `./phrasebook.json` | Custom phrase replacements |

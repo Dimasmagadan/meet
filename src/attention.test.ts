@@ -4,7 +4,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import chalk from "chalk";
-import { AttentionMonitor, buildRecap, formatRecap, buildNotificationArgs, type AttentionAlert } from "./attention.js";
+import { AttentionMonitor, buildRecap, formatRecap, buildNotificationArgs, buildPlainNotificationArgs, type AttentionAlert } from "./attention.js";
 import { DEFAULT_CONFIG, type Config, type TranscriptEntry } from "./types.js";
 
 // Force chalk to emit ANSI under the non-TTY test runner so highlight assertions can match exact sequences.
@@ -254,6 +254,12 @@ describe("formatRecap", () => {
 });
 
 describe("buildNotificationArgs", () => {
+  it("keeps cap warning content in argv and preserves the Extend hint", () => {
+    const args = buildPlainNotificationArgs("meet", 'Calendar "limit" \\ soon\nMenu bar → Extend +15m to raise the limit.', "Glass");
+    assert.equal(args[3], "display notification (item 1 of argv) with title (item 2 of argv) sound name (item 3 of argv)");
+    assert.match(args[6], /Extend \+15m/);
+    assert.doesNotMatch(args[6], /\n/);
+  });
   it("uses the argv form and never interpolates text into -e source", () => {
     const alert: AttentionAlert = {
       trigger: "Дим",
