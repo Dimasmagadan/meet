@@ -22,6 +22,13 @@ final class NotchPanelController: NSObject {
     // No public API exposes the physical notch's corner radius; 12pt matches it visually
     // on 14"/16" MacBook Pro (M1 Pro+).
     private static let notchCornerRadius: CGFloat = 12
+    // Above .statusBar (25): every full-screen window (Brave/Chrome/Electron call apps,
+    // Zed, …) gets an AppKit-owned, alpha-0 menu-bar reveal window at level 26 spanning
+    // the whole menu-bar strip — notch included. At .statusBar the panel sat *under* it
+    // on those Spaces, so the transparent window swallowed mouseEntered and hover silently
+    // did nothing there while working on regular Spaces.
+    private static let fullScreenRevealLevel = 26
+    static let panelLevel = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)
 
     // Ask AI mode (SPEC_NOTCH_TABS_2026-08-12).
     private static let askRowHeight: CGFloat = 32
@@ -166,7 +173,7 @@ final class NotchPanelController: NSObject {
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        panel.level = .statusBar
+        panel.level = Self.panelLevel
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.isOpaque = false
         // .clear, not .black: the window's own background fills the full square frame
@@ -649,6 +656,9 @@ final class NotchPanelController: NSObject {
         let oldTopInset = nh + 4 + buttonSize.height
         let oldScroll = NSRect(x: 10, y: 6, width: hoverSize.width - 20, height: hoverSize.height - 6 - oldTopInset)
         assert(scrollNoInset == oldScroll, "scroll frame changed with zero bottom inset")
+
+        // Hover dies on full-screen Spaces if the panel drops back under the reveal window.
+        assert(panelLevel.rawValue > fullScreenRevealLevel, "panel level \(panelLevel.rawValue) is under the full-screen reveal window (\(fullScreenRevealLevel))")
 
         print("NotchPanelController.selfCheckTailExtraction: OK")
     }
