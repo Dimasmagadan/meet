@@ -16,15 +16,19 @@ on purpose.
    npm run release -- patch   # or: minor | major | --version X.Y.Z
    ```
    Add `--dry-run` first if you want to preview the generated changelog
-   section without touching any files.
-3. This bumps `package.json`, regenerates `package-lock.json`, prepends a
+   section without touching any files (it skips the tests).
+3. Before touching anything, the script runs the full suite —
+   `npm run test:all` (Node tests + `npm run test:swift`: native builds and
+   the MenuBar `--self-test-*` checks). Any failure aborts the release with
+   the tree unchanged; fix it, don't bypass it.
+4. It then bumps `package.json`, regenerates `package-lock.json`, prepends a
    new section to `CHANGELOG.md`, commits as `chore(release): vX.Y.Z`, and
    creates an annotated tag `vX.Y.Z`. Nothing is pushed yet — review it:
    ```bash
    git show HEAD
    git show vX.Y.Z
    ```
-4. Push both the commit and the tag:
+5. Push both the commit and the tag:
    ```bash
    git push && git push origin vX.Y.Z
    ```

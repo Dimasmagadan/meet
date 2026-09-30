@@ -203,6 +203,9 @@ describe("throttleHold", () => {
       ...over,
     };
   }
+  // Tests that don't exercise the recording pause must not fall through to the
+  // real active-recording lock — a live recording on the dev machine would hold forever.
+  const noRecording = () => false;
 
   it("returns immediately when idle and no recording is active", async () => {
     let sensorCalls = 0;
@@ -211,7 +214,7 @@ describe("throttleHold", () => {
       return makePressure({ overloaded: false });
     };
     const t0 = Date.now();
-    await throttleHold(throttleConfig(), makeDeadline(10_000), "test", { sensor });
+    await throttleHold(throttleConfig(), makeDeadline(10_000), "test", { sensor, isRecordingActive: noRecording });
     assert.strictEqual(sensorCalls, 1);
     assert.ok(Date.now() - t0 < 50);
   });
@@ -236,7 +239,7 @@ describe("throttleHold", () => {
       return makePressure({ overloaded: true, reason: "cpu 9.0/8c" });
     };
     const t0 = Date.now();
-    await throttleHold(throttleConfig(), makeDeadline(30), "test", { sensor });
+    await throttleHold(throttleConfig(), makeDeadline(30), "test", { sensor, isRecordingActive: noRecording });
     assert.ok(sensorCalls >= 2);
     assert.ok(Date.now() - t0 < 500, "budget must bound the load wait");
   });
@@ -266,6 +269,7 @@ describe("throttleHold", () => {
     const messages: string[] = [];
     await throttleHold(throttleConfig(), makeDeadline(10_000), "final pass", {
       sensor,
+      isRecordingActive: noRecording,
       notify: (m) => messages.push(m),
     });
     assert.strictEqual(messages.length, 1);

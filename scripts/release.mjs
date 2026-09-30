@@ -137,6 +137,15 @@ function main() {
       console.error("Tracked files have uncommitted changes. Commit or stash them before releasing.");
       process.exit(1);
     }
+    // Before anything is bumped or written, so a red suite leaves the tree
+    // untouched. Covers Node + Swift (MenuBar self-tests, native builds).
+    console.log("Running full test suite (npm run test:all)...");
+    try {
+      execFileSync("npm", ["run", "test:all"], { cwd: repoRoot, stdio: "inherit" });
+    } catch {
+      console.error("\nTests failed — release aborted. Nothing was changed.");
+      process.exit(1);
+    }
   }
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
   const nextVersion = args.version ?? bumpVersion(pkg.version, args.bump);

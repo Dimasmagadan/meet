@@ -8,7 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |------|---------|
 | **Build** | `npm run build` |
 | **Watch** | `npm run dev` (in separate terminal) |
-| **Test all** | `npm test` |
+| **Test all** | `npm test` (Node only) · `npm run test:all` (Node + Swift) |
+| **Test Swift** | `npm run test:swift` (native builds + MenuBar self-tests, debug build — `assert` is stripped in release) |
 | **Test single file** | `npm run build && node --test dist/import.test.js` |
 | **Type check** | `npm run lint` |
 | **Run app** | `node dist/main.js start "Title"` |

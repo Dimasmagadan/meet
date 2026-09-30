@@ -31,6 +31,8 @@
     "start": "node dist/main.js",
     "lint": "tsc --noEmit",
     "test": "tsc && node --test dist/**/*.test.js",
+    "test:swift": "sh scripts/test-swift.sh",
+    "test:all": "npm test && npm run test:swift",
     "release": "node scripts/release.mjs"
   },
   "dependencies": {

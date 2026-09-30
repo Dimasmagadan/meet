@@ -54,7 +54,9 @@ test("runFinalPass — batch gate", async (t) => {
     // Silent wav → rmsDb -Infinity < micRmsThresholdDb → inaudible, no whisper.
     writeFileSync(join(dir, "mic-001.wav"), makeSilentWav(16000));
     const session = makeSession(dir);
-    const config: Config = { ...DEFAULT_CONFIG, gateHeavyPasses: true, gateBudgetMs: 40 };
+    // gateWhileRecording off: these cases test the load gate, and runFinalPass has no
+    // recording-probe seam — a live recording on the dev machine would hold forever.
+    const config: Config = { ...DEFAULT_CONFIG, gateHeavyPasses: true, gateWhileRecording: false, gateBudgetMs: 40 };
     return { session, config };
   };
   const teardown = () => rmSync(dir, { recursive: true, force: true });
