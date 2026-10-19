@@ -105,6 +105,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(NSMenuItem(title: "Add Tag…", action: #selector(addTag), keyEquivalent: "t"))
             menu.addItem(NSMenuItem(title: "Rename Meeting…", action: #selector(renameMeeting), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: "Extend +15m", action: #selector(extendRecording), keyEquivalent: "e"))
+            addResetNotch(to: menu)
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Open Meetings Folder", action: #selector(openMeetings), keyEquivalent: "o"))
 
@@ -117,6 +118,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(NSMenuItem(title: "Stop", action: #selector(stopRecording), keyEquivalent: "s"))
             menu.addItem(NSMenuItem(title: "Add Tag…", action: #selector(addTag), keyEquivalent: "t"))
             menu.addItem(NSMenuItem(title: "Rename Meeting…", action: #selector(renameMeeting), keyEquivalent: ""))
+            addResetNotch(to: menu)
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Open Meetings Folder", action: #selector(openMeetings), keyEquivalent: "o"))
         }
@@ -128,6 +130,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
 
         statusItem.menu = menu
+    }
+
+    private func addResetNotch(to menu: NSMenu) {
+        let item = NSMenuItem(title: "Reset Notch Panel", action: #selector(resetNotchPanel), keyEquivalent: "n")
+        item.target = self
+        menu.addItem(item)
+    }
+
+    @objc func resetNotchPanel() {
+        notchPanelController.reinitialize()
     }
 
     private func addLoginItem(to menu: NSMenu) {

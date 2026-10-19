@@ -153,6 +153,26 @@ final class NotchPanelController: NSObject {
         panel?.orderFrontRegardless()
     }
 
+    // Manual recovery for a hover zone that went dead (menu item "Reset Notch Panel"):
+    // throws the window away and builds a fresh one, rather than re-ordering the old one.
+    func reinitialize() {
+        guard armed else { return }
+        stopPolling()
+        hideWorkItem?.cancel()
+        panel?.orderOut(nil)
+        panel?.close()
+        panel = nil
+        scrollView = nil
+        textView = nil
+        expandButton = nil
+        modeButton = nil
+        askField = nil
+        askSubmitButton = nil
+        isBigExpanded = false
+        mode = .transcript
+        arm()
+    }
+
     private func disarm() {
         stopPolling()
         hideWorkItem?.cancel()
