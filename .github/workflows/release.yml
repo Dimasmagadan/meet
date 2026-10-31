@@ -11,7 +11,9 @@ permissions:
 jobs:
   release:
     name: Create GitHub Release
-    runs-on: ubuntu-latest
+    # Same runner as CI's test job (macos-latest) — the suite is darwin-bound
+    # (specs/CI_LINUX_FINDINGS_2026-10-31.md); on ubuntu it hangs instead of failing.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -20,7 +22,7 @@ jobs:
           node-version: '24'
 
       # Release gate (SPEC_SAFETY_NET_2026-10-31 §2.5.1): the suite must pass
-      # before a release is cut. Platform-independent by design.
+      # before a release is cut. Runs on the product's platform (see CI).
       - name: Install dependencies
         run: npm ci
 

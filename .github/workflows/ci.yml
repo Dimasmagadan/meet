@@ -12,7 +12,11 @@ permissions:
 jobs:
   test:
     name: Lint + build + test (Node)
-    runs-on: ubuntu-latest
+    # macOS runner, not ubuntu: the product is macOS-only and the suite is not
+    # platform-independent (ps/comm identity, sysctl/vm_stat probes, recorder
+    # shutdown race — specs/CI_LINUX_FINDINGS_2026-10-31.md). On ubuntu the
+    # 2026-10-31 v1.2.0 run hung forever on a leaked recorder.test.js process.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -30,8 +34,8 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Tests run against compiled dist/, and exercise real temp-dir I/O plus
-      # fake executables — no macOS APIs, no hardware, no network.
+      # Tests run against compiled dist/ with temp-dir I/O and fake
+      # executables; some probes shell out to darwin tools (see job comment).
       - name: Run tests
         run: npm test
 

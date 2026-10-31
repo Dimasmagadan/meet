@@ -40,6 +40,13 @@ export function parseTestCount(output) {
   return null;
 }
 
+// A single leaked handle (e.g. recorder.test.js abandoning a live Recorder —
+// CI_LINUX_FINDINGS_2026-10-31.md §2) hangs the file's process forever, and
+// node --test then waits forever with it. Kill and fail loudly instead: the
+// partial output has no summary line, so the count guard below reports the
+// failure (no summary → exit 1, never a silent pass).
+const TEST_RUN_TIMEOUT_MS = 10 * 60_000;
+
 // Returns the src/*.ts files containing a literal NUL byte.
 export async function findNulByteFiles(srcDir) {
   const bad = [];
@@ -58,12 +65,25 @@ function runNodeTest(root, args) {
       stdio: ["ignore", "pipe", "inherit"],
     });
     let output = "";
+    let timedOut = false;
     child.stdout.setEncoding("utf-8");
     child.stdout.on("data", (chunk) => {
       output += chunk;
       process.stdout.write(chunk);
     });
-    child.on("close", (code) => resolve({ code: code ?? 1, output }));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, TEST_RUN_TIMEOUT_MS);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        console.error(`\n[run-tests] test run exceeded ${TEST_RUN_TIMEOUT_MS / 60_000} min and was killed — a test file is hanging. Refusing to report success.`);
+        resolve({ code: 1, output: "" });
+        return;
+      }
+      resolve({ code: code ?? 1, output });
+    });
   });
 }
 
