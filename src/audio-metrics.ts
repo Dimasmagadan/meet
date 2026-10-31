@@ -10,6 +10,12 @@ export interface AudioMetrics {
 
 export function readPcmSamples(wavBuffer: Buffer): Int16Array {
   if (wavBuffer.length < 44) return new Int16Array(0);
+  // P2-2 (SPEC_SAFETY_NET_2026-10-31 §4.2): reject non-WAV bytes explicitly —
+  // parsing garbage as samples fabricated plausible-looking audio (and
+  // plausible RMS) instead of surfacing the corruption.
+  if (wavBuffer.toString("latin1", 0, 4) !== "RIFF" || wavBuffer.toString("latin1", 8, 12) !== "WAVE") {
+    throw new Error("not a RIFF/WAVE file");
+  }
   const headerDataLen = wavBuffer.readUInt32LE(40);
   const actualDataLen = wavBuffer.length - 44;
   const dataLen = Math.min(headerDataLen, actualDataLen);
@@ -58,16 +64,22 @@ export function isBelowSpeechThreshold(
   return metrics.rmsDb < threshold;
 }
 
-export interface WavAnalysis {
-  metrics: AudioMetrics;
-  samples: Int16Array;
-}
+// P2-2 (SPEC_SAFETY_NET_2026-10-31 §4.2): a read failure is a discriminated
+// `ok: false` — the old catch fabricated digital silence, which the final
+// pass recorded as a successful silence verdict (completedKeys) and finalize
+// then treated as safe-to-delete, discarding transcript text and the only
+// recovery artifacts for a transient EIO/EACCES/truncated WAV. Fail closed:
+// unreadable audio must never look like silence.
+export type WavAnalysisResult =
+  | { ok: true; metrics: AudioMetrics; samples: Int16Array }
+  | { ok: false; error: unknown };
 
-export async function analyzeWavFileWithSamples(wavPath: string): Promise<WavAnalysis> {
+export async function analyzeWavFileWithSamples(wavPath: string): Promise<WavAnalysisResult> {
   try {
     const buf = await readFile(wavPath);
     const samples = readPcmSamples(buf);
     return {
+      ok: true,
       metrics: {
         rmsDb: computeRmsDb(samples),
         peakDb: computePeakDb(samples),
@@ -75,13 +87,9 @@ export async function analyzeWavFileWithSamples(wavPath: string): Promise<WavAna
       },
       samples,
     };
-  } catch {
-    return { metrics: { rmsDb: -Infinity, peakDb: -Infinity, sampleCount: 0 }, samples: new Int16Array(0) };
+  } catch (error) {
+    return { ok: false, error };
   }
-}
-
-export async function analyzeWavFile(wavPath: string): Promise<AudioMetrics> {
-  return (await analyzeWavFileWithSamples(wavPath)).metrics;
 }
 
 // P2 echo gate (SPEC_MIC_ECHO_FILTERING_2026-08-05): per-~100ms-frame RMS

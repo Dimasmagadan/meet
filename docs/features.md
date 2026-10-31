@@ -118,7 +118,7 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `meet doctor [mic\|full]` | 12-second capture health check + diagnostics |
 | `meet list` | List past meetings |
 | `meet finalize <sessionDir>` | Finalize a stopped recording (`--background`) |
-| `meet tag <sessionDir> <tags...>` | Queue tags for a running recording session |
+| `meet tag <sessionDir> <tags...>` | Replace the tag selection of a running session |
 | `meet status` | Show active recording/finalization jobs |
 | `meet rename <dir> <id> <name>` | Rename a diarized speaker label |
 | `meet link <dir> <repoPath>` | Attach/replace git repo context |
@@ -142,11 +142,10 @@ description: Every feature in meet — dual-channel capture, local whisper.cpp t
 | `--calendar-hard-cap <min>` | Internal calendar launcher ceiling; requires a smaller explicit `--max-duration` | none |
 | `--text-timeout <min>` | Auto-stop after N processed min with no text | 10 |
 | `--voice-processing` | Enable VoiceProcessing IO echo cancellation | off |
-| `--allow-degraded` | Start with degraded audio (one channel) if the other fails | off |
 | `--headless` | Suppress the post-start popup (menu-bar / scripted use) | off |
 | `--no-summary` | Disable live extractive summary | off |
 | `--repo <path>` | Attach git repo context from `<path>` | cwd |
-| `--attendees <names>` | Comma-separated attendee names (from calendar auto-start) | none |
+| `--attendees <names>` | Attendee names (from calendar auto-start); repeatable, one occurrence per name | none |
 
 </div>
 <!-- /FEATURES:cli-reference -->

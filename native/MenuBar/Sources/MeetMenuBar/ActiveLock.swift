@@ -17,4 +17,10 @@ enum ActiveLock {
     static func exists() -> Bool {
         FileManager.default.fileExists(atPath: path.path)
     }
+
+    // P2-8 (SPEC_SAFETY_NET_2026-10-31 §6.1): attached CLI sessions have no
+    // Process to observe — the lock's pid is the only liveness evidence.
+    static func isPidAlive(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0
+    }
 }

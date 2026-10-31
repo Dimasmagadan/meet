@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
@@ -41,6 +41,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
       - name: Build AudioCapture + AudioAnalysis
         working-directory: native/AudioCapture
         run: swift build
@@ -48,3 +52,8 @@ jobs:
       - name: Build MeetMenuBar
         working-directory: native/MenuBar
         run: swift build
+
+      # MenuBar --self-test-* asserts (notch, calendar, recording-state,
+      # writer budget) run in CI, not only locally (SPEC_SAFETY_NET_2026-10-31 §2.5.4).
+      - name: Swift self-tests
+        run: npm run test:swift

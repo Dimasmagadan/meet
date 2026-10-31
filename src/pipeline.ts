@@ -5,7 +5,7 @@ import chokidar from "chokidar";
 import type { Session, Config } from "./types.js";
 import { writeSession, loadConfig, createWarnOnce } from "./storage.js";
 import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
-import { analyzeWavFile } from "./audio-metrics.js";
+import { analyzeWavFileWithSamples } from "./audio-metrics.js";
 import { CaptureHealthMonitor, type HealthWarning, type CaptureHealthConfig } from "./capture-health.js";
 import { appendEntryRecord } from "./entries-store.js";
 import { chunkToTimestamp } from "./assembler.js";
@@ -75,6 +75,7 @@ export class Pipeline {
       chunkDurationSeconds: this.session.chunkDurationSeconds,
       silentConsecutiveThreshold: 3,
       micMissingChunkThreshold: 2,
+      sysMissingMinutes: 5,
     };
     this.healthMonitor = new CaptureHealthMonitor(healthConfig);
   }
@@ -84,7 +85,12 @@ export class Pipeline {
   }
 
   start() {
-    this.rescan();
+    // P3 (§7 row 19): rescan is async — the bare fire-and-forget turned a
+    // readdir rejection (vanished/permission-denied session dir) into an
+    // unhandled rejection that crashed the recorder.
+    void this.rescan().catch((err) => {
+      console.error(`[meet] transcript rescan failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
 
     this.watcher = chokidar.watch(join(this.session.sessionDir, "*.wav"), {
       ignored: /.*\.wav\.tmp$/,
@@ -101,6 +107,12 @@ export class Pipeline {
       const parsed = parseChunkFilename(filename);
       if (!parsed) return;
       this.enqueue(parsed.source, parsed.index, filename);
+    });
+
+    // P3 (§7 row 19): chokidar surfaces fs errors (vanished dir, permissions)
+    // on "error" — without a listener Node re-throws and kills the recorder.
+    this.watcher.on("error", (err) => {
+      console.error(`[meet] transcript watcher error: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 
@@ -221,17 +233,22 @@ export class Pipeline {
       const config = loadConfig();
 
       if (this.healthMonitor) {
-        const metrics = await analyzeWavFile(wavPath);
-        const warning = this.healthMonitor.recordChunk(item.source, item.index, metrics);
-        if (warning && this.onHealthWarning) {
-          this.onHealthWarning(warning);
-        }
+        const analysis = await analyzeWavFileWithSamples(wavPath);
+        // P2-2: an unreadable WAV must not enter the health monitor as
+        // fabricated silence; the transcription below surfaces a real error
+        // if the file is genuinely broken.
+        if (analysis.ok) {
+          const warning = this.healthMonitor.recordChunk(item.source, item.index, analysis.metrics);
+          if (warning && this.onHealthWarning) {
+            this.onHealthWarning(warning);
+          }
 
-        this.healthCheckCounter++;
-        if (this.healthCheckCounter % 4 === 0) {
-          const micWarning = this.healthMonitor.checkMicMissing();
-          if (micWarning && this.onHealthWarning) {
-            this.onHealthWarning(micWarning);
+          this.healthCheckCounter++;
+          if (this.healthCheckCounter % 4 === 0) {
+            const micWarning = this.healthMonitor.checkMicMissing();
+            if (micWarning && this.onHealthWarning) {
+              this.onHealthWarning(micWarning);
+            }
           }
         }
       }

@@ -57,8 +57,11 @@ export function parseLoadavg(stdout: string): number | null {
 }
 
 // Parse macOS `vm_stat` page counts. Returns free memory in MB or null.
-// "free" here = free + inactive pages × 4096 bytes, the conventional
-// approximation of reclaimable memory on darwin.
+// "free" here = free + inactive pages × page-size bytes, the conventional
+// approximation of reclaimable memory on darwin. The page size must come from
+// the vm_stat header (or sysctl) — Apple Silicon prints "page size of 16384
+// bytes", and the old 4096 default under-reported free memory 4× on those
+// machines (P1-2).
 export function parseFreeMemoryMb(stdout: string, pageSize: number = 4096): number | null {
   const freeMatch = stdout.match(/Pages free:\s+(\d+)/);
   const inactiveMatch = stdout.match(/Pages inactive:\s+(\d+)/);
@@ -70,6 +73,15 @@ export function parseFreeMemoryMb(stdout: string, pageSize: number = 4096): numb
   return Math.round((pages * pageSize) / (1024 * 1024));
 }
 
+// Parse the page size out of vm_stat's header line. Older macOS wordings may
+// omit it — callers must fall back (see readFreeMemoryMb).
+export function parseVmStatPageSize(stdout: string): number | null {
+  const m = stdout.match(/page size of (\d+) bytes/);
+  if (!m) return null;
+  const size = Number(m[1]);
+  return Number.isInteger(size) && size > 0 ? size : null;
+}
+
 async function readLoadavg(): Promise<number | null> {
   try {
     const { stdout } = await execFileP("sysctl", ["-n", "vm.loadavg"]);
@@ -79,10 +91,32 @@ async function readLoadavg(): Promise<number | null> {
   }
 }
 
+// hw.pagesize never changes within a boot — resolve once, memoize.
+let cachedPageSize: number | null = null;
+let pageSizeResolved = false;
+
+async function readPageSize(): Promise<number | null> {
+  if (pageSizeResolved) return cachedPageSize;
+  pageSizeResolved = true;
+  try {
+    const { stdout } = await execFileP("sysctl", ["-n", "hw.pagesize"]);
+    const size = Number(stdout.trim());
+    if (Number.isInteger(size) && size > 0) cachedPageSize = size;
+  } catch {}
+  return cachedPageSize;
+}
+
+// Visible for tests — clears the memoized hw.pagesize.
+export function _resetPageSizeCache(): void {
+  cachedPageSize = null;
+  pageSizeResolved = false;
+}
+
 async function readFreeMemoryMb(): Promise<number | null> {
   try {
     const { stdout } = await execFileP("vm_stat");
-    return parseFreeMemoryMb(stdout);
+    const pageSize = parseVmStatPageSize(stdout) ?? (await readPageSize()) ?? 4096;
+    return parseFreeMemoryMb(stdout, pageSize);
   } catch {
     return null;
   }
@@ -265,11 +299,14 @@ export async function throttleHold(
   stage: string,
   opts: ThrottleOptions = {},
 ): Promise<void> {
-  const sensor = opts.sensor ?? getSystemPressure;
+  // Bind the resolved thresholds into the default sensor (P1-2): the old code
+  // computed `thresholds` and never used it, so getSystemPressure fell back to
+  // DEFAULT_PRESSURE_THRESHOLDS and gateLoadAvg/gateFreeMemMb were dead config.
+  const thresholds = resolveGateThresholds(config);
+  const sensor = opts.sensor ?? (() => getSystemPressure(thresholds));
   const isRecordingActive = opts.isRecordingActive ?? isActiveRecording;
   const notify = opts.notify ?? ((message: string) => console.error(`[meet] ${message}`));
   const pollMs = config.gatePollMs > 0 ? config.gatePollMs : DEFAULT_GATE_POLL_MS;
-  const thresholds = resolveGateThresholds(config);
   const loadWaitEnabled = config.gateHeavyPasses && deadline !== null;
   const recordingWaitEnabled = config.gateHeavyPasses && config.gateWhileRecording && deadline !== null;
   let holdReason: string | null = null;

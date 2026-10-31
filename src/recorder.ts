@@ -23,6 +23,13 @@ export interface RecorderOptions {
   voiceProcessing: boolean;
   headless: boolean;
   calendarHardCapMinutes?: number;
+  // Test seams (P2-5, SPEC_SAFETY_NET_2026-10-31 §5.1): the capture spawn and
+  // the background-finalizer spawn are injectable so tests can simulate a
+  // capture dying mid-startup without real processes. Defaults are the real
+  // spawners — zero change elsewhere.
+  spawnCapture?: typeof spawn;
+  captureBinPath?: string;
+  spawnFinalizer?: (sessionDir: string) => number | undefined;
 }
 
 export class Recorder {
@@ -91,6 +98,18 @@ export class Recorder {
     this.initPipeline();
     await this.startCapture();
 
+    // P2-5: covers the spawn-to-listener gap completely. A capture that died
+    // while startCapture's awaits were still in flight (TCC denial, macOS
+    // < 14.2, crash) has either set captureExited via the now-early-attached
+    // exit handler or already carries a non-null exitCode — run() must settle
+    // instead of hanging (no-text timeout can't fire while
+    // latestProcessedOffsetSeconds stays 0) until max-duration, forever with
+    // --max-duration 0.
+    if (this.captureExited || this.captureProcess?.exitCode !== null) {
+      void this.shutdown();
+      return { startNextMeeting: this.startNextMeeting };
+    }
+
     await new Promise<void>((resolve) => {
       this.resolveRun = resolve;
       this.captureProcess?.on("exit", () => {
@@ -157,7 +176,8 @@ export class Recorder {
   }
 
   private async startCapture(): Promise<void> {
-    const captureBin = getCaptureBinPath(this.config);
+    const captureBin = this.opts.captureBinPath ?? getCaptureBinPath(this.config);
+    const spawnCapture = this.opts.spawnCapture ?? spawn;
     const captureArgs = [
       "--output-dir", this.session.sessionDir,
       "--chunk-duration", String(this.config.chunkDurationSeconds),
@@ -168,7 +188,7 @@ export class Recorder {
 
     let captureProcess: ChildProcess;
     try {
-      captureProcess = spawn(captureBin, captureArgs, {
+      captureProcess = spawnCapture(captureBin, captureArgs, {
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
@@ -184,6 +204,17 @@ export class Recorder {
     // check because no capture process is running.
     captureProcess.on("error", (err) => {
       this.handleCaptureStartFailure(err, captureProcess);
+    });
+
+    // P2-5: the exit handler attaches immediately after spawn, BEFORE any
+    // await — the old code attached it two awaits later (session.json + lock
+    // writes), so a capture dying inside that window was missed by both
+    // listeners and run() never settled.
+    captureProcess.on("exit", (code) => {
+      this.captureExited = true;
+      if (code && code !== 0) {
+        console.log(chalk.red(`AudioCapture exited with code ${code}`));
+      }
     });
 
     try {
@@ -227,13 +258,6 @@ export class Recorder {
             process.stdout.write("\n");
             console.log(chalk.gray(`[capture] ${line}`));
           }
-        }
-      });
-
-      captureProcess.on("exit", (code) => {
-        this.captureExited = true;
-        if (code && code !== 0) {
-          console.log(chalk.red(`AudioCapture exited with code ${code}`));
         }
       });
     } catch (err) {
@@ -491,7 +515,7 @@ export class Recorder {
       // mutating the same session.json + entries.jsonl this pipeline instance
       // may still be mid-write to.
       await this.pipeline.close();
-      const finalizerPid = spawnBackgroundFinalizer(this.session.sessionDir);
+      const finalizerPid = (this.opts.spawnFinalizer ?? spawnBackgroundFinalizer)(this.session.sessionDir);
       if (finalizerPid === undefined) {
         console.log(chalk.red(`Background finalizer failed to start (node binary or entry point missing) — run \`meet finalize ${this.session.sessionDir}\` manually`));
       } else {
@@ -541,7 +565,7 @@ export class Recorder {
 
       await this.summaryScheduler?.flush();
       await this.promptTags();
-      const finalizerPid = spawnBackgroundFinalizer(this.session.sessionDir);
+      const finalizerPid = (this.opts.spawnFinalizer ?? spawnBackgroundFinalizer)(this.session.sessionDir);
       if (finalizerPid === undefined) {
         console.log(chalk.red(`Background finalizer failed to start (node binary or entry point missing) — run \`meet finalize ${this.session.sessionDir}\` manually`));
       } else {
@@ -569,7 +593,7 @@ export class Recorder {
       // See shutdown()'s identical await: this must land before the detached
       // finalizer starts touching the same session files.
       await this.pipeline.close();
-      const finalizerPid = spawnBackgroundFinalizer(this.session.sessionDir);
+      const finalizerPid = (this.opts.spawnFinalizer ?? spawnBackgroundFinalizer)(this.session.sessionDir);
       if (finalizerPid === undefined) {
         console.log(chalk.red(`Background finalizer failed to start (node binary or entry point missing) — run \`meet finalize ${this.session.sessionDir}\` manually`));
       } else {
@@ -613,9 +637,12 @@ export class Recorder {
       return;
     }
     if (decision.extension) {
-      this.opts.maxDurationMinutes = decision.extension.newMaxDurationMinutes;
+      // P3 (§7 row 3): fractional caps (elapsedSec/60 + step) made formatClock
+      // print raw fractions ("sec % 60" of 367.4 → "07:7.4"); round up to the
+      // next whole minute.
+      this.opts.maxDurationMinutes = Math.ceil(decision.extension.newMaxDurationMinutes);
       this.autoExtendCount++;
-      console.log(chalk.green(`Calendar cap extended to ${this.opts.maxDurationMinutes.toFixed(2)}m (${decision.extension.cause})`));
+      console.log(chalk.green(`Calendar cap extended to ${this.opts.maxDurationMinutes}m (${decision.extension.cause})`));
     }
     if (decision.warning) {
       this.hardCapWarningSent = true;
@@ -746,14 +773,15 @@ export class Recorder {
 
   private extendCap(): void {
     if (this.shuttingDown) return;
+    // P3 (§7 row 2): --max-duration 0 means unlimited — the old fall-through
+    // turned it into elapsed+15m (~15 min on a fresh session).
+    if (this.opts.maxDurationMinutes === 0) {
+      console.log(chalk.green("Cap is unlimited (--max-duration 0); nothing to extend"));
+      return;
+    }
     this.manualCapOverride = true;
     const EXTEND_MINUTES = 15;
-    if (this.opts.maxDurationMinutes > 0) {
-      this.opts.maxDurationMinutes += EXTEND_MINUTES;
-    } else {
-      const currentMinutes = Math.ceil(this.effectiveElapsedMs() / 60000);
-      this.opts.maxDurationMinutes = currentMinutes + EXTEND_MINUTES;
-    }
+    this.opts.maxDurationMinutes += EXTEND_MINUTES;
     console.log(chalk.green(`Cap extended +${EXTEND_MINUTES}m → now ${this.opts.maxDurationMinutes}m`));
   }
 
@@ -765,42 +793,18 @@ export class Recorder {
     process.stdin.setRawMode(false);
     process.stdout.write(chalk.cyan("Question for opencode: "));
 
-    const rl = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-    rl.question("", async (question: string) => {
-      rl.close();
-
-      const q = question.trim();
-      if (!q) {
-        process.stdout.write(chalk.gray("(cancelled)\n"));
-        this.opencodeRunning = false;
-        if (process.stdin.isTTY) process.stdin.setRawMode(true);
-        this.startStatus();
-        return;
-      }
-
-      process.stdout.write(chalk.gray("Waiting for opencode (up to 60s)...\n"));
-      if (process.stdin.isTTY) process.stdin.setRawMode(true);
-
-      try {
-        const result = await runOpencodeQuestion(
-          this.config,
-          this.outputFile,
-          this.session.title,
-          q,
-        );
-        process.stdout.write("\n");
-        console.log(chalk.bold("--- Answer ---"));
-        console.log(result);
-        console.log(chalk.bold("--- End answer ---\n"));
-      } catch (err) {
-        console.log(chalk.red(`Question failed: ${formatError(err)}`));
-      } finally {
+    askOpencode({
+      stdin: process.stdin,
+      stdout: process.stdout,
+      isTTY: !!process.stdin.isTTY,
+      setRawMode: (mode) => {
+        if (process.stdin.isTTY) process.stdin.setRawMode(mode);
+      },
+      runQuestion: (q) => runOpencodeQuestion(this.config, this.outputFile, this.session.title, q),
+      restartStatus: () => {
         this.opencodeRunning = false;
         this.startStatus();
-      }
+      },
     });
   }
 
@@ -811,10 +815,10 @@ export class Recorder {
     process.on("SIGTERM", this.sigtermHandler);
 
     this.sigusr1Handler = () => {
-      if (!this.paused) void this.togglePause(true);
+      if (!this.paused) void this.togglePause(true).catch((err) => this.warn("pause toggle failed", err));
     };
     this.sigusr2Handler = () => {
-      if (this.paused) void this.togglePause(true);
+      if (this.paused) void this.togglePause(true).catch((err) => this.warn("pause toggle failed", err));
     };
     process.on("SIGUSR1", this.sigusr1Handler);
     process.on("SIGUSR2", this.sigusr2Handler);
@@ -909,10 +913,74 @@ export function formatLagStatus(
   return lagSec > 0 ? `lag ~${lagSec}s` : "up to date";
 }
 
-function formatClock(sec: number): string {
-  const m = String(Math.floor(sec / 60)).padStart(2, "0");
-  const s = String(sec % 60).padStart(2, "0");
+export function formatClock(sec: number): string {
+  // P3 (§7 row 3): fractional seconds (fractional caps, ms-precision elapsed)
+  // printed raw ("07:7.4"); round to whole seconds first.
+  const total = Math.round(sec);
+  const m = String(Math.floor(total / 60)).padStart(2, "0");
+  const s = String(total % 60).padStart(2, "0");
   return `${m}:${s}`;
+}
+
+export interface AskOpencodeDeps {
+  stdin: NodeJS.ReadableStream;
+  stdout: NodeJS.WritableStream;
+  isTTY: boolean;
+  setRawMode: (mode: boolean) => void;
+  createInterface?: typeof createInterface;
+  runQuestion: (question: string) => Promise<string>;
+  // Clears the recorder's opencodeRunning guard and restarts the 5s status
+  // ticker (startStatus is idempotent). Called by whichever of the two prompt
+  // endings wins — see the close handler below.
+  restartStatus: () => void;
+}
+
+// The `a` hotkey prompt flow, extracted for tests (P2-6,
+// SPEC_SAFETY_NET_2026-10-31 §5.2). Ctrl-D/EOF on the readline interface
+// emits "close" WITHOUT invoking the pending question callback — the old
+// inline version left the opencode guard stuck on and the status ticker
+// permanently stopped (checkAutoStop never ran again). The close handler
+// resets both; the callback clears the running flag BEFORE rl.close() so the
+// synchronous close emission from a submitted answer can't double-conclude.
+export function askOpencode(deps: AskOpencodeDeps): void {
+  let running = true;
+  const conclude = () => {
+    if (deps.isTTY) deps.setRawMode(true);
+    deps.restartStatus();
+  };
+
+  const rl = (deps.createInterface ?? createInterface)({
+    input: deps.stdin,
+    output: deps.stdout,
+  });
+  rl.on("close", () => {
+    if (!running) return;
+    running = false;
+    conclude();
+  });
+  rl.question("", async (question: string) => {
+    running = false;
+    rl.close();
+
+    const q = question.trim();
+    if (!q) {
+      deps.stdout.write(chalk.gray("(cancelled)\n"));
+      conclude();
+      return;
+    }
+
+    deps.stdout.write(chalk.gray("Waiting for opencode (up to 60s)...\n"));
+    if (deps.isTTY) deps.setRawMode(true);
+
+    try {
+      const result = await deps.runQuestion(q);
+      deps.stdout.write(`\n${chalk.bold("--- Answer ---")}\n${result}\n${chalk.bold("--- End answer ---\n")}\n`);
+    } catch (err) {
+      deps.stdout.write(`${chalk.red(`Question failed: ${formatError(err)}`)}\n`);
+    } finally {
+      conclude();
+    }
+  });
 }
 
 function formatError(err: unknown): string {

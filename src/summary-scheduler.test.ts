@@ -7,6 +7,17 @@ import { SummaryScheduler } from "./summary.js";
 import type { Session, TranscriptEntry } from "./types.js";
 import type { ResourcePressure } from "./system-monitor.js";
 
+
+// P3 (§7 row 13): polling helper — keeps only generous hang bounds.
+async function waitFor(fn: () => boolean, everyMs: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!fn()) {
+    if (Date.now() > deadline) throw new Error("waitFor: timed out");
+    await new Promise((r) => setTimeout(r, everyMs));
+  }
+}
+
+
 function makeSession(opts: Partial<Session> = {}): Session {
   return {
     id: "test",
@@ -237,11 +248,14 @@ describe("SummaryScheduler — timer-driven catch-up", () => {
     });
 
     sched.onChunk("mic", 1);
-    await new Promise((r) => setTimeout(r, 10));
+    // P3 (§7 row 13): fixed 5-30ms sleeps flaked on slow CI runners. Give a
+    // (still generous) window for a would-be write to land, assert it stayed
+    // paused, then clear the overload and poll for the catch-up write.
+    await new Promise((r) => setTimeout(r, 150));
     assert.strictEqual(existsSync(outputFile), false); // paused
     // The catch-up timer should be ticking. Clear the overload.
     pressureState = makePressure();
-    await new Promise((r) => setTimeout(r, 30));
+    await waitFor(() => existsSync(outputFile), 50, 5000);
     assert.strictEqual(existsSync(outputFile), true);
   });
 });

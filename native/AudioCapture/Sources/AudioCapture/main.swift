@@ -24,7 +24,14 @@ struct AudioCaptureCLI: AsyncParsableCommand {
     @Flag(name: .long, help: "In full mode, keep running if mic or system audio fails to start instead of exiting")
     var allowDegraded: Bool = false
 
+    @Flag(name: .long, help: "Run WriterErrorBudget assert() self-tests and exit (debug builds only — release strips assert)")
+    var selfTestWriter: Bool = false
+
     func run() async throws {
+        if selfTestWriter {
+            WriterErrorBudgetSelfTest.run()
+            return
+        }
         let runner = CaptureRunner(outputDir: outputDir, chunkDuration: chunkDuration, mode: mode, silenceTimeout: silenceTimeout, voiceProcessing: voiceProcessing, allowDegraded: allowDegraded)
         try await runner.run()
     }

@@ -37,6 +37,8 @@ final class CalendarAutoStartController: NSObject {
     // cycle is discarded at the next async boundary instead of restarting
     // polling or auto-starting after the toggle went off.
     private var pollGeneration = 0
+    // P3 (§7 row 16): occurrence keys whose spawn-failure alert already fired.
+    private var spawnFailureAlertedOccurrences: Set<String> = []
     private var enableTask: Task<Void, Never>?
 
     init(recordingController: RecordingController, permission: PermissionController) {
@@ -141,7 +143,11 @@ final class CalendarAutoStartController: NSObject {
     }
 
     @objc private func storeChanged(_ note: Notification) {
+        // P3 (§7 row 16): reset() can invalidate an EKEventStore fetch that is
+        // still in flight on fetchQueue — bump the generation so its results
+        // are discarded instead of half-populating process().
         store.reset()
+        pollGeneration += 1
     }
 
     // MARK: - Poll loop (§2.2)
@@ -241,19 +247,32 @@ final class CalendarAutoStartController: NSObject {
         let scheduledMinutes = Int(ceil(candidate.end.timeIntervalSince(candidate.start) / 60))
         let hardCap = CalendarMatch.hardCapMinutes(scheduledMinutes: scheduledMinutes, softCapMinutes: cap, minutesUntilNextStart: untilNext, horizonMinutes: Int(Self.lookaheadMinutes))
         // Only a confirmed launch closes out this occurrence; a failed spawn
-        // leaves it live for the next poll to retry (B8).
+        // leaves it live for the next poll to retry (B8) — but the failure
+        // alert fires once per occurrence, not on every 20 s retry.
         if recordingController.start(title: candidate.title, maxDurationMinutes: cap, attendees: attendeeNames(for: event), hardCapMinutes: hardCap) {
             resolvedOccurrences.insert(candidate.key)
+            spawnFailureAlertedOccurrences.remove(candidate.key)
+        } else if spawnFailureAlertedOccurrences.insert(candidate.key).inserted {
+            NSLog("CalendarAutoStartController: failed to start recording for \"\(candidate.title)\"; will retry next poll")
         }
     }
 
     // §6.1 — non-self attendees as a candidate name list, folded into the whisper prompt
     // (§6.2, transcriber.ts) and persisted to speakers.json for `meet speakers suggest` (§6.3).
+    // P3 (§7 row 18): filtering (declined invitees, rooms/resources) is the pure
+    // CalendarMatch.candidateAttendeeNames — and "Doe, John" survives whole
+    // because names are handed to the CLI as one --attendees occurrence each.
     private func attendeeNames(for event: EKEvent) -> [String] {
-        event.attendees?
-            .filter { !$0.isCurrentUser }
-            .compactMap { $0.name ?? $0.url.absoluteString.replacingOccurrences(of: "mailto:", with: "") }
-            ?? []
+        let descriptors: [AttendeeDescriptor] = (event.attendees ?? []).map { participant in
+            AttendeeDescriptor(
+                isCurrentUser: participant.isCurrentUser,
+                isDeclined: participant.participantStatus == .declined,
+                isNonParticipant: participant.participantRole == .nonParticipant,
+                name: participant.name,
+                mailto: participant.url.absoluteString
+            )
+        }
+        return CalendarMatch.candidateAttendeeNames(descriptors)
     }
 
     private func updateNextEvent(qualifying: [EKEvent], now: Date) {

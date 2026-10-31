@@ -59,7 +59,14 @@ class RecordingController {
             args += ["--calendar-hard-cap", "\(hardCapMinutes)"]
         }
         if !attendees.isEmpty {
-            args += ["--attendees", attendees.joined(separator: ",")]
+            // P3 (§7 row 18): one --attendees occurrence per name — joining on
+            // commas corrupted "Doe, John" (the CLI re-split it), and a name
+            // arriving with its own commas now survives the round trip. The
+            // CLI splits a SINGLE occurrence on commas (legacy manual form)
+            // and trusts multiple occurrences as the authoritative array.
+            for name in attendees {
+                args += ["--attendees", name]
+            }
         }
 
         let proc = Process()
@@ -388,10 +395,22 @@ class RecordingController {
     }
 
     private func checkSessionState() {
-        if !ActiveLock.exists() {
+        let lockExists = ActiveLock.exists()
+        if !lockExists {
             if state != .idle {
                 handleTermination()
             }
+            return
+        }
+        // P2-8 (SPEC_SAFETY_NET_2026-10-31 §6.1): an attached CLI session has
+        // no Process to observe — a SIGKILLed node (or a closed terminal)
+        // leaves the lock on disk and the UI counted forever while Stop
+        // signalled a dead PID. If the attached PID is dead, terminate and
+        // clear the stale lock the same way the CLI's stale detection does.
+        guard process == nil, let pid = attachedPid else { return }
+        if RecordingStatePure.isAttachedSessionDead(lockExists: lockExists, pidAlive: ActiveLock.isPidAlive(pid)) {
+            try? FileManager.default.removeItem(atPath: ActiveLock.path.path)
+            handleTermination()
         }
     }
 }

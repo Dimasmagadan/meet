@@ -9,7 +9,7 @@
   <key>CFBundleShortVersionString</key><string>1.1.0</string>
   <key>CFBundleExecutable</key><string>MeetMenuBar</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSMinimumSystemVersion</key><string>14.2</string>
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>Meet records meetings locally and needs microphone access.</string>

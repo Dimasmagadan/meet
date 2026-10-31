@@ -18,7 +18,9 @@ describe("calendar cap auto-stop", () => {
   it("extends from elapsed time and waits until the new boundary", () => {
     assert.deepEqual(decideAutoStop(state, opts, cfg), { kind: "continue", extension: { newMaxDurationMinutes: 43, cause: "activity" } });
     assert.deepEqual(decideAutoStop({ ...state, elapsedSec: 39 * 60, autoExtendCount: 1 }, { ...opts, maxDurationMinutes: 43 }, cfg), { kind: "continue" });
-    assert.deepEqual(decideAutoStop({ ...state, elapsedSec: 47 * 60 + 20 }, opts, cfg), { kind: "continue", extension: { newMaxDurationMinutes: 52 + 1 / 3, cause: "activity" } });
+    // P3 (§7 row 3): fractional caps are rounded up to whole minutes — the
+    // old 52 + 1/3 fed formatClock's raw "sec % 60".
+    assert.deepEqual(decideAutoStop({ ...state, elapsedSec: 47 * 60 + 20 }, opts, cfg), { kind: "continue", extension: { newMaxDurationMinutes: 53, cause: "activity" } });
   });
 
   it("stops at the soft cap when speech is stale, except while the queue is lagging", () => {

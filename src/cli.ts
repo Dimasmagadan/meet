@@ -1,4 +1,4 @@
-import { Command, InvalidArgumentError } from "commander";
+import { Command, CommanderError, InvalidArgumentError } from "commander";
 import chalk from "chalk";
 import { loadConfig, getOutputDir, reserveOutputDir, getCaptureBinPath, resolveAnalysisBin, findRecordingStates, expandPath, writeAtomic, getSessionsDir, resolveWhisperBin, resolveModelPath, readSession, updateConfigFile, spawnBackgroundFinalizer } from "./storage.js";
 import { listModelFiles, resolveModelInput, contractHome, ModelNotFoundError } from "./model-select.js";
@@ -23,12 +23,22 @@ import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { nanoid } from "nanoid";
 import type { Session, Config } from "./types.js";
-import { analyzeWavFile } from "./audio-metrics.js";
+import { analyzeWavFileWithSamples } from "./audio-metrics.js";
 import { generateDashboard } from "./dashboard.js";
 import { getTriggers } from "./triggers.js";
 import { sendMacNotification, type AttentionAlert } from "./attention.js";
 import { writeTagsState, readTagsState, readTags, appendTagToFile, hasTagCaseInsensitive } from "./tags.js";
 import { VERSION } from "./version.js";
+
+// P2-7 (SPEC_SAFETY_NET_2026-10-31 §5.3): one-line error mapping for the
+// async action chain (see main.ts). CommanderError is re-thrown — its exit
+// codes (--help = 0, usage errors) are commander's contract.
+export function handleActionError(err: unknown): void {
+  if (err instanceof CommanderError) throw err;
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(chalk.red(msg));
+  process.exitCode = 1;
+}
 
 export function createProgram(): Command {
   const program = new Command();
@@ -51,8 +61,8 @@ export function createProgram(): Command {
     .option("--headless", "Run without terminal interaction (for menu bar app / automation)")
     .option("--no-summary", "Disable live extractive summary during recording")
     .option("--repo <path>", "Attach git repo context from <path> (default: current working directory)")
-    .option("--attendees <names>", "Comma-separated attendee names (from calendar auto-start)")
-    .action(async (title: string | undefined, opts: { mic?: boolean; silence?: number; maxDuration?: number; calendarHardCap?: number; textTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string; attendees?: string }) => {
+    .option("--attendees <names>", "Attendee names, one occurrence per name (calendar auto-start); a single occurrence may be a comma-separated list", collectAttendees)
+    .action(async (title: string | undefined, opts: { mic?: boolean; silence?: number; maxDuration?: number; calendarHardCap?: number; textTimeout?: number; voiceProcessing?: boolean; headless?: boolean; summary?: boolean; repo?: string; attendees?: string[] }) => {
       const mode = opts.mic ? "mic" as const : "full" as const;
       await startSessionLoop(title ?? "meeting", mode, opts.silence ?? 0, opts.maxDuration, opts.textTimeout, opts.voiceProcessing, opts.headless, opts.summary, opts.repo, opts.attendees, opts.calendarHardCap);
     });
@@ -89,9 +99,21 @@ export function createProgram(): Command {
     .option("--background", "Run finalization in background")
     .action(async (sessionDir: string, opts: { background?: boolean }) => {
       if (opts.background) {
+        // P2-7: validate before spawning — the detached child's stderr is
+        // discarded (stdio: "ignore"), so a bad sessionDir used to print
+        // "Background finalizer started (pid N)" and exit 0 with the error
+        // going nowhere.
+        const target = expandPath(sessionDir);
+        const session = await readSession(target);
+        if (!session) {
+          console.log(chalk.red(`No session found: ${target}`));
+          process.exitCode = 1;
+          return;
+        }
         const pid = spawnBackgroundFinalizer(sessionDir);
         if (pid === undefined) {
           console.log(chalk.red("Background finalizer failed to start (node binary or entry point missing) — run in the foreground to finalize"));
+          process.exitCode = 1;
         } else {
           console.log(chalk.green(`Background finalizer started (pid ${pid})`));
           console.log(chalk.gray(`Progress: meet status`));
@@ -277,7 +299,7 @@ async function runModelCommand(model: string | undefined, isFinal: boolean): Pro
     : "Applies from the next transcribed chunk — safe to change mid-recording."));
 }
 
-async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string, calendarHardCapMinutes?: number) {
+async function startSessionLoop(initialTitle: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string[], calendarHardCapMinutes?: number) {
   let title = initialTitle;
 
   while (true) {
@@ -291,7 +313,7 @@ async function startSessionLoop(initialTitle: string, mode: "full" | "mic", sile
   }
 }
 
-async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string, calendarHardCapMinutes?: number): Promise<{ startNextMeeting: boolean }> {
+async function startSession(title: string, mode: "full" | "mic", silenceTimeout: number = 0, maxDurationMinutes?: number, noTextTimeoutMinutes?: number, voiceProcessing?: boolean, headless?: boolean, summary?: boolean, repoOverride?: string, attendeesOverride?: string[], calendarHardCapMinutes?: number): Promise<{ startNextMeeting: boolean }> {
   validateCalendarHardCap(maxDurationMinutes, calendarHardCapMinutes);
   const summaryEnabled = summary === false ? false : true;
   const config = loadConfig({ ...(summaryEnabled ? {} : { summaryEnabled: false }) });
@@ -357,9 +379,10 @@ async function startSession(title: string, mode: "full" | "mic", silenceTimeout:
     console.log(chalk.yellow(`--repo: not a git repository: ${repoOverride}`));
   }
 
-  const attendees = attendeesOverride
-    ? attendeesOverride.split(",").map((s) => s.trim()).filter((s) => s.length > 0)
-    : undefined;
+  // P3 (§7 row 18): attendees flow as an array end-to-end (session.json →
+  // vocabulary extraTerms → speakers.json) — the old join-to-`--attendees`
+  // then split-on-comma round trip corrupted "Doe, John".
+  const attendees = resolveAttendees(attendeesOverride);
 
   const session: Session = {
     id,
@@ -449,6 +472,22 @@ function parseInteger(value: string, label: string, allowZero: boolean): number 
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || (!allowZero && parsed === 0)) throw new InvalidArgumentError(`${label} must be a ${allowZero ? "non-negative" : "positive"} safe integer`);
   return parsed;
+}
+
+// P3 (§7 row 18): --attendees is repeatable (one occurrence per name, how the
+// menu bar's calendar auto-start spawns `meet start`); a SINGLE occurrence is
+// also comma-split for the legacy manual form. Multiple occurrences are the
+// authoritative array — "Doe, John" survives whole.
+export function resolveAttendees(occurrences: string[] | undefined): string[] | undefined {
+  if (occurrences === undefined) return undefined;
+  if (occurrences.length === 1) {
+    return occurrences[0].split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  }
+  return occurrences.map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+function collectAttendees(value: string, previous?: string[]): string[] {
+  return [...(previous ?? []), value];
 }
 
 export function parseNonNegativeInteger(value: string): number {
@@ -573,6 +612,9 @@ async function runSetup(opts: { enhanced: boolean } = { enhanced: false }) {
     console.log(chalk.green("All checks passed. Ready to record."));
   } else {
     console.log(chalk.yellow("Some checks failed. Fix above issues before recording."));
+    // P2-7: "Some checks failed" used to exit 0 — scripts and CI could not
+    // distinguish a healthy machine from a broken one.
+    process.exitCode = 1;
   }
 }
 
@@ -701,8 +743,12 @@ async function runDoctor(mode: "mic" | "full") {
   const micFiles = files.filter((f) => chunkFileRegex("mic").test(f)).sort();
   const sysFiles = files.filter((f) => chunkFileRegex("sys").test(f)).sort();
 
-  const micMetrics = await Promise.all(micFiles.map((f) => analyzeWavFile(join(sessionDir, f))));
-  const sysMetrics = await Promise.all(sysFiles.map((f) => analyzeWavFile(join(sessionDir, f))));
+  const micAnalyses = await Promise.all(micFiles.map((f) => analyzeWavFileWithSamples(join(sessionDir, f))));
+  const sysAnalyses = await Promise.all(sysFiles.map((f) => analyzeWavFileWithSamples(join(sessionDir, f))));
+
+  const micMetrics = micAnalyses.filter((a) => a.ok).map((a) => a.metrics);
+  const sysMetrics = sysAnalyses.filter((a) => a.ok).map((a) => a.metrics);
+  const unreadable = [...micAnalyses, ...sysAnalyses].filter((a) => !a.ok).length;
 
   const loudMic = micMetrics.filter((m) => m.rmsDb >= config.micRmsThresholdDb);
   const loudSys = sysMetrics.filter((m) => m.rmsDb >= config.sysRmsThresholdDb);
@@ -710,6 +756,11 @@ async function runDoctor(mode: "mic" | "full") {
   console.log(chalk.gray(`mic chunks: ${micFiles.length}, loud mic chunks: ${loudMic.length}`));
   if (mode === "full") {
     console.log(chalk.gray(`sys chunks: ${sysFiles.length}, loud sys chunks: ${loudSys.length}`));
+  }
+  // P2-2: unreadable chunk WAVs are excluded from the loud counts (never
+  // counted as silence — fail closed), and surfaced as their own problem.
+  if (unreadable > 0) {
+    console.log(chalk.yellow(`${unreadable} chunk WAV(s) could not be read — excluded from the counts above, not treated as silence.`));
   }
 
   let ok = true;

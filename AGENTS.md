@@ -55,7 +55,7 @@ meet start "Title"
 │   ├── SystemAudioCapture.swift — Core Audio process tap (macOS 14.2+, SPEC_TCC_SCREEN_REPROMPT_2026-07-31 §6): `CATapDescription(__monoGlobalTapButExcludeProcesses:)` → private aggregate device (tap + default output subdevice for clock) → `AudioDeviceCreateIOProcIDWithBlock` → manual linear-interpolation resample to 16kHz, same pattern as MicCapture. Needs only "System Audio Recording Only" TCC, not Screen Recording — replaced ScreenCaptureKit, which required full Screen Recording for audio-only capture and was subject to periodic re-approval nags
 │   ├── WAVWriter.swift         — 16kHz mono 16-bit PCM WAV output, atomic rename
 │   └── Logger.swift            — structured JSON logging
-└── native/MenuBar/         — Swift menu-bar .app (SPEC_MENUBAR_UI_2026-07-30): spawns `meet start --headless`, controls via SIGINT/SIGUSR1/SIGUSR2/SIGWINCH; ad-hoc signed, Dock-less, optional launch-at-login
+└── native/MenuBar/         — Swift menu-bar .app (SPEC_MENUBAR_UI_2026-07-30; macOS floor is 14.2 — LSMinimumSystemVersion — because the system-audio process tap requires 14.2): spawns `meet start --headless`, controls via SIGINT/SIGUSR1/SIGUSR2/SIGWINCH; ad-hoc signed, Dock-less, optional launch-at-login
     ├── main.swift              — NSApplication; setActivationPolicy(.accessory) (no Dock icon)
     ├── AppDelegate.swift       — status item + menu (start/pause/stop/extend, Launch-at-Login, Auto-Record Calendar Calls toggle + live "Next: … in Nm" line), silent start (no post-start popup — naming via "Rename Meeting…" or the tag windows' title field), TCC preflight before spawn
     ├── RecordingController.swift — headless meet spawn + POSIX signal control + attach-to-existing-session; `start(title:maxDurationMinutes:attendees:)` — manual Start omits both (CLI defaults apply), calendar auto-start passes both
@@ -89,12 +89,12 @@ npm run build && node --test dist/import.test.js     # Single test file
 - Russian transcription (`-l ru`), configurable for any language
 - WAV format: 16kHz mono 16-bit PCM, chunk duration: 30s (whisper pads every inference to a 30s window — 15s chunks paid full encoder cost twice)
 - Foreground recording — `meet start` blocks, q/Ctrl-C to stop
-- Auto-stop: max duration (default 60min) and no-text timeout (default 10min)
+- Auto-stop: max duration (default 75min) and no-text timeout (default 10min)
 - Session state: `~/.meet/sessions/meet-{id}/session.json` — written atomically, cleaned up after finalization
 - Output: `~/Meetings/YYYY-MM-DD_HH-MM-{slug}/transcript.md`
 - Config: `~/.meet/config.json`
 - Live model: `~/.meet/models/ggml-small.bin` (466MB)
-- Final model: `~/.meet/models/ggml-large-v3-turbo-q5_0.bin` (547MB, recommended; medium fallback) — set via `meet model turbo --final`
+- Final model: `~/.meet/models/ggml-medium.bin` by default; the turbo model (`ggml-large-v3-turbo-q5_0.bin`, 547MB) is opt-in — set via `meet model turbo --final`
 
 ## Transcription Quality
 
@@ -163,7 +163,7 @@ Key differences from live recording:
 After recording stops:
 
 1. **Live pass** — remaining unprocessed chunks transcribed with small model
-2. **Final pass** (optional, `finalRetranscribe: true`) — all chunks re-transcribed with the final model (turbo by default)
+2. **Final pass** (optional, `finalRetranscribe: true`) — all chunks re-transcribed with the final model (medium by default; turbo opt-in via `meet model turbo --final`)
 3. **Echo/duplicate filtering** — removes repeated segments from final pass
 4. **Silence gating** — chunks below RMS threshold filtered out
 5. **Diarization** (optional, `diarizationEnabled: true`) — `AudioAnalysis diarize` labels system-audio entries "Speaker N", written to `speakers.json`
@@ -188,7 +188,14 @@ Finalization can run in background (detached process) or foreground.
 - Atomic writes: always `.tmp` → `rename()`
 - No comments in code unless explaining a non-obvious gotcha
 - Tests: `node:test`, files named `*.test.ts` alongside source
+- Every `t.test()` is awaited; an un-awaited subtest is cancelled whenever its parent finishes first, which is version-dependent
 - ESM imports: all imports use `.js` extensions despite `.ts` source (Node16 module resolution)
+
+### Agent failure-reporting rules
+
+- Any `npm test` / `npm run lint` / CI run observed to fail must be reported to the user verbatim: suite name and the first failing assertion. A failing or unrun suite is never summarized as healthy.
+- Health claims ("tests pass", "CI green") require evidence produced in the same session: the actual run output, or `gh run list --limit 3` for CI state. **No CI run at all is a finding, not a pass.**
+- A review or health check must inspect the test command and recent CI runs before praising the codebase (P1-1 in `specs/REVIEW_CODEBASE_2026-10-30.md` is the case study: six weeks of red CI reported as "nothing on fire").
 
 ### Lock System
 
@@ -232,7 +239,7 @@ Local preview: `cd docs && bundle install && npm install && bundle exec jekyll s
 - Binary: `whisper-cli` (from `brew install whisper-cpp`, NOT `whisper`)
 - Live invocation: `whisper-cli -m ggml-small.bin -l ru -f <wav> --no-timestamps -otxt -of <base> --suppress-nst ...` (wrapped in `taskpolicy -c utility` per P3; no `--metal` — whisper.cpp has no such flag, GPU is on by default)
 - Import invocation: `whisper-cli -m ggml-medium.bin -l ru -f <wav> -oj -of <base> -sow --max-len 300 ...` (foreground user batch, no QoS wrapping)
-- Models: `ggml-small.bin` (466MB, live), `ggml-large-v3-turbo-q5_0.bin` (547MB, final pass; `ggml-medium.bin` fallback). Switch live model mid-recording with `meet model <name>` — the pipeline re-reads config per chunk
+- Models: `ggml-small.bin` (466MB, live), `ggml-medium.bin` (final-pass default; `ggml-large-v3-turbo-q5_0.bin` 547MB opt-in via `meet model turbo --final`). Switch live model mid-recording with `meet model <name>` — the pipeline re-reads config per chunk
 - `whisper-cli --help` writes the option list AND backend-init log to **stderr** (stdout is empty) — `detectWhisperCompute` parses stderr to report the active device in `meet doctor`
 
 ## Reference

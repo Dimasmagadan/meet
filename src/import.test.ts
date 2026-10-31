@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   formatMs,
@@ -204,4 +204,58 @@ describe("formatMs + parseTimestampMs roundtrip", () => {
     const parsed = parseTimestampMs(formatted + ".000");
     assert.strictEqual(parsed, original);
   });
+});
+
+// --- P2-7 (SPEC_SAFETY_NET_2026-10-31 §5.3): per-file failures must set the
+// exit code — a batch whose files yield no speech used to exit 0.
+
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const IMPORT_REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+test("transcribe batch counts no-speech files as failed and exits 1 (P2-7)", () => {
+  const work = mkdtempSync(join(tmpdir(), "meet-import-batch-"));
+  const home = mkdtempSync(join(tmpdir(), "meet-import-home-"));
+  const stubs = mkdtempSync(join(tmpdir(), "meet-import-stubs-"));
+  try {
+    // Model must exist or transcribeImport exits before conversion.
+    mkdirSync(join(home, ".meet", "models"), { recursive: true });
+    writeFileSync(join(home, ".meet", "models", "ggml-small.bin"), "stub");
+
+    // ffmpeg stub: writes a placeholder at its last argument (the output path).
+    const ffmpeg = join(stubs, "ffmpeg");
+    writeFileSync(ffmpeg, '#!/bin/sh\nout=""\nfor a in "$@"; do out="$a"; done\nhead -c 64 /dev/zero > "$out"\n');
+    chmodSync(ffmpeg, 0o755);
+
+    // whisper-cli stub: parses -of <base>, writes an empty JSON transcript.
+    // resolveWhisperBin ignores PATH (absolute candidates), so the stub is
+    // wired in via config.whisperBin.
+    const whisper = join(stubs, "whisper-cli");
+    writeFileSync(whisper, '#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = "-of" ]; then\n    printf \'{"transcription": []}\' > "$2.json"\n  fi\n  shift\ndone\n');
+    chmodSync(whisper, 0o755);
+    writeFileSync(join(home, ".meet", "config.json"), JSON.stringify({ whisperBin: whisper }));
+
+    const a = join(work, "a.wav");
+    const b = join(work, "b.wav");
+    writeFileSync(a, "x");
+    writeFileSync(b, "x");
+
+    const r = spawnSync(process.execPath, [join(IMPORT_REPO_ROOT, "dist", "main.js"), "transcribe", a, b], {
+      encoding: "utf-8",
+      timeout: 120_000,
+      env: { ...process.env, HOME: home, PATH: `${stubs}:${process.env.PATH ?? ""}` },
+    });
+    assert.equal(r.status, 1, `expected exit 1, got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stdout, /Done: 0\/2 transcribed/);
+    assert.match(r.stdout, /2 failed/);
+    assert.match(r.stdout, /no speech detected/);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+    rmSync(stubs, { recursive: true, force: true });
+  }
 });

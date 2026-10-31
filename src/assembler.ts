@@ -14,11 +14,31 @@ export function chunkToTimestamp(chunkIndex: number, chunkDurationSeconds: numbe
   return `${h}:${m}:${s}`;
 }
 
-export function entriesFromSession(session: Session, results: Map<string, string>): TranscriptEntry[] {
+export function entriesFromSession(
+  session: Session,
+  results: Map<string, string>,
+  // P3 (SPEC_SAFETY_NET_2026-10-31 §7 row 6): JSONL records whose chunk never
+  // made it into processedChunks (crash between the entries.jsonl append and
+  // the session.json write). A stored record proves the chunk was
+  // transcribed, so it is treated as done; its text arrives via `results`
+  // (buildBaseResults folds stored text in). Empty-text records are skipped
+  // by the !text guard below.
+  extraChunks: Array<{ source: "mic" | "sys"; index: number }> = [],
+): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
 
-  for (const chunk of session.processedChunks) {
-    if (chunk.status !== "done") continue;
+  const seen = new Set(
+    session.processedChunks.map((c) => `${c.source}-${String(c.index).padStart(3, "0")}`),
+  );
+  const chunks: Array<{ source: "mic" | "sys"; index: number; status?: string; speaker?: string }> = [
+    ...session.processedChunks,
+    ...extraChunks.filter((c) => !seen.has(`${c.source}-${String(c.index).padStart(3, "0")}`)),
+  ];
+
+  for (const chunk of chunks) {
+    // Extra (JSONL-only) chunks have no status — the record itself proves the
+    // chunk completed transcription.
+    if (chunk.status !== undefined && chunk.status !== "done") continue;
     const key = `${chunk.source}-${String(chunk.index).padStart(3, "0")}`;
     const text = results.get(key) || "";
     if (!text) continue;

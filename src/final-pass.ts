@@ -33,6 +33,10 @@ export interface AudibleChunk {
   // false when below the source's silence-gate threshold — callers should
   // skip transcription but still account for the chunk in their own results.
   audible: boolean;
+  // P2-2: the WAV could not be read at all (EIO/EACCES/truncated). Never
+  // evidence of silence — callers must route these to their FAILURE path,
+  // not their silence path (SPEC_SAFETY_NET_2026-10-31 §4.2).
+  unreadable?: boolean;
   // Raw PCM, read once here so callers needing more than the summary metrics
   // (e.g. the P2 echo envelope) don't re-read the file. Not retained by this
   // function itself.
@@ -64,11 +68,25 @@ export async function forEachAudibleChunk(
     await beforeChunk?.();
 
     const wavPath = join(session.sessionDir, wav);
-    const { metrics, samples } = await analyzeWavFileWithSamples(wavPath);
+    const analysis = await analyzeWavFileWithSamples(wavPath);
+    done++;
+    if (!analysis.ok) {
+      await onChunk({
+        source: parsed.source,
+        index: parsed.index,
+        wav,
+        wavPath,
+        metrics: { rmsDb: -Infinity, peakDb: -Infinity },
+        audible: false,
+        unreadable: true,
+        samples: new Int16Array(0),
+      }, done, total);
+      continue;
+    }
+    const { metrics, samples } = analysis;
     const threshold = parsed.source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     const audible = metrics.rmsDb >= threshold;
 
-    done++;
     await onChunk({ source: parsed.source, index: parsed.index, wav, wavPath, metrics, audible, samples }, done, total);
   }
 }
@@ -128,6 +146,15 @@ export async function runFinalPass(
 
   await forEachAudibleChunk(session, config, async (chunk, done, total) => {
     await throttleHold(config, gate, "final pass", sensor ? { sensor } : {});
+
+    if (chunk.unreadable) {
+      // P2-2: an unreadable WAV is a failure, not a silence verdict — the key
+      // must land in failedKeys (never completedKeys) so finalize preserves
+      // the session directory and the recovery artifacts.
+      failedKeys.add(`${chunk.source}-${String(chunk.index).padStart(3, "0")}`);
+      onProgress?.(done, total);
+      return;
+    }
 
     const frames = frameRmsDb(chunk.samples, frameSize);
     (chunk.source === "mic" ? micFramesByIndex : sysFramesByIndex).set(chunk.index, frames);

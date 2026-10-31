@@ -34,14 +34,16 @@ class MicCapture {
     // control-state mutation and engine access now funnels through this serial
     // queue, mirroring the writerQueue pattern already used for wavWriter.
     private let controlQueue = DispatchQueue(label: "miccapture.control")
-    // Storage-error budget: a failed finalizeChunk leaves the writer closed and
-    // every further append throws, while healthy audio callbacks keep refreshing
-    // lastBufferTime — so the stall monitor can neither see nor fix this. Count
-    // writer errors here, retry the chunk open a bounded number of times, and
-    // then halt the stream visibly (writerFailed) instead of spinning forever.
-    private var writerErrorCount = 0
+    // Storage-error budget (P2-9, WriterErrorBudget.swift): a failed
+    // finalizeChunk leaves the writer closed and every further append throws,
+    // while healthy audio callbacks keep refreshing lastBufferTime — so the
+    // stall monitor can neither see nor fix this. Consecutive failures trip
+    // the budget; ONLY a successful append+finalize resets it (header
+    // creation via startChunk proves nothing — the old inline counter reset
+    // there, so a persistent data-write failure never halted the stream).
+    private(set) var errorBudget = WriterErrorBudget(maxConsecutiveFailures: 3)
     private let maxWriterRecoveryAttempts = 3
-    private(set) var writerFailed = false
+    var writerFailed: Bool { errorBudget.tripped }
 
     // Phase-carrying resampler state (P0, SPEC_MIC_ECHO_FILTERING_2026-08-05
     // root cause B.3) — carried across buffers instead of restarting at 0
@@ -259,7 +261,11 @@ class MicCapture {
         // stop()'s final flush instead of racing it directly.
         writerQueue.async { [weak self] in
             guard let self else { return }
-            guard !self.writerFailed else { return }
+            // P3 (§7 row 17): the tap callback checked isRunning OUTSIDE this
+            // enqueue — a callback in flight when stop() flipped it could land
+            // here after flushPartial and write against a closed writer.
+            guard self.isRunning else { return }
+            guard !self.errorBudget.tripped else { return }
             do {
                 let chunkReady = try self.wavWriter.appendSamplesIfNeeded(resampled)
                 if chunkReady {
@@ -267,17 +273,18 @@ class MicCapture {
                         self.onChunkFinalized(name)
                     }
                     try self.wavWriter.startChunk()
-                    // A clean finalize+reopen proves storage is healthy again,
-                    // so the error budget is consecutive failures, not a
-                    // lifetime total (B7: four isolated blips in a long meeting
-                    // otherwise halted the stream permanently).
-                    self.writerErrorCount = 0
+                    // P2-9: the budget resets on the successful append+finalize
+                    // above — a clean append+finalize proves storage is healthy
+                    // again, so the budget is consecutive failures, not a
+                    // lifetime total (B7). The startChunk header creation alone
+                    // proves nothing.
+                    self.errorBudget.recordSuccess()
                 }
             } catch {
-                self.writerErrorCount += 1
-                fputs("MicCapture write error: \(error) (attempt \(self.writerErrorCount)/\(self.maxWriterRecoveryAttempts))\n", stderr)
-                if self.writerErrorCount > self.maxWriterRecoveryAttempts {
-                    self.writerFailed = true
+                self.errorBudget.recordFailure()
+                let attempt = self.errorBudget.consecutiveFailures
+                fputs("MicCapture write error: \(error) (attempt \(attempt)/\(self.maxWriterRecoveryAttempts))\n", stderr)
+                if self.errorBudget.tripped {
                     self.wavWriter.abortCurrentChunk(preserveTemporary: true)
                     fputs("MicCapture storage failed permanently; halting mic stream, failed audio preserved\n", stderr)
                     logJSON("error", "stream_error", ["source": "mic", "message": "storage failure, stream halted"])
@@ -295,8 +302,8 @@ class MicCapture {
                 do {
                     self.wavWriter.abortCurrentChunk(preserveTemporary: true)
                     try self.wavWriter.startChunk()
-                    let attempt = self.writerErrorCount
-                    self.writerErrorCount = 0
+                    // No reset here (P2-9): header creation is not evidence of
+                    // healthy data writes.
                     logJSON("warning", "mic_writer_recovered", ["attempt": attempt])
                 } catch {
                     fputs("MicCapture writer recovery failed: \(error)\n", stderr)
@@ -371,12 +378,17 @@ class MicCapture {
         // Synchronous dispatch onto the same serial queue drains any append/
         // finalize/startChunk block a still-in-flight tap callback already
         // enqueued before flushing, instead of racing it.
-        return writerQueue.sync {
+        let result: String? = writerQueue.sync {
             do {
                 return try wavWriter.flushPartial()
             } catch {
                 return nil
             }
         }
+        // P3 (§7 row 17): drain once more so a late enqueue from a callback
+        // that raced stop() (its isRunning guard now no-ops inside the
+        // closure) cannot run after this returns.
+        writerQueue.sync {}
+        return result
     }
 }

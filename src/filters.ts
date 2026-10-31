@@ -124,63 +124,59 @@ export function filterEntries(
     const mic = chunks.find((c) => c.source === "mic");
     const sys = chunks.find((c) => c.source === "sys");
 
-    if (sys && sys.text) {
-      kept.push(sys);
-    }
+    // P3 (SPEC_SAFETY_NET_2026-10-31 §7 row 1): same-index mic+sys must land
+    // mic-first — the live path and entriesFromSession put "Me" before the
+    // sys chunk at equal timestamps, and the old sys-first push here made
+    // the final rewrite flip that order. Mic decisions run first; both rows
+    // are appended below in mic-first order.
+    let micKept = false;
 
-    if (!mic || !mic.text) continue;
-
-    // Same accumulator as the echo/duplicate drops below: the finalize safety
-    // net (finalize.ts) compares the final-pass entry count against base
-    // entries excluding recorded drops, so an unrecorded drop here makes it
-    // see a shrunk final pass and restore this silent chunk.
-    if (mic.rmsDb < config.micRmsThresholdDb) {
-      droppedEcho?.push(mic);
-      continue;
-    }
-
-    if (mic.micEchoScore !== undefined && mic.micEchoScore >= echoFractionThreshold) {
-      droppedEcho?.push(mic);
-      continue;
-    }
-
-    // isDuplicate needs the same-index sys chunk itself; the coverage check
-    // below doesn't (chunk boundaries aren't utterance-aligned, so a mic
-    // echo's sys counterpart often lands in N±1 — mic-echo.ts'
-    // hasSysCounterpart runs the same neighbourhood check with no same-index
-    // requirement). Gating the whole block on sys[N] text made that gate
-    // unreachable whenever the counterpart sat in an adjacent chunk.
-    const sameSys = sys && sys.text ? sys : null;
-
-    if (sameSys && isDuplicate(mic.text, sameSys.text)) {
-      droppedEcho?.push(mic);
-      continue;
-    }
-
-    const neighbourhood = new Set<string>();
-    for (const n of [idx - 1, idx, idx + 1]) {
-      const tokens = sysTokensByIndex.get(n);
-      if (tokens) for (const t of tokens) neighbourhood.add(t);
-    }
-    if (neighbourhood.size > 0) {
-      const micTokens = tokenize(mic.text);
-      if (coverageRatio(micTokens, neighbourhood) >= coverageThreshold) {
+    if (mic && mic.text) {
+      // Same accumulator as the echo/duplicate drops below: the finalize safety
+      // net (finalize.ts) compares the final-pass entry count against base
+      // entries excluding recorded drops, so an unrecorded drop here makes it
+      // see a shrunk final pass and restore this silent chunk.
+      if (mic.rmsDb < config.micRmsThresholdDb) {
         droppedEcho?.push(mic);
-        continue;
+      } else {
+        // P2-3 (SPEC_SAFETY_NET_2026-10-31 §4.3): the audio-only echo score is
+        // envelope correlation against sys AUDIO — whisper transcribing that sys
+        // audio as nothing (music, HVAC) means there is no echo'd SPEECH to
+        // duplicate, so dropping the mic entry deleted the user's only copy.
+        // The drop additionally requires a sys text counterpart at the same
+        // index or N±1 (mirrors mic-echo.ts's hasSysCounterpart neighbourhood).
+        const hasSysTextNeighbour = (n: number): boolean =>
+          [n - 1, n, n + 1].some((i) => (sysTokensByIndex.get(i)?.length ?? 0) > 0);
+        const sameSys = sys && sys.text ? sys : null;
+
+        if (mic.micEchoScore !== undefined && mic.micEchoScore >= echoFractionThreshold && hasSysTextNeighbour(idx)) {
+          droppedEcho?.push(mic);
+        } else if (sameSys && isDuplicate(mic.text, sameSys.text)) {
+          droppedEcho?.push(mic);
+        } else {
+          const neighbourhood = new Set<string>();
+          for (const n of [idx - 1, idx, idx + 1]) {
+            const tokens = sysTokensByIndex.get(n);
+            if (tokens) for (const t of tokens) neighbourhood.add(t);
+          }
+          if (neighbourhood.size > 0 && coverageRatio(tokenize(mic.text), neighbourhood) >= coverageThreshold) {
+            droppedEcho?.push(mic);
+          } else if (sameSys && isAcknowledgement(mic.text)) {
+            // Duplicates and acknowledgements are the same class as echo drops —
+            // a mic "ага" over sys speech is bleed — so they go into the same
+            // accumulator. The finalize safety net compares final-pass entry
+            // count against base entries excluding recorded drops; bare drops
+            // here made it see a shrunk final pass and revert the whole thing.
+            droppedEcho?.push(mic);
+          } else {
+            micKept = true;
+          }
+        }
       }
     }
 
-    // Duplicates and acknowledgements are the same class as echo drops — a
-    // mic "ага" over sys speech is bleed — so they go into the same
-    // accumulator. The finalize safety net compares final-pass entry count
-    // against base entries excluding recorded drops; bare `continue`s here
-    // made it see a shrunk final pass and revert the whole thing.
-    if (sameSys && isAcknowledgement(mic.text)) {
-      droppedEcho?.push(mic);
-      continue;
-    }
-
-    kept.push(mic);
+    if (micKept) kept.push(mic!);
+    if (sys && sys.text) kept.push(sys);
   }
 
   return kept;

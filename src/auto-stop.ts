@@ -47,7 +47,9 @@ export function decideAutoStop(state: AutoStopState, opts: AutoStopOptions, cfg:
     const active = state.noTextGapSec < cfg.calendarCapAutoExtendActivityWindowMinutes * 60;
     if (!lagged && !active) return { kind: "stop", reason: "max_duration" };
     extension = {
-      newMaxDurationMinutes: Math.min(hardCap, state.elapsedSec / 60 + cfg.calendarCapAutoExtendStepMinutes),
+      // P3 (§7 row 3): whole-minute caps — fractional values fed formatClock's
+      // raw "sec % 60" and produced garbage clock output downstream.
+      newMaxDurationMinutes: Math.ceil(Math.min(hardCap, state.elapsedSec / 60 + cfg.calendarCapAutoExtendStepMinutes)),
       cause: lagged ? "queue_lag" : "activity",
     };
   }

@@ -72,12 +72,20 @@ export function buildSuggestion(meetingDir: string, record: SpeakersRecord): str
       for (const speakerId of unnamedSpeakerIds) {
         const suggestedName = pool.shift();
         if (!suggestedName) break;
-        lines.push(`  meet rename ${meetingDir} "${speakerId}" "${suggestedName}"`);
+        // P3 (§7 row 11): names like `Doe, John` or `A"b` produced
+        // copy-paste lines that broke (or injected) once pasted into a shell.
+        lines.push(`  meet rename "${meetingDir}" "${speakerId}" ${shellQuote(suggestedName)}`);
       }
     }
   }
 
   return lines;
+}
+
+// Double-quote for shell use, escaping the characters that are special
+// inside double quotes (P3 row 11, SPEC_SAFETY_NET_2026-10-31 §7).
+function shellQuote(value: string): string {
+  return `"${value.replace(/[\\"`$]/g, (ch) => `\\${ch}`)}"`;
 }
 
 export async function runSpeakersSuggest(meetingDir: string): Promise<string[]> {

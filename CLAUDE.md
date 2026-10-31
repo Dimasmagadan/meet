@@ -316,7 +316,7 @@ For common dev workflows (adding a CLI command, fixing a transcription quality i
 
 - **Live model** (ggml-small.bin, 466MB) — fast, lower quality
 - **Final model** (ggml-medium.bin, ~1.5GB) — slower, higher quality
-- **Chunk duration** (default 15s) — shorter chunks are faster but less context for accuracy
+- **Chunk duration** (default 30s) — shorter chunks are faster but less context for accuracy (whisper pads every inference to a 30s window, so 15s chunks paid full encoder cost twice)
 - **Metal GPU acceleration** — automatic via whisper-cpp, no extra config needed
 - **Silence gating** — skips truly silent chunks to save processing time
 

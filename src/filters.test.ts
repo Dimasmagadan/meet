@@ -249,6 +249,38 @@ describe("filterEntries", () => {
     assert.strictEqual(filtered.filter((r) => r.source === "mic").length, 1);
   });
 
+  // P2-3 (SPEC_SAFETY_NET_2026-10-31 §4.3): the audio-only echo score is
+  // envelope correlation against sys audio. If whisper transcribed that sys
+  // audio as nothing (music, HVAC), there is no echo'd speech to duplicate —
+  // dropping the mic entry deleted the user's only copy of the sentence.
+  it("micEchoScore alone does not drop mic speech when the sys channel has no text", () => {
+    // The review's exact probe: mic real speech + score 1.0 + sys present-but-textless.
+    const results = [
+      { ...makeResult("sys", 1, "", -30) },
+      { ...makeResult("mic", 1, "это важная реплика пользователя", -30), micEchoScore: 1.0 },
+    ];
+    const filtered = filterEntries(results, config);
+    assert.strictEqual(filtered.filter((r) => r.source === "mic").length, 1);
+  });
+
+  it("sys text at the same index allows the micEchoScore drop", () => {
+    const results = [
+      makeResult("sys", 1, "Что-то сказанное в динамики"),
+      { ...makeResult("mic", 1, "Совершенно другой текст без пересечения слов", -30), micEchoScore: 0.95 },
+    ];
+    const filtered = filterEntries(results, config);
+    assert.strictEqual(filtered.filter((r) => r.source === "mic").length, 0);
+  });
+
+  it("sys text at N±1 allows the micEchoScore drop (chunk-boundary drift)", () => {
+    const results = [
+      { ...makeResult("mic", 1, "Совершенно другой текст без пересечения слов", -30), micEchoScore: 0.95 },
+      makeResult("sys", 2, "Текст соседнего чанка, куда сместился отклик"),
+    ];
+    const filtered = filterEntries(results, config);
+    assert.strictEqual(filtered.filter((r) => r.source === "mic").length, 0);
+  });
+
   it("populates the droppedEcho accumulator for a coverage drop (row 1: Jaccard just misses, coverage catches it)", () => {
     const droppedEcho: FinalChunkResult[] = [];
     const results = [
@@ -325,7 +357,7 @@ describe("filterEntries", () => {
     assert.strictEqual(filtered.length, 2);
   });
 
-  it("handles multiple indices in order", () => {
+  it("handles multiple indices in order — mic before sys at the same index (P3 row 1)", () => {
     const results = [
       makeResult("sys", 1, "Первый"),
       makeResult("mic", 1, "да", -30),
@@ -334,11 +366,14 @@ describe("filterEntries", () => {
     ];
     const filtered = filterEntries(results, config);
     assert.strictEqual(filtered.length, 3);
+    // Index 1: the mic "да" is an acknowledgement over sys text → dropped;
+    // sys-1 remains. Index 2: both survive — mic first, matching the live
+    // path / entriesFromSession order (the old loop pushed sys first).
     assert.strictEqual(filtered[0].source, "sys");
     assert.strictEqual(filtered[0].index, 1);
-    assert.strictEqual(filtered[1].source, "sys");
+    assert.strictEqual(filtered[1].source, "mic");
     assert.strictEqual(filtered[1].index, 2);
-    assert.strictEqual(filtered[2].source, "mic");
+    assert.strictEqual(filtered[2].source, "sys");
     assert.strictEqual(filtered[2].index, 2);
   });
 });

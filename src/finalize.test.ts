@@ -1,9 +1,13 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildBaseResults, mergeRecoveryEntries, runDiarizationStep, runMicDiarizationStep, applyLabelOverridesToTalkTime, filterStoredEntriesByAudio } from "./finalize.js";
+import { buildBaseResults, mergeRecoveryEntries, runDiarizationStep, runMicDiarizationStep, applyLabelOverridesToTalkTime, filterStoredEntriesByAudio, finalizeSession, deriveMicSegmented, createDebouncedProgressWriter } from "./finalize.js";
+import { entriesFromSession } from "./assembler.js";
+import { computeTalkTime } from "./talk-time.js";
+import { writeAtomic } from "./storage.js";
 import { appendPostFinalizeNote } from "./summary.js";
 import { makeSilentWav, makeSineWav } from "./audio-metrics.js";
 import { DEFAULT_CONFIG } from "./types.js";
@@ -479,7 +483,7 @@ test("appendPostFinalizeNote", async (t) => {
   });
 });
 
-test("applyLabelOverridesToTalkTime", (t) => {
+test("applyLabelOverridesToTalkTime", async (t) => {
   const base: TalkTimeStats = {
     totalSeconds: 120,
     speakers: [
@@ -489,12 +493,12 @@ test("applyLabelOverridesToTalkTime", (t) => {
     ],
   };
 
-  t.test("no-op when overrides map is empty (returns same stats)", () => {
+  await t.test("no-op when overrides map is empty (returns same stats)", () => {
     const out = applyLabelOverridesToTalkTime(base, new Map());
     assert.equal(out, base);
   });
 
-  t.test("rewrites matched labels and leaves the rest untouched", () => {
+  await t.test("rewrites matched labels and leaves the rest untouched", () => {
     // Reproduces the desync fixed in this PR: the body shows "Женя" (entry label
     // overridden by the registry), but computeTalkTime reads canonical "Speaker 1"
     // off the segments. The footer must mirror the body.
@@ -512,9 +516,262 @@ test("applyLabelOverridesToTalkTime", (t) => {
     assert.equal(out.totalSeconds, 120);
   });
 
-  t.test("does not mutate the input stats", () => {
+  await t.test("does not mutate the input stats", () => {
     const overrides = new Map([["Speaker 1", "Женя"]]);
     applyLabelOverridesToTalkTime(base, overrides);
     assert.equal(base.speakers[1].label, "Speaker 1");
   });
+});
+
+// P2-2 (SPEC_SAFETY_NET_2026-10-31 §4.2): a chunk WAV whose contents cannot
+// be read is unrecovered — never evidence of silence. Pre-fix the analyzer
+// fabricated -Infinity, the final pass recorded a "successful silence
+// verdict", the unrecovered check re-read the same broken analyzer and
+// finalize deleted the session directory with the only recovery artifacts.
+test("finalize preserves the session when a chunk WAV is unreadable", async () => {
+  // finalizeSession resolves ~/.meet via homedir() — point HOME at a temp dir
+  // so the config (absent → DEFAULT_CONFIG), the model paths and the locks
+  // all live in a sandbox.
+  const savedHome = process.env.HOME;
+  const tempHome = mkdtempSync(join(tmpdir(), "meet-finalize-home-"));
+  process.env.HOME = tempHome;
+  const dir = mkdtempSync(join(tmpdir(), "meet-finalize-unreadable-"));
+  try {
+    // A directory where the chunk file should be: readdir lists it, readFile fails.
+    mkdirSync(join(dir, "mic-001.wav"));
+    const session: Session = {
+      id: "test-unreadable",
+      title: "Unreadable",
+      mode: "full",
+      startedAt: "2026-05-13T14:30:00.000Z",
+      chunkDurationSeconds: 30,
+      sessionDir: dir,
+      outputFile: join(dir, "transcript.md"),
+      capturePid: null,
+      status: "stopped",
+      processedChunks: [{ source: "mic", index: 1, wav: "mic-001.wav", status: "failed" }],
+      lastError: null,
+      autoStopReason: null,
+      latestProcessedOffsetSeconds: 0,
+      lastMeaningfulTextAtOffsetSeconds: null,
+      hasMeaningfulText: true,
+      tags: [],
+    };
+    await writeAtomic(join(dir, "session.json"), JSON.stringify(session, null, 2));
+
+    const result = await finalizeSession(dir, { foreground: true, pauseForActiveRecording: false });
+
+    assert.ok(existsSync(dir), "session dir must be preserved");
+    const persisted = JSON.parse(await readFile(join(dir, "session.json"), "utf-8")) as Session;
+    assert.strictEqual(persisted.status, "error");
+    assert.ok(String(persisted.lastError).includes("mic-001"), `lastError should name the chunk: ${persisted.lastError}`);
+    assert.ok(result.warnings.some((w) => w.includes("Preserving")), `expected a preserve warning, got: ${JSON.stringify(result.warnings)}`);
+  } finally {
+    process.env.HOME = savedHome;
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+// P2-4 (SPEC_SAFETY_NET_2026-10-31 §4.4): the all-dropped echo attribution
+// case. deriveMicSegmented is the exact formula finalize uses for micSegmented;
+// the computeTalkTime twins pin the talk-time consequence.
+test("deriveMicSegmented counts attributed-but-all-dropped as segmented", () => {
+  assert.equal(deriveMicSegmented(0, 0, 0), false);
+  assert.equal(deriveMicSegmented(2, 0, 0), true);
+  assert.equal(deriveMicSegmented(0, 2, 0), true);
+  // The regression case: micSegments empty (every match dropped) but the step
+  // still voice-matched chunks — the mic fallback must not fire.
+  assert.equal(deriveMicSegmented(0, 0, 3), true);
+});
+
+test("all-dropped attribution does not double-count Me talk time", () => {
+  // The review's 600s listen-only reproduction: 20 chunks × 30s on both
+  // channels, every mic chunk voice-matched and dropped as sys-covered echo.
+  const records: EntryRecord[] = [
+    ...Array.from({ length: 20 }, (_, i) => ({ source: "mic" as const, index: i + 1, timestamp: "14:30:00", text: "", rmsDb: -30 })),
+    ...Array.from({ length: 20 }, (_, i) => ({ source: "sys" as const, index: i + 1, timestamp: "14:30:00", text: "", rmsDb: -30 })),
+  ];
+  const sysSegments = [{ start: 0, end: 600, speaker: "Speaker 1" }];
+
+  // Pre-fix shape: micSegmented false (micSegments empty) → chunk-count
+  // fallback re-counts the loud mic records → Me 600 + Speaker 1 600 = 1200s.
+  const preFix = computeTalkTime({
+    entryRecords: records,
+    textChunkKeys: new Set(["sys-001"]),
+    chunkDurationSeconds: 30,
+    micRmsThresholdDb: -60,
+    sysRmsThresholdDb: -60,
+    diarSegments: sysSegments,
+    micSegmented: false,
+    droppedEchoKeys: new Set(),
+  });
+  assert.equal(preFix.totalSeconds, 1200);
+
+  // Post-fix: finalize derives micSegmented=true from attributedKeys despite
+  // the empty micSegments → no fabricated "Me" row, total equals sys total.
+  const postFix = computeTalkTime({
+    entryRecords: records,
+    textChunkKeys: new Set(["sys-001"]),
+    chunkDurationSeconds: 30,
+    micRmsThresholdDb: -60,
+    sysRmsThresholdDb: -60,
+    diarSegments: sysSegments,
+    micSegmented: deriveMicSegmented(0, 0, 20),
+    droppedEchoKeys: new Set(),
+  });
+  assert.equal(postFix.totalSeconds, 600);
+  assert.ok(!postFix.speakers.some((s) => s.label === "Me"), `no Me row expected, got: ${JSON.stringify(postFix.speakers)}`);
+  assert.deepEqual(postFix.speakers.map((s) => s.label), ["Speaker 1"]);
+});
+
+// P3 row 6 (SPEC_SAFETY_NET_2026-10-31 §7): JSONL records whose chunk never
+// made it into processedChunks (crash between the entries.jsonl append and
+// the session.json write) previously dropped the chunk's text entirely.
+test("entriesFromSession surfaces JSONL-only chunks (P3 row 6)", () => {
+  const session: Session = {
+    id: "test-jsonl-only",
+    title: "JSONL-only",
+    mode: "full",
+    startedAt: "2026-05-13T14:30:00.000Z",
+    chunkDurationSeconds: 30,
+    sessionDir: "/tmp/unused",
+    outputFile: "/tmp/unused/transcript.md",
+    capturePid: null,
+    status: "stopped",
+    processedChunks: [{ source: "mic", index: 1, wav: "mic-001.wav", status: "done" }],
+    lastError: null,
+    autoStopReason: null,
+    latestProcessedOffsetSeconds: 0,
+    lastMeaningfulTextAtOffsetSeconds: null,
+    hasMeaningfulText: true,
+    tags: [],
+  };
+  const results = new Map([
+    ["mic-001", "processed chunk text"],
+    ["sys-002", "jsonl-only chunk text"],
+  ]);
+  const entries = entriesFromSession(session, results, [{ source: "sys", index: 2 }]);
+  assert.deepEqual(entries.map((e) => [e.source, e.chunkIndex, e.text]), [
+    ["mic", 1, "processed chunk text"],
+    ["sys", 2, "jsonl-only chunk text"],
+  ]);
+  // Status filtering still applies to processedChunks: a failed chunk with no
+  // text stays out.
+  const failed: Session = { ...session, processedChunks: [{ source: "mic", index: 1, wav: "mic-001.wav", status: "failed" }] };
+  assert.deepEqual(entriesFromSession(failed, results), []);
+});
+
+// P3 row 9 (SPEC_SAFETY_NET_2026-10-31 §7): a late debounced writeAtomic must
+// not overwrite the terminal session.json — dispose() awaits the in-flight
+// write and cancels the pending flush.
+test("progress writer dispose keeps the terminal session.json in place (P3 row 9)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "meet-finalize-progress-"));
+  try {
+    const session: Session = {
+      id: "test-progress",
+      title: "Progress",
+      mode: "full",
+      startedAt: "2026-05-13T14:30:00.000Z",
+      chunkDurationSeconds: 30,
+      sessionDir: dir,
+      outputFile: join(dir, "transcript.md"),
+      capturePid: null,
+      status: "finalizing",
+      processedChunks: [],
+      lastError: null,
+      autoStopReason: null,
+      latestProcessedOffsetSeconds: 0,
+      lastMeaningfulTextAtOffsetSeconds: null,
+      hasMeaningfulText: true,
+      tags: [],
+    };
+    await writeAtomic(join(dir, "session.json"), JSON.stringify(session, null, 2));
+    const writer = createDebouncedProgressWriter(session);
+
+    await writer.update({ phase: "final", done: 1, total: 10, message: null, pid: 1, updatedAt: new Date().toISOString() });
+    // Second update within the debounce window schedules the timer.
+    await writer.update({ phase: "final", done: 2, total: 10, message: null, pid: 1, updatedAt: new Date().toISOString() });
+    // Let the scheduled flush fire and its write begin, then dispose while it
+    // may still be in flight, and land the terminal record afterwards.
+    await new Promise((r) => setTimeout(r, 1100));
+    await writer.dispose();
+
+    const terminal = { ...session, status: "done" as const, finalize: { phase: "done" as const, done: 10, total: 10, message: null, pid: 1, updatedAt: new Date().toISOString() } };
+    await writeAtomic(join(dir, "session.json"), JSON.stringify(terminal, null, 2));
+
+    // Pre-fix: a pending or in-flight flush could land after the terminal
+    // write and clobber it. Give any such late write ample time to show up.
+    await new Promise((r) => setTimeout(r, 1500));
+    const persisted = JSON.parse(await readFile(join(dir, "session.json"), "utf-8")) as Session;
+    assert.strictEqual(persisted.status, "done");
+    assert.strictEqual(persisted.finalize?.phase, "done");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// P3 row 10 (SPEC_SAFETY_NET_2026-10-31 §7): a failed speakers.json write used
+// to be swallowed by .catch(() => {}) — rename/suggest then broke silently.
+// The failure must surface as a warning while finalize continues.
+test("finalize warns and continues when speakers.json is unwritable (P3 row 10)", async () => {
+  const savedHome = process.env.HOME;
+  const tempHome = mkdtempSync(join(tmpdir(), "meet-finalize-home-"));
+  process.env.HOME = tempHome;
+  const dir = mkdtempSync(join(tmpdir(), "meet-finalize-speakers-"));
+  const meetingDir = mkdtempSync(join(tmpdir(), "meet-finalize-meeting-"));
+  try {
+    // Audible, done chunks with stored text so the diarize block runs and the
+    // speakers.json write is reached.
+    const wav = makeSineWav(440, 48000, 16000, 0.9);
+    writeFileSync(join(dir, "mic-001.wav"), wav);
+    writeFileSync(join(dir, "sys-001.wav"), wav);
+    const records: EntryRecord[] = [
+      { source: "mic", index: 1, timestamp: "14:30:00", text: "текст с микрофона", rmsDb: -30 },
+      { source: "sys", index: 1, timestamp: "14:30:00", text: "текст с системного канала", rmsDb: -30 },
+    ];
+    await writeAtomic(join(dir, "entries.jsonl"), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+    const session: Session = {
+      id: "test-speakers-write",
+      title: "Speakers Write",
+      mode: "full",
+      startedAt: "2026-05-13T14:30:00.000Z",
+      chunkDurationSeconds: 30,
+      sessionDir: dir,
+      outputFile: join(meetingDir, "transcript.md"),
+      capturePid: null,
+      status: "stopped",
+      processedChunks: [
+        { source: "mic", index: 1, wav: "mic-001.wav", status: "done" },
+        { source: "sys", index: 1, wav: "sys-001.wav", status: "done" },
+      ],
+      lastError: null,
+      autoStopReason: null,
+      latestProcessedOffsetSeconds: 0,
+      lastMeaningfulTextAtOffsetSeconds: null,
+      hasMeaningfulText: true,
+      tags: [],
+    };
+    await writeAtomic(join(dir, "session.json"), JSON.stringify(session, null, 2));
+
+    // speakers.json as a DIRECTORY: the atomic rename lands (EISDIR/ENOTEMPTY)
+    // → warn → finalize continues to the transcript rewrite.
+    mkdirSync(join(meetingDir, "speakers.json"));
+
+    const result = await finalizeSession(dir, { foreground: true, pauseForActiveRecording: false });
+
+    assert.ok(
+      result.warnings.some((w) => w.includes("speakers.json write failed")),
+      `expected a speakers.json warning, got: ${JSON.stringify(result.warnings)}`,
+    );
+    // Finalize continued past the failed write.
+    assert.ok(existsSync(join(meetingDir, "transcript.md")), "transcript must still be written");
+    assert.ok(existsSync(dir) === false, "session completes normally (no unrecovered audio) and is cleaned up");
+  } finally {
+    process.env.HOME = savedHome;
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(meetingDir, { recursive: true, force: true });
+    rmSync(tempHome, { recursive: true, force: true });
+  }
 });

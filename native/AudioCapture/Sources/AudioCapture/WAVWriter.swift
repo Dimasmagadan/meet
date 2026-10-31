@@ -134,6 +134,9 @@ struct WAVWriter {
         }
         currentTmpPath = nil
         currentDataSize = 0
+        // P3 (§7 row 17): the carry belongs to the aborted chunk — flushing it
+        // into the next startChunk would prepend misaligned tail audio.
+        carry = []
         state = .failed
     }
 

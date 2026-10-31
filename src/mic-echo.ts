@@ -121,6 +121,13 @@ export interface MicEchoAttributionOutcome {
   micSegments: DiarSegment[];
   relabeled: number;
   dropped: number;
+  // P2-4 (SPEC_SAFETY_NET_2026-10-31 §4.4): every mic chunk this step
+  // voice-matched ("mic-NNN"), whether later kept or dropped as sys-covered
+  // echo. When ALL matches are dropped, micSegments comes back empty — the
+  // caller must still treat the mic channel as segmented (the sys speaker
+  // timeline accounts for that speech) or computeTalkTime's chunk-count
+  // fallback double-counts "Me".
+  attributedKeys: Set<string>;
 }
 
 // Diarization-time counterpart of runMicDiarizationStep for the case it
@@ -152,7 +159,7 @@ export async function runMicEchoAttributionStep(
   // user's speech (N1).
   droppedEchoKeys: Set<string> = new Set(),
 ): Promise<MicEchoAttributionOutcome> {
-  const none: MicEchoAttributionOutcome = { entries, micSegments: [], relabeled: 0, dropped: 0 };
+  const none: MicEchoAttributionOutcome = { entries, micSegments: [], relabeled: 0, dropped: 0, attributedKeys: new Set() };
 
   if (!config.micEchoAttribution) return none;
   if (speakerEmbeddings.size === 0) return none;
@@ -284,7 +291,11 @@ export async function runMicEchoAttributionStep(
 
   log(`Mic echo attribution: ${attributed.size} mic chunk(s) voice-matched a remote speaker (${relabels.size} relabeled, ${drops.size} dropped as echo-covered)`);
 
-  return { entries: outEntries, micSegments, relabeled: relabels.size, dropped: drops.size };
+  const attributedKeys = new Set(
+    [...attributed.keys()].map((index) => `mic-${String(index).padStart(3, "0")}`),
+  );
+
+  return { entries: outEntries, micSegments, relabeled: relabels.size, dropped: drops.size, attributedKeys };
 }
 
 function buildMicSegments(

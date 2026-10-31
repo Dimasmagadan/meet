@@ -10,6 +10,11 @@ if CommandLine.arguments.contains("--self-test-calendar") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--self-test-recording") {
+    RecordingStatePure.selfCheck()
+    exit(0)
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let delegate = AppDelegate()

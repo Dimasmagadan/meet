@@ -34,6 +34,16 @@ interface BatchResult {
   error?: string;
 }
 
+// P2-7 (SPEC_SAFETY_NET_2026-10-31 §5.3): a file that yields no speech is a
+// per-file failure — the old code reported success: true for an empty
+// transcript, so a batch of broken inputs exited 0.
+class NoSpeechError extends Error {
+  constructor() {
+    super("no speech detected");
+    this.name = "NoSpeechError";
+  }
+}
+
 export async function transcribeImport(
   filePaths: string[],
   options: ImportOptions,
@@ -100,6 +110,12 @@ export async function transcribeImport(
       console.log(chalk.yellow(`${fail} failed`));
     }
   }
+
+  // P2-7: per-file failures never set an exit code before — a batch with
+  // every file broken exited 0.
+  if (results.some((r) => !r.success)) {
+    process.exitCode = 1;
+  }
 }
 
 async function processFile(
@@ -163,7 +179,8 @@ async function processFile(
       // empty meeting behind (dashboard lists by dir, and a transcript-less
       // dir is indistinguishable from a crashed one).
       await rm(meetingDir, { recursive: true, force: true }).catch(() => {});
-      return "";
+      // P2-7: empty transcript is a per-file failure, not a success.
+      throw new NoSpeechError();
     }
 
     const markdown = assembleMarkdown(title, date.toISOString(), entries);

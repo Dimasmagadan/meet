@@ -1,8 +1,9 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseLoadavg,
   parseFreeMemoryMb,
+  parseVmStatPageSize,
   getSystemPressure,
   isWhisperRunning,
   isAudioAnalysisRunning,
@@ -12,12 +13,16 @@ import {
   DEFAULT_PRESSURE_THRESHOLDS,
   _resetWhisperCache,
   _resetAudioAnalysisCache,
+  _resetPageSizeCache,
   type ResourcePressure,
   type PressureSensor,
 } from "./system-monitor.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { mkdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const execFileP = promisify(execFile);
 
@@ -301,5 +306,141 @@ describe("real fixtures", () => {
     }
     const v = parseFreeMemoryMb(raw);
     assert.ok(v === null || (v >= 0 && Number.isFinite(v)));
+  });
+});
+
+// --- P1-2 (SPEC_SAFETY_NET_2026-10-31 §3) -----------------------------------
+
+describe("parseVmStatPageSize", () => {
+  it("extracts the Apple Silicon 16384-byte page size", () => {
+    assert.strictEqual(
+      parseVmStatPageSize("Mach Virtual Memory Statistics: (page size of 16384 bytes)"),
+      16384,
+    );
+  });
+
+  it("returns null when the header is absent (older macOS wording)", () => {
+    assert.strictEqual(parseVmStatPageSize("Mach Virtual Memory Statistics:\nPages free: 100."), null);
+    assert.strictEqual(parseVmStatPageSize(""), null);
+  });
+
+  it("returns null for a malformed size", () => {
+    assert.strictEqual(parseVmStatPageSize("(page size of 0 bytes)"), null);
+  });
+});
+
+describe("parseFreeMemoryMb with a 16384-byte page header", () => {
+  // The review's shape: a machine reporting ~3000 MB reclaimable, which the
+  // old 4096 default under-reported as ~750 MB (4×).
+  const fixture = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                          96000.
+Pages inactive:                      96000.
+Pages active:                        40000.
+Pages wired down:                    20000.`;
+
+  it("uses the header page size via parseVmStatPageSize → real MB", () => {
+    const mb = parseFreeMemoryMb(fixture, parseVmStatPageSize(fixture)!);
+    assert.strictEqual(mb, 3000); // 192000 pages × 16384 bytes
+  });
+
+  it("the same fixture via the 4096 default yields 4× less (documents the old bug)", () => {
+    assert.strictEqual(parseFreeMemoryMb(fixture), 750);
+  });
+});
+
+// PATH stubs for the sysctl/vm_stat children, so the default-sensor path is
+// hermetic (no reliance on the host's actual load or memory).
+describe("throttleHold default sensor honors configured thresholds", () => {
+  let stubDir: string;
+  let savedPath: string | undefined;
+
+  const VmStatFixture = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                          100000.
+Pages inactive:                      103904.
+Pages active:                        40000.
+Pages wired down:                    20000.`;
+
+  function installStubs(loadavg: string): void {
+    stubDir = join(tmpdir(), `meet-test-sysmon-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(stubDir, { recursive: true });
+    const sysctl = join(stubDir, "sysctl");
+    writeFileSync(sysctl, `#!/bin/sh
+if [ "$1" = "-n" ] && [ "$2" = "hw.pagesize" ]; then
+  echo "16384"
+elif [ "$1" = "-n" ] && [ "$2" = "vm.loadavg" ]; then
+  echo "${loadavg}"
+fi
+`, { mode: 0o755 });
+    const vmStat = join(stubDir, "vm_stat");
+    writeFileSync(vmStat, `#!/bin/sh\ncat <<'EOF'\n${VmStatFixture}EOF\n`, { mode: 0o755 });
+    savedPath = process.env.PATH;
+    process.env.PATH = `${stubDir}:${savedPath ?? ""}`;
+  }
+
+  beforeEach(() => {
+    _resetPageSizeCache();
+  });
+
+  afterEach(() => {
+    if (savedPath !== undefined) process.env.PATH = savedPath;
+    try { rmSync(stubDir, { recursive: true, force: true }); } catch {}
+    _resetPageSizeCache();
+  });
+
+  function throttleConfig(over: Partial<typeof DEFAULT_CONFIG> = {}) {
+    return {
+      ...DEFAULT_CONFIG,
+      gateHeavyPasses: true,
+      gateWhileRecording: false,
+      gateLoadAvg: 0,
+      gateFreeMemMb: 0,
+      gatePollMs: 1,
+      ...over,
+    };
+  }
+
+  const noRecording = () => false;
+
+  it("gateLoadAvg: 2 holds when the (stubbed) load is 5 — config thresholds reach the default sensor", async () => {
+    installStubs("{ 5.00 5.00 5.00 }");
+    // Warm the sensor once outside the gate: the first getSystemPressure call
+    // spawns 4 children and its latency under concurrent test load can exceed
+    // a small budget, which would fail-open before the hold branch ever runs.
+    await getSystemPressure({ cpuThresholdLoad: 1e9, memThresholdMb: 0 });
+    const messages: string[] = [];
+    await throttleHold(
+      throttleConfig({ gateLoadAvg: 2 }),
+      // Budget must outlast the first in-gate sensor() call so the hold
+      // branch is actually reached.
+      makeDeadline(500),
+      "final pass",
+      { isRecordingActive: noRecording, notify: (m) => messages.push(m) },
+    );
+    // Pre-fix the sensor ran with DEFAULT cpuThresholdLoad (6): load 5 < 6 →
+    // no hold, no message. Post-fix the configured 2 trips.
+    assert.strictEqual(messages.length, 1);
+    assert.match(messages[0], /holding/);
+  });
+
+  it("gateFreeMemMb: 2048 does not hold when 3186 MB is reclaimable (16384-byte pages)", async () => {
+    installStubs("{ 1.00 1.00 1.00 }");
+    await getSystemPressure({ cpuThresholdLoad: 1e9, memThresholdMb: 0 });
+    const messages: string[] = [];
+    await throttleHold(
+      throttleConfig({ gateFreeMemMb: 2048 }),
+      makeDeadline(300),
+      "final pass",
+      { isRecordingActive: noRecording, notify: (m) => messages.push(m) },
+    );
+    // Pre-fix (4096 math) the same fixture read as 796 MB < 2048 → held until
+    // the deadline. With the header page size it reads 3186 MB ≥ 2048 → pass.
+    assert.strictEqual(messages.length, 0);
+  });
+
+  it("getSystemPressure reads free memory via the vm_stat header page size", async () => {
+    installStubs("{ 1.00 1.00 1.00 }");
+    const p = await getSystemPressure({ cpuThresholdLoad: 1e9, memThresholdMb: 0 });
+    // 203904 pages × 16384 bytes = 3186 MB (pre-fix default: 796 MB).
+    assert.strictEqual(p.freeMemoryMb, 3186);
   });
 });

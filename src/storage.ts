@@ -52,8 +52,18 @@ export function normalizePath(p: string): string {
   return resolve(expandPath(p));
 }
 
+// P3 (§7 row 12): suites that exercise session-dir listings
+// (storage.test.ts's meet-test-stale-*) redirect this so a crash before
+// afterEach never pollutes the real ~/.meet/sessions. Mirrors
+// locks.ts setSessionsDirForTest.
+let sessionsDirOverride: string | null = null;
+
+export function setSessionsDirForTest(dir: string | null): void {
+  sessionsDirOverride = dir;
+}
+
 export function getSessionsDir(): string {
-  const dir = join(homedir(), ".meet", "sessions");
+  const dir = sessionsDirOverride ?? join(homedir(), ".meet", "sessions");
   mkdirSync(dir, { recursive: true });
   return dir;
 }

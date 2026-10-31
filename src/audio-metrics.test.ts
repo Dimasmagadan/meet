@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   readPcmSamples,
   computeRmsDb,
@@ -9,6 +12,7 @@ import {
   makeSilentWav,
   makeSineWav,
   makeBurstWav,
+  makeWavHeader,
   frameSizeForRate,
   frameRmsDb,
   pearsonCorrelation,
@@ -26,9 +30,15 @@ describe("readPcmSamples", () => {
   it("returns empty for header-only WAV", () => {
     const buf = Buffer.alloc(44);
     buf.write("RIFF", 0);
+    buf.write("WAVE", 8);
     buf.writeUInt32LE(0, 40);
     const result = readPcmSamples(buf);
     assert.strictEqual(result.length, 0);
+  });
+
+  it("throws on non-RIFF bytes (P2-2: garbage must not parse as samples)", () => {
+    const buf = Buffer.alloc(100, 0x41);
+    assert.throws(() => readPcmSamples(buf), /not a RIFF\/WAVE file/);
   });
 
   it("reads samples from synthetic silent WAV", () => {
@@ -184,11 +194,41 @@ describe("makeSilentWav / makeSineWav", () => {
   });
 });
 
+// P2-2 (SPEC_SAFETY_NET_2026-10-31 §4.2): unreadable must be distinguishable
+// from silence — the old catch fabricated digital silence for ANY failure.
 describe("analyzeWavFileWithSamples", () => {
-  it("returns digital silence + empty samples for a missing file", async () => {
+  it("unreadable WAV reports ok:false instead of silence", async () => {
     const result = await analyzeWavFileWithSamples("/tmp/does-not-exist-meet-test.wav");
-    assert.strictEqual(result.metrics.rmsDb, -Infinity);
-    assert.strictEqual(result.samples.length, 0);
+    assert.strictEqual(result.ok, false);
+    if (!result.ok) assert.ok(result.error);
+  });
+
+  it("a garbage header reports ok:false (readPcmSamples rejects non-RIFF bytes)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-wav-"));
+    try {
+      const bad = join(dir, "garbage.wav");
+      writeFileSync(bad, Buffer.from("this is definitely not a RIFF file, just filler bytes....."));
+      const result = await analyzeWavFileWithSamples(bad);
+      assert.strictEqual(result.ok, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a 44-byte header-only WAV is ok:true with silence metrics (empty but valid ≠ broken)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-wav-"));
+    try {
+      const empty = join(dir, "empty.wav");
+      writeFileSync(empty, makeWavHeader(0, 16000, 1, 16));
+      const result = await analyzeWavFileWithSamples(empty);
+      assert.strictEqual(result.ok, true);
+      if (result.ok) {
+        assert.strictEqual(result.metrics.rmsDb, -Infinity);
+        assert.strictEqual(result.metrics.sampleCount, 0);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

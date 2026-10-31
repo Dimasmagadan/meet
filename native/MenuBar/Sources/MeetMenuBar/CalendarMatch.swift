@@ -10,6 +10,19 @@ struct Candidate: Equatable {
     let end: Date
 }
 
+// P3 row 18 (SPEC_SAFETY_NET_2026-10-31 §7): attendee name selection, pure so
+// the self-test can cover declined/room filtering and the "Doe, John" shape
+// without EventKit. The controller maps EKParticipant → AttendeeDescriptor.
+struct AttendeeDescriptor: Equatable {
+    let isCurrentUser: Bool
+    let isDeclined: Bool
+    // Rooms/resources surface as .nonParticipant in EventKit — they are not
+    // people and never registry candidates.
+    let isNonParticipant: Bool
+    let name: String?
+    let mailto: String?
+}
+
 enum CalendarMatch {
     static let maxGraceMinutes = 8
     static let hardCapMultiplier = 2
@@ -92,7 +105,30 @@ enum CalendarMatch {
 
     // MARK: - Self-check (see §5) — run via `MeetMenuBar --self-test-calendar`.
 
+    // P3 row 18: non-self attendees as candidate names — declined invitees and
+    // rooms/resources excluded, names kept whole (no comma re-split: "Doe, John"
+    // is one person's display name).
+    static func candidateAttendeeNames(_ attendees: [AttendeeDescriptor]) -> [String] {
+        attendees
+            .filter { !$0.isCurrentUser && !$0.isDeclined && !$0.isNonParticipant }
+            .compactMap { $0.name ?? $0.mailto?.replacingOccurrences(of: "mailto:", with: "") }
+            .filter { !$0.isEmpty }
+    }
+
     static func selfCheck() {
+        // candidateAttendeeNames (P3 row 18)
+        let attendeeFixtures: [AttendeeDescriptor] = [
+            AttendeeDescriptor(isCurrentUser: true, isDeclined: false, isNonParticipant: false, name: "Me Myself", mailto: nil),
+            AttendeeDescriptor(isCurrentUser: false, isDeclined: false, isNonParticipant: false, name: "Doe, John", mailto: nil),
+            AttendeeDescriptor(isCurrentUser: false, isDeclined: true, isNonParticipant: false, name: "Declined Dan", mailto: nil),
+            AttendeeDescriptor(isCurrentUser: false, isDeclined: false, isNonParticipant: true, name: "Meeting Room 4", mailto: nil),
+            AttendeeDescriptor(isCurrentUser: false, isDeclined: false, isNonParticipant: false, name: nil, mailto: "mailto:alias@corp.example"),
+        ]
+        let names = candidateAttendeeNames(attendeeFixtures)
+        assert(names == ["Doe, John", "alias@corp.example"], "declined/room/self filtered, comma name whole, mailto stripped: \(names)")
+        assert(candidateAttendeeNames([]).isEmpty, "no attendees → empty list")
+
+        // hasCallLink
         // hasCallLink
         assert(hasCallLink(["https://zoom.us/j/123", nil, nil]), "location hit")
         assert(hasCallLink([nil, "Join: <a href='https://meet.google.com/abc-defg'>link</a>", nil]), "HTML-wrapped notes hit")

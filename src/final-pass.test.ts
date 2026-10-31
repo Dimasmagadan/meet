@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runFinalPass } from "./final-pass.js";
@@ -95,8 +95,10 @@ test("runFinalPass — batch gate", async (t) => {
       const t0 = Date.now();
       await runFinalPass(session, config, undefined, undefined, undefined, sensor);
       const elapsed = Date.now() - t0;
+      // P3 (§7 row 13): calls === 1 is the real assertion; the elapsed bound
+      // is a generous hang bound only (CI runners are slow, 100ms flaked).
       assert.strictEqual(calls, 1);
-      assert.ok(elapsed < 100, `expected no wait, took ${elapsed}ms`);
+      assert.ok(elapsed < 5000, `expected no wait, took ${elapsed}ms`);
     } finally {
       teardown();
     }
@@ -176,4 +178,25 @@ test("runFinalPass — failure accounting", async (t) => {
       teardown();
     }
   });
+});
+
+// P2-2 (SPEC_SAFETY_NET_2026-10-31 §4.2): a WAV that cannot be read at all is
+// a failure, not a successful silence verdict — it must land in failedKeys so
+// finalize preserves the session instead of deleting the only recovery
+// artifacts. Pre-fix the analyzer fabricated -Infinity and the chunk was
+// marked completed.
+test("runFinalPass — unreadable WAV routes to failedKeys", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "meet-finalpass-unreadable-"));
+  try {
+    // A directory where the chunk file should be: readdir lists it, readFile fails.
+    mkdirSync(join(dir, "mic-001.wav"));
+    const session = makeSession(dir);
+    const config: Config = { ...DEFAULT_CONFIG, gateHeavyPasses: false };
+    const { entries, failedKeys, completedKeys } = await runFinalPass(session, config);
+    assert.ok(failedKeys.has("mic-001"), "unreadable chunk must land in failedKeys");
+    assert.ok(!completedKeys.has("mic-001"), "unreadable chunk must not be a completed silence verdict");
+    assert.strictEqual(entries.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

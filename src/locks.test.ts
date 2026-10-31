@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { acquireFinalizerLock, releaseFinalizerLock, isPidAlive, readFinalizerLock, acquireRegistryLock, releaseRegistryLock, releaseAllRegistryLocks, setSessionsDirForTest, getLocksSessionsDirForTest } from "./locks.js";
+import { acquireFinalizerLock, releaseFinalizerLock, isPidAlive, readFinalizerLock, readActiveRecordingLock, acquireRegistryLock, releaseRegistryLock, releaseAllRegistryLocks, setSessionsDirForTest, getLocksSessionsDirForTest } from "./locks.js";
 
 describe("isPidAlive", () => {
   it("returns true for current process", () => {
@@ -224,5 +224,70 @@ describe("acquireRegistryLock", () => {
     releaseRegistryLock();
     releaseAllRegistryLocks();
     assert.strictEqual(acquireRegistryLock("after-steal"), true);
+  });
+});
+
+// P3 row 5 (SPEC_SAFETY_NET_2026-10-31 §7): a recycled PID must not make a
+// dead owner's lock look live — the lock stores the owner's `ps -o lstart=`
+// at acquire and isPidAlive compares it. PATH-stubbed ps keeps the test
+// hermetic.
+describe("isPidAlive pidStartTime (P3 row 5)", () => {
+  let stubDir: string;
+  let savedPath: string | undefined;
+
+  const makePsStub = (): void => {
+    stubDir = join(tmpdir(), `meet-test-ps-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(stubDir, { recursive: true });
+    const ps = join(stubDir, "ps");
+    // $1=-o  $2=comm=|lstart=  $3=-p  $4=pid — answers come from files the
+    // test writes, so each case controls what the "current" process looks like.
+    writeFileSync(ps, `#!/bin/sh
+if [ "$2" = "lstart=" ]; then
+  cat "${join(stubDir, "lstart-answer")}" 2>/dev/null || exit 1
+else
+  echo "node"
+fi
+`, { mode: 0o755 });
+    savedPath = process.env.PATH;
+    process.env.PATH = `${stubDir}:${savedPath ?? ""}`;
+  };
+
+  afterEach(() => {
+    if (savedPath !== undefined) process.env.PATH = savedPath;
+    try { rmSync(stubDir, { recursive: true, force: true }); } catch {}
+  });
+
+  const writeLock = (startTime: string): void => {
+    writeFileSync(join(getLocksSessionsDirForTest(), "active-recording.lock"), JSON.stringify({
+      pid: process.pid,
+      pidStartTime: startTime,
+      sessionDir: "/tmp/x",
+      outputFile: "/tmp/x/transcript.md",
+      title: "t",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }), "utf-8");
+  };
+
+  it("a stored start time that no longer matches → dead owner (lock reclaimed)", () => {
+    makePsStub();
+    writeFileSync(join(stubDir, "lstart-answer"), "Tue Feb  2 02:02:02 2022\n");
+    writeLock("Mon Jan  1 01:01:01 2001");
+    assert.strictEqual(readActiveRecordingLock(), null, "recycled PID must read as dead");
+    assert.strictEqual(existsSync(join(getLocksSessionsDirForTest(), "active-recording.lock")), false, "stale lock must be cleared");
+  });
+
+  it("a matching start time → alive (lock kept)", () => {
+    makePsStub();
+    writeFileSync(join(stubDir, "lstart-answer"), "Mon Jan  1 01:01:01 2001\n");
+    writeLock("Mon Jan  1 01:01:01 2001");
+    assert.notStrictEqual(readActiveRecordingLock(), null);
+  });
+
+  it("ps failure stays fail-open (lock kept, never orphan a real owner)", () => {
+    makePsStub();
+    // No lstart-answer file → the stub exits 1 → readPidStartTime null.
+    writeLock("Mon Jan  1 01:01:01 2001");
+    assert.notStrictEqual(readActiveRecordingLock(), null);
   });
 });

@@ -70,6 +70,7 @@ Speak into your mic. Press `q` or `s` to stop, `p` to pause/resume, `e` to exten
 
 ## CLI Commands
 
+<!-- CLI:COMMANDS -->
 ```
 meet start "Title"              Record mic + system audio (foreground)
 meet start --mic "Title"        Record mic only
@@ -79,11 +80,12 @@ meet setup                      Check dependencies and configuration
 meet doctor [mic|full]          Test audio capture (12-second health check)
 meet list                       List past meetings
 meet finalize <sessionDir>      Finalize a stopped recording session
-meet tag <sessionDir> <tags...> Queue tags for a running recording session
+meet tag <sessionDir> <tags...> Replace the tag selection of a running session
+meet tags [--session <dir>]    List defined tags / a session's current selection
 meet retitle <sessionDir> <t>   Change the title of a running session (pending on stop)
 meet status                     Show active recording/finalization jobs
 meet dashboard [--output <f>]   Browse past meetings as a local HTML dashboard
-meet ask [question]             Ask opencode about the active/live transcript
+meet ask <sessionDir> <question> Ask opencode about a live recording transcript
 meet rename <dir> <id> <name>   Rename a diarized speaker label in a finalized meeting
 meet link <dir> <repoPath>      Attach/replace git repo context in a finalized meeting's meta.md
 meet speakers [suggest]         Registry list / copy-paste rename suggestions
@@ -91,6 +93,7 @@ meet speakers enroll-self <n>   Enroll your own voiceprint into the registry
 meet bin-path                   Print resolved runner paths as JSON (used by the menu bar app)
 meet model [name]               List whisper models / hot-swap live (--final: finalization) model
 ```
+<!-- /CLI:COMMANDS -->
 
 ### `start` options
 
@@ -102,9 +105,8 @@ meet model [name]               List whisper models / hot-swap live (--final: fi
 | `--calendar-hard-cap <min>` | Internal calendar launcher ceiling; requires a smaller explicit `--max-duration` | none |
 | `--text-timeout <min>` | Auto-stop after N processed minutes without transcript | 10 |
 | `--voice-processing` | Enable VoiceProcessing IO echo cancellation | off |
-| `--allow-degraded` | Start with degraded audio (one channel) if the other fails | off |
 | `--headless` | Suppress the post-start popup (menu-bar / scripted use) | off |
-| `--attendees <names>` | Pre-seed calendar attendees for speaker suggestions | none |
+| `--attendees <names>` | Attendee names for speaker suggestions; repeatable (one per name), a single value may be comma-separated | none |
 | `--no-summary` | Disable live extractive summary draft during recording | off |
 | `--repo <path>` | Attach git repo context from `<path>` (persisted as a `- Repo:` line in `meta.md`) | cwd |
 

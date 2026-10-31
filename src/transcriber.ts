@@ -15,20 +15,32 @@ export interface TranscribeResult {
   metrics?: AudioMetrics;
 }
 
+// Stock-phrase patterns are anchored to their hallucination usage — whole
+// sentence or leading-label forms — never bare substrings (P2-1,
+// SPEC_SAFETY_NET_2026-10-31 §4.1): a bare /корректор/ deleted «Корректор
+// проверил текст договора, всё в порядке», and a bare prompt-echo pattern
+// deleted «Это была консультация, обсудили вопросы и ответы по проекту».
+// The dominance rule in isNoiseDominant is the other half of the fix: even a
+// matching sentence is only dropped when the matched noise dominates it.
 const HALLUCINATION_PATTERNS: RegExp[] = [
-  /редактор\s+субтитров/i,
-  /корректор/i,
-  /субтитры?\s+(выполнил|делал|сделал|сделала)/i,
+  /^редактор\s+субтитров/i,
+  /^корректор[.,!:]?\s*/i,
+  /^субтитры?\s+(выполнил|делал|сделал|сделала)/i,
   /технические\s+работы/i,
-  /просим\s+прощения/i,
+  /^просим\s+прощения/i,
   /канал\s+обновлен/i,
-  /подписывайтесь/i,
-  /спасибо\s+за\s+просмотр/i,
-  /приятного\s+просмотра/i,
-  /оставайтесь\s+с\s+нами/i,
-  /встреча\s+на\s+русском\s+языке/i,
-  /консультация.*вопросы.*ответы/i,
-  /обсуждение.*вопросы.*ответы/i,
+  /^подписывайтесь/i,
+  /^благодарим\s+за\s+просмотр/i,
+  /^спасибо\s+за\s+просмотр/i,
+  /^смотрите\s+(полное\s+видео\s+)?на\s+(нашем\s+)?канале/i,
+  /^приятного\s+просмотра/i,
+  /^оставайтесь\s+с\s+нами/i,
+  // Whisper prompt echo — the model repeating the --prompt string back as
+  // its own sentence.
+  /^встреча\s+на\s+русском\s+языке/i,
+  /^разговор\s+на\s+русском\s+языке/i,
+  /^консультация[,.]?\s+(обсуждение[,.]?\s+)?вопросы\s+и\s+ответы/i,
+  /^обсуждение[,.]?\s+вопросы\s+и\s+ответы/i,
   // Bare /лайк/, /комментарий/, /подписка/ used to match those words in any
   // context — including legitimate business text ("добавь комментарий к
   // задаче", "оформили подписку на сервис"). Restricted to the actual
@@ -47,6 +59,59 @@ const NOISE_TOKENS: RegExp[] = [
   /[♪♫]/g,
 ];
 
+// A sentence with a hallucination-pattern match is dropped only when the
+// matched noise dominates it: after removing all matches fewer than 2 content
+// words remain, or the matches cover ≥ 60% of the sentence's non-space
+// characters (P2-1, SPEC_SAFETY_NET_2026-10-31 §4.1).
+const NOISE_COVERAGE_THRESHOLD = 0.6;
+
+// Function words that don't count as content. Deliberately compact — it only
+// has to distinguish "a real sentence remains after the stock phrase" from
+// "the stock phrase was the whole utterance".
+const RU_STOPWORDS = new Set([
+  "и", "в", "во", "не", "что", "он", "на", "я", "с", "со", "как", "а", "то",
+  "все", "она", "так", "его", "но", "да", "ты", "к", "у", "же", "вы", "за",
+  "бы", "по", "только", "ее", "мне", "было", "вот", "от", "меня", "еще",
+  "ещё", "нет", "о", "из", "ему", "теперь", "когда", "даже", "ну", "ли",
+  "если", "уже", "или", "ни", "быть", "был", "была", "были", "до", "вас",
+  "нее", "ней", "для", "мы", "тебя", "их", "чем", "сам", "чтоб", "чтобы",
+  "без", "будто", "раз", "тоже", "себе", "под", "будет", "будут", "ж",
+  "тогда", "кто", "этот", "это", "эта", "эти", "того", "этого", "потому",
+  "какой", "совсем", "ним", "здесь", "этом", "один", "одна", "почти", "мой",
+  "моя", "тем", "сейчас", "куда", "зачем", "всех", "никогда", "можно", "при",
+  "наконец", "два", "об", "другой", "хоть", "после", "над", "больше", "тот",
+  "через", "эти", "нас", "про", "всего", "них", "какая", "много", "разве",
+  "три", "эту", "впрочем", "хорошо", "свою", "этой", "перед", "иногда",
+  "лучше", "чуть", "том", "нельзя", "такой", "им", "более", "всегда",
+  "конечно", "всю", "между", "наш", "наша", "наше", "наши", "ваш", "ваша",
+  "ваше", "ваши", "твой", "твоя", "свой", "своя", "есть", "весь", "вся",
+]);
+
+function contentWordCount(text: string): number {
+  let count = 0;
+  for (const token of text.split(/\s+/)) {
+    const word = token.replace(/[^\p{L}\p{N}]/gu, "").toLowerCase().replace(/ё/g, "е");
+    if (word.length >= 2 && !RU_STOPWORDS.has(word)) count++;
+  }
+  return count;
+}
+
+export function isNoiseDominant(sentence: string): boolean {
+  if (!HALLUCINATION_PATTERNS.some((p) => p.test(sentence))) return false;
+
+  // Fresh global regexes per call: .test() on a /g/ regex would carry
+  // lastIndex state between sentences.
+  let remaining = sentence;
+  for (const p of HALLUCINATION_PATTERNS) {
+    remaining = remaining.replace(new RegExp(p.source, p.flags.includes("g") ? p.flags : p.flags + "g"), " ");
+  }
+
+  const before = sentence.replace(/\s/g, "").length;
+  const after = remaining.replace(/\s/g, "").length;
+  const coverage = before > 0 ? (before - after) / before : 1;
+  return contentWordCount(remaining) < 2 || coverage >= NOISE_COVERAGE_THRESHOLD;
+}
+
 export function cleanText(raw: string): string {
   let text = raw;
 
@@ -61,11 +126,11 @@ export function cleanText(raw: string): string {
   text = text.replace(/\.{4,}/g, "...");
   text = text.replace(/—\s*(—\s*){2,}/g, "—");
 
-  for (const pattern of HALLUCINATION_PATTERNS) {
-    if (pattern.test(text)) {
-      const lines = text.split(/(?<=[.!?])\s*/);
-      text = lines.filter((l) => !pattern.test(l)).join(" ");
-    }
+  // P2-1: patterns used to delete every sentence they appeared in. A sentence
+  // is now dropped only when the matched noise dominates it.
+  const sentences = text.split(/(?<=[.!?])\s*/);
+  if (sentences.some((l) => HALLUCINATION_PATTERNS.some((p) => p.test(l)))) {
+    text = sentences.filter((l) => !isNoiseDominant(l)).join(" ");
   }
 
   text = text.replace(/\s+/g, " ").trim();

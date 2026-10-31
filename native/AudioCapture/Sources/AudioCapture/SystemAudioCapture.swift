@@ -31,13 +31,15 @@ class SystemAudioCapture {
     // All access is serialized through this queue instead of racing directly —
     // file I/O also no longer runs on the real-time thread.
     private let writerQueue = DispatchQueue(label: "sysaudiocapture.writer")
-    // Storage-error budget — same shape as MicCapture: a failed finalizeChunk
-    // closes the writer while healthy IOProc callbacks keep refreshing
-    // lastBufferTime, masking the stall monitor. Bounded reopen retries, then
-    // halt the stream visibly with the failed audio preserved.
-    private var writerErrorCount = 0
+    // Storage-error budget — same shape as MicCapture (P2-9,
+    // WriterErrorBudget.swift): a failed finalizeChunk closes the writer while
+    // healthy IOProc callbacks keep refreshing lastBufferTime, masking the
+    // stall monitor. Consecutive failures trip the budget; ONLY a successful
+    // append+finalize resets it (the old inline counter reset after startChunk,
+    // so a persistent data-write failure never halted the stream).
+    private(set) var errorBudget = WriterErrorBudget(maxConsecutiveFailures: 3)
     private let maxWriterRecoveryAttempts = 3
-    private(set) var writerFailed = false
+    var writerFailed: Bool { errorBudget.tripped }
 
     // Phase-carrying resampler state (P0, SPEC_MIC_ECHO_FILTERING_2026-08-05
     // root cause B.3) — carried across buffers instead of restarting at 0
@@ -163,7 +165,11 @@ class SystemAudioCapture {
         // stop()'s final flush instead of racing it directly.
         writerQueue.async { [weak self] in
             guard let self else { return }
-            guard !self.writerFailed else { return }
+            // P3 (§7 row 17): the IOProc callback checked isRunning OUTSIDE
+            // this enqueue — a callback in flight when stop() flipped it could
+            // land here after flushPartial and write against a closed writer.
+            guard self.isRunning else { return }
+            guard !self.errorBudget.tripped else { return }
             do {
                 let chunkReady = try self.wavWriter.appendSamplesIfNeeded(resampled)
                 if chunkReady {
@@ -171,17 +177,16 @@ class SystemAudioCapture {
                         self.onChunkFinalized(name)
                     }
                     try self.wavWriter.startChunk()
-                    // A clean finalize+reopen proves storage is healthy again,
-                    // so the error budget is consecutive failures, not a
-                    // lifetime total (B7: isolated blips in a long meeting
-                    // otherwise halted the stream permanently).
-                    self.writerErrorCount = 0
+                    // P2-9: the budget resets on the successful append+finalize
+                    // above (B7: consecutive failures, not a lifetime total) —
+                    // the startChunk header creation alone proves nothing.
+                    self.errorBudget.recordSuccess()
                 }
             } catch {
-                self.writerErrorCount += 1
-                fputs("SystemAudioCapture write error: \(error) (attempt \(self.writerErrorCount)/\(self.maxWriterRecoveryAttempts))\n", stderr)
-                if self.writerErrorCount > self.maxWriterRecoveryAttempts {
-                    self.writerFailed = true
+                self.errorBudget.recordFailure()
+                let attempt = self.errorBudget.consecutiveFailures
+                fputs("SystemAudioCapture write error: \(error) (attempt \(attempt)/\(self.maxWriterRecoveryAttempts))\n", stderr)
+                if self.errorBudget.tripped {
                     self.wavWriter.abortCurrentChunk(preserveTemporary: true)
                     fputs("SystemAudioCapture storage failed permanently; halting sys stream, failed audio preserved\n", stderr)
                     logJSON("error", "stream_error", ["source": "sys", "message": "storage failure, stream halted"])
@@ -192,8 +197,8 @@ class SystemAudioCapture {
                 do {
                     self.wavWriter.abortCurrentChunk(preserveTemporary: true)
                     try self.wavWriter.startChunk()
-                    let attempt = self.writerErrorCount
-                    self.writerErrorCount = 0
+                    // No reset here (P2-9): header creation is not evidence of
+                    // healthy data writes.
                     logJSON("warning", "sys_writer_recovered", ["attempt": attempt])
                 } catch {
                     fputs("SystemAudioCapture writer recovery failed: \(error)\n", stderr)
@@ -299,6 +304,10 @@ class SystemAudioCapture {
         writerQueue.sync {
             _ = try? wavWriter.flushPartial()
         }
+        // P3 (§7 row 17): drain once more so a late enqueue from a callback
+        // that raced stop() (its isRunning guard now no-ops inside the
+        // closure) cannot run after this returns.
+        writerQueue.sync {}
     }
 
     private static func processObjectID(pid: pid_t) throws -> AudioObjectID {

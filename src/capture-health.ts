@@ -13,11 +13,16 @@ export interface CaptureHealthConfig {
   chunkDurationSeconds: number;
   silentConsecutiveThreshold: number;
   micMissingChunkThreshold: number;
+  // P3 (§7 row 4): sys_missing was declared but never emitted — full mode
+  // with a failed sys tap (macOS < 14.2, TCC denial) now warns after this
+  // many minutes of mic-only progress.
+  sysMissingMinutes?: number;
 }
 
 const DEFAULT_HEALTH_CONFIG: Omit<CaptureHealthConfig, "micRmsThresholdDb" | "sysRmsThresholdDb" | "mode" | "chunkDurationSeconds"> = {
   silentConsecutiveThreshold: 3,
   micMissingChunkThreshold: 2,
+  sysMissingMinutes: 5,
 };
 
 export class CaptureHealthMonitor {
@@ -32,6 +37,7 @@ export class CaptureHealthMonitor {
   private lastSysSilentWarningAt: number = Number.NEGATIVE_INFINITY;
   private warnedMicMissing: boolean = false;
   private warnedMicSilent: boolean = false;
+  private warnedSysMissing: boolean = false;
 
   constructor(config: CaptureHealthConfig) {
     this.config = { ...DEFAULT_HEALTH_CONFIG, ...config };
@@ -102,6 +108,26 @@ export class CaptureHealthMonitor {
     }
 
     return null;
+  }
+
+  // P3 (§7 row 4): full mode, mic chunks demonstrably flowing (enough of
+  // them, and not all-silent — a dead-mic session is mic_missing/mic_silent's
+  // job), and the sys channel has never finalized a chunk: the sys tap is
+  // almost certainly broken, say so instead of the previously silent
+  // "recording" that produced a mic-only transcript nobody asked for.
+  checkSysMissing(): HealthWarning | null {
+    if (this.config.mode !== "full") return null;
+    if (this.warnedSysMissing) return null;
+    if (this.sysChunkCount > 0) return null;
+    const sysMissingMinutes = this.config.sysMissingMinutes ?? DEFAULT_HEALTH_CONFIG.sysMissingMinutes ?? 5;
+    const threshold = Math.max(1, Math.ceil((sysMissingMinutes * 60) / this.config.chunkDurationSeconds));
+    if (this.micChunkCount < threshold) return null;
+    if (this.consecutiveSilentMic >= this.config.silentConsecutiveThreshold) return null;
+    this.warnedSysMissing = true;
+    return {
+      type: "sys_missing",
+      message: `System audio has not produced any chunks while ${this.micChunkCount} mic chunks finalized — the sys tap may have failed (macOS < 14.2 or TCC denial)`,
+    };
   }
 
   getStats() {

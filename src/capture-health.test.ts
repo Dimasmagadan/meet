@@ -159,3 +159,55 @@ describe("CaptureHealthMonitor", () => {
     });
   });
 });
+
+// P3 row 4 (SPEC_SAFETY_NET_2026-10-31 §7): sys_missing was declared but
+// never emitted. Full mode + mic chunks demonstrably flowing + zero sys
+// chunks → the sys tap is broken and the user must hear about it.
+describe("checkSysMissing (P3 row 4)", () => {
+  const baseConfig = { micRmsThresholdDb: -60, sysRmsThresholdDb: -60, chunkDurationSeconds: 30, silentConsecutiveThreshold: 3, micMissingChunkThreshold: 2 };
+
+  it("raises sys_missing after enough audible mic-only progress in full mode", () => {
+    const monitor = new CaptureHealthMonitor({ ...baseConfig, mode: "full" });
+    const loud = { rmsDb: -30, peakDb: -20 };
+    // 5 minutes of 30s chunks = 10 chunks: 9 chunks are still under threshold.
+    for (let i = 1; i <= 9; i++) {
+      const warning = monitor.recordChunk("mic", i, loud);
+      assert.strictEqual(warning, null, `no early warning at chunk ${i}`);
+      assert.strictEqual(monitor.checkSysMissing(), null, `threshold not met at chunk ${i}`);
+    }
+    // The 10th mic chunk meets the threshold.
+    monitor.recordChunk("mic", 10, loud);
+    const warning = monitor.checkSysMissing();
+    assert.ok(warning, "expected a sys_missing warning");
+    assert.strictEqual(warning!.type, "sys_missing");
+    assert.match(warning!.message, /sys tap may have failed/);
+    // Warns once.
+    assert.strictEqual(monitor.checkSysMissing(), null);
+  });
+
+  it("does not raise when sys chunks are flowing", () => {
+    const monitor = new CaptureHealthMonitor({ ...baseConfig, mode: "full" });
+    const loud = { rmsDb: -30, peakDb: -20 };
+    for (let i = 1; i <= 12; i++) {
+      monitor.recordChunk("mic", i, loud);
+      monitor.recordChunk("sys", i, loud);
+      assert.strictEqual(monitor.checkSysMissing(), null);
+    }
+  });
+
+  it("does not raise when the mic itself is silent (mic_silent's job, not sys_missing's)", () => {
+    const monitor = new CaptureHealthMonitor({ ...baseConfig, mode: "full" });
+    const silent = { rmsDb: -Infinity, peakDb: -Infinity };
+    for (let i = 1; i <= 12; i++) {
+      monitor.recordChunk("mic", i, silent);
+      assert.strictEqual(monitor.checkSysMissing(), null, `mic-silent session must not trigger sys_missing at chunk ${i}`);
+    }
+  });
+
+  it("does not raise in mic-only mode", () => {
+    const monitor = new CaptureHealthMonitor({ ...baseConfig, mode: "mic" });
+    const loud = { rmsDb: -30, peakDb: -20 };
+    for (let i = 1; i <= 12; i++) monitor.recordChunk("mic", i, loud);
+    assert.strictEqual(monitor.checkSysMissing(), null);
+  });
+});

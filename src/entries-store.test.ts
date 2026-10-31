@@ -1,6 +1,7 @@
-import { test } from "node:test";
+import { test, describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -149,5 +150,39 @@ test("appendEntryRecord and readEntryRecords", async (t) => {
     assert.equal(records.length, 2);
 
     await rm(sessionDir, { recursive: true, force: true });
+  });
+});
+
+// P3 row 7 (SPEC_SAFETY_NET_2026-10-31 §7): a torn append (crash mid-write)
+// leaves the file without a trailing newline — appending raw glued the next
+// record onto the torn line and both failed to parse.
+describe("appendEntryRecord torn-line repair (P3 row 7)", () => {
+  it("prepends a newline when the file lacks a trailing one — both records parse", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-entries-torn-"));
+    try {
+      const path = join(dir, "entries.jsonl");
+      writeFileSync(path, JSON.stringify({ source: "mic", index: 1, timestamp: "14:30:00", text: "torn", rmsDb: -30 }));
+      await appendEntryRecord(dir, { source: "sys", index: 2, timestamp: "14:30:15", text: "next", rmsDb: -30 });
+      const records = await readEntryRecords(dir);
+      assert.strictEqual(records.length, 2, `both records must parse, got ${JSON.stringify(records)}`);
+      assert.strictEqual(records[0].index, 1);
+      assert.strictEqual(records[1].index, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not insert a blank line when the file already ends with one", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "meet-entries-clean-"));
+    try {
+      await appendEntryRecord(dir, { source: "mic", index: 1, timestamp: "14:30:00", text: "a", rmsDb: -30 });
+      await appendEntryRecord(dir, { source: "mic", index: 2, timestamp: "14:30:15", text: "b", rmsDb: -30 });
+      const records = await readEntryRecords(dir);
+      assert.strictEqual(records.length, 2);
+      assert.strictEqual(records[0].text, "a");
+      assert.strictEqual(records[1].text, "b");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

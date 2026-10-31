@@ -153,6 +153,71 @@ describe("cleanText", () => {
   });
 });
 
+// P2-1 canaries (SPEC_SAFETY_NET_2026-10-31 §4.1): these are real meeting
+// sentences the old per-pattern drop deleted outright. If cleanText regresses,
+// these fail first.
+describe("cleanText dominance rule (P2-1)", () => {
+  it("keeps «Просим прощения за задержку, сейчас всё настроим.» unchanged", () => {
+    const text = "Просим прощения за задержку, сейчас всё настроим.";
+    assert.strictEqual(cleanText(text), text);
+  });
+
+  it("keeps «Корректор проверил текст договора, всё в порядке.» unchanged", () => {
+    const text = "Корректор проверил текст договора, всё в порядке.";
+    assert.strictEqual(cleanText(text), text);
+  });
+
+  it("keeps «Плановые технические работы начнутся в субботу, сервис будет недоступен.» unchanged", () => {
+    const text = "Плановые технические работы начнутся в субботу, сервис будет недоступен.";
+    assert.strictEqual(cleanText(text), text);
+  });
+
+  it("keeps «Это была консультация, обсудили вопросы и ответы по проекту.» unchanged", () => {
+    const text = "Это была консультация, обсудили вопросы и ответы по проекту.";
+    assert.strictEqual(cleanText(text), text);
+  });
+
+  it("real hallucinations still die: подписывайтесь outro", () => {
+    assert.strictEqual(cleanText("Подписывайтесь на наш канал!"), "");
+  });
+
+  it("real hallucinations still die: благодарим за просмотр + лайки", () => {
+    assert.strictEqual(cleanText("Благодарим за просмотр, ставьте лайки"), "");
+  });
+
+  it("real hallucinations still die: смотрите ... на канале", () => {
+    assert.strictEqual(cleanText("Смотрите полное видео на канале"), "");
+    assert.strictEqual(cleanText("Смотрите на нашем канале"), "");
+  });
+
+  it("real hallucinations still die: [музыка]", () => {
+    assert.strictEqual(cleanText("[музыка]"), "");
+  });
+
+  it("mixed sentence survives intact — dominance drops only when matches cover the sentence", () => {
+    // The anchored "благодарим за просмотр" match leaves 2 content words
+    // (перейдём, делу) and covers 57% of non-space chars (< 60%) — so the
+    // dominance rule keeps the sentence, including the stock phrase. Pinned
+    // deliberately: the alternative (stripping the matched span) would
+    // silently rewrite surviving sentences.
+    const text = "Благодарим за просмотр мы перейдём к делу";
+    assert.strictEqual(cleanText(text), text);
+  });
+
+  it("prompt leak still dies standalone but survives mid-sentence", () => {
+    assert.strictEqual(cleanText("Встреча на русском языке."), "");
+    const text = "Обсудили встречу на русском языке и разошлись.";
+    assert.strictEqual(cleanText(text), text);
+  });
+
+  it("a short real sentence with a stock word survives when anchored pattern does not match", () => {
+    // Bare /просим прощения/ used to kill this; the anchored form + dominance
+    // keep it.
+    const text = "Коллеги, технические работы завершились.";
+    assert.strictEqual(cleanText(text), text);
+  });
+});
+
 describe("buildWhisperArgs", () => {
   // Point vocab at a non-existent path so the prompt suffix is deterministic
   // (the repo-root vocabulary.json is empty today, but these tests must not

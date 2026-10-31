@@ -1,6 +1,7 @@
 import { test, describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Pipeline } from "./pipeline.js";
@@ -41,15 +42,15 @@ test("pipeline live path is un-gated (P1 rescope seam guard)", () => {
   );
 });
 
-function makeSession(): Session {
+function makeSession(sessionDir?: string): Session {
   return {
     id: "test",
     title: "Test",
     mode: "mic",
     startedAt: new Date().toISOString(),
     chunkDurationSeconds: 15,
-    sessionDir: "/tmp/does-not-exist",
-    outputFile: "/tmp/does-not-exist/transcript.md",
+    sessionDir: sessionDir ?? "/tmp/does-not-exist",
+    outputFile: sessionDir ? join(sessionDir, "transcript.md") : "/tmp/does-not-exist/transcript.md",
     capturePid: null,
     status: "recording",
     processedChunks: [],
@@ -183,4 +184,26 @@ describe("Pipeline.close()", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+// P3 row 19 (SPEC_SAFETY_NET_2026-10-31 §7): start() fire-and-forgets rescan
+// — a readdir rejection used to become an unhandled rejection that killed the
+// recorder; the watcher also had no error listener.
+test("pipeline.start survives a rescan readdir rejection (P3 row 19)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "meet-pipeline-rescan-"));
+  try {
+    // sessionDir is a FILE: existsSync passes, readdir rejects ENOTDIR.
+    const fileAsDir = join(dir, "not-a-dir");
+    writeFileSync(fileAsDir, "x");
+    const session = makeSession(dir);
+    session.sessionDir = fileAsDir;
+    const pipeline = new Pipeline(session);
+    pipeline.start();
+    // Give the rejected rescan a chance to surface as an unhandled rejection
+    // (which would crash the test runner) — surviving to here is the point.
+    await new Promise((r) => setTimeout(r, 100));
+    await pipeline.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

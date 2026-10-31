@@ -32,7 +32,30 @@ function activeLockPath(): string {
   return join(sessionsDir(), "active-recording.lock");
 }
 
-export function isPidAlive(pid: number, identity?: { comm: string }): boolean {
+export interface PidIdentity {
+  comm?: string;
+  // P3 (§7 row 5): the process start time the lock was acquired under
+  // (`ps -o lstart=`). A recycled PID names a NEW process whose lstart
+  // differs from the stored one — that is a dead owner even though
+  // kill(pid, 0) succeeds.
+  startTime?: string;
+}
+
+// The owner's process start time, stored in lock payloads at acquire so
+// isPidAlive can detect PID reuse. Returns null when ps is unavailable or
+// fails — callers stay fail-open.
+function readPidStartTime(pid: number): string | null {
+  try {
+    return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function isPidAlive(pid: number, identity?: PidIdentity): boolean {
   try {
     process.kill(pid, 0);
   } catch {
@@ -50,10 +73,19 @@ export function isPidAlive(pid: number, identity?: { comm: string }): boolean {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    return comm === identity.comm || comm.endsWith(`/${identity.comm}`);
+    if (identity.comm !== undefined && comm !== identity.comm && !comm.endsWith(`/${identity.comm}`)) {
+      return false;
+    }
   } catch {
     return true;
   }
+  // PID-reuse guard: a stored start time that no longer matches means the
+  // PID now names a different process. ps failure stays fail-open.
+  if (identity.startTime !== undefined) {
+    const now = readPidStartTime(pid);
+    if (now !== null && now !== identity.startTime) return false;
+  }
+  return true;
 }
 
 // Unlinks only if the file still holds exactly the bytes we read. A
@@ -73,6 +105,7 @@ function unlinkIfUnchanged(lockPath: string, raw: string): boolean {
 function activeLockData(session: Session): string {
   return JSON.stringify({
     pid: process.pid,
+    pidStartTime: readPidStartTime(process.pid),
     sessionDir: session.sessionDir,
     outputFile: session.outputFile,
     title: session.title,
@@ -134,6 +167,8 @@ export function clearActiveRecordingLock(): void {
 
 export interface ActiveRecordingLock {
   pid: number;
+  // P3 (§7 row 5): `ps -o lstart=` at acquire — detects a recycled PID.
+  pidStartTime?: string;
   sessionDir: string;
   outputFile: string;
   title: string;
@@ -157,7 +192,7 @@ export function readActiveRecordingLock(): ActiveRecordingLock | null {
       // The recorder is always `node dist/main.js`, so a live lock's PID must
       // name a node process — PID reuse can otherwise make a stale lock point
       // at an unrelated app (B9).
-      if (Number.isSafeInteger(data.pid) && data.pid > 0 && isPidAlive(data.pid, { comm: "node" })) return data;
+      if (Number.isSafeInteger(data.pid) && data.pid > 0 && isPidAlive(data.pid, { comm: "node", startTime: data.pidStartTime })) return data;
       // Dead owner: reclaim, but only the exact descriptor we read.
       unlinkIfUnchanged(lockPath, raw);
       return null;
@@ -230,6 +265,7 @@ export function acquireFinalizerLock(sessionDir: string): boolean {
   const token = randomUUID();
   const lockData = JSON.stringify({
     pid: process.pid,
+    pidStartTime: readPidStartTime(process.pid),
     token,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

@@ -40,19 +40,19 @@ const SPEAKERS = new Map<string, number[]>([
   ["Speaker 2", oneHot(2)],
 ]);
 
-test("attributeMicChunk", (t) => {
-  t.test("keeps when sys diarization produced no speakers", () => {
+test("attributeMicChunk", async (t) => {
+  await t.test("keeps when sys diarization produced no speakers", () => {
     const d = attributeMicChunk(oneHot(1), new Map(), makeRegistry(), 0.75, 0.7);
     assert.equal(d.kind, "keep");
     assert.equal(d.score, null);
   });
 
-  t.test("keeps an invalid embedding", () => {
+  await t.test("keeps an invalid embedding", () => {
     const d = attributeMicChunk([], SPEAKERS, makeRegistry(), 0.75, 0.7);
     assert.equal(d.kind, "keep");
   });
 
-  t.test("matches a remote speaker above threshold", () => {
+  await t.test("matches a remote speaker above threshold", () => {
     const d = attributeMicChunk(oneHot(1), SPEAKERS, makeRegistry(), 0.75, 0.7);
     assert.equal(d.kind, "remote");
     assert.equal(d.label, "Speaker 1");
@@ -60,13 +60,13 @@ test("attributeMicChunk", (t) => {
     assert.equal(d.runnerUp, 0);
   });
 
-  t.test("keeps when no speaker clears the threshold", () => {
+  await t.test("keeps when no speaker clears the threshold", () => {
     const d = attributeMicChunk(oneHot(7), SPEAKERS, makeRegistry(), 0.75, 0.7);
     assert.equal(d.kind, "keep");
     assert.equal(d.score, 0);
   });
 
-  t.test("keeps when the top two speakers are within the ambiguity margin", () => {
+  await t.test("keeps when the top two speakers are within the ambiguity margin", () => {
     // 50/50 blend of two orthogonal basis vectors: cosine 0.707 to each,
     // above the 0.7 threshold but with a zero margin between them.
     const mixed = Array.from({ length: DIM }, (_, k) => (k === 1 || k === 2 ? 0.5 : 0));
@@ -76,28 +76,28 @@ test("attributeMicChunk", (t) => {
     assert.ok(Math.abs(d.runnerUp! - Math.SQRT1_2) < 1e-9);
   });
 
-  t.test("an enrolled self print wins over a speaker match", () => {
+  await t.test("an enrolled self print wins over a speaker match", () => {
     const d = attributeMicChunk(oneHot(1), SPEAKERS, makeRegistry(oneHot(1)), 0.75, 0.7);
     assert.equal(d.kind, "self");
   });
 });
 
-test("hasSysCounterpart", (t) => {
+test("hasSysCounterpart", async (t) => {
   const sys = new Map<number, string>([
     [1, "У нас есть мероприятие онлайн, хап сейчас приходит"],
     [2, "Все остальные мероприятия идут сейчас в Битрикс"],
   ]);
 
-  t.test("same-index duplicate text", () => {
+  await t.test("same-index duplicate text", () => {
     assert.equal(hasSysCounterpart("У нас есть мероприятие онлайн хап сейчас приходит", 1, sys, 0.75), true);
   });
 
-  t.test("leading sentence covered by the previous sys chunk (drift case)", () => {
+  await t.test("leading sentence covered by the previous sys chunk (drift case)", () => {
     const mic = "У нас есть мероприятие онлайн все остальные мероприятия идут сейчас в Битрикс";
     assert.equal(hasSysCounterpart(mic, 2, sys, 0.75), true);
   });
 
-  t.test("genuinely distinct mic speech has no counterpart", () => {
+  await t.test("genuinely distinct mic speech has no counterpart", () => {
     assert.equal(hasSysCounterpart("сейчас разделения на онлайн офлайн в коде нет", 1, sys, 0.75), false);
   });
 });
@@ -395,4 +395,77 @@ test("runMicEchoAttributionStep", async (t) => {
 test("cosineSimilarity basis sanity", () => {
   assert.equal(cosineSimilarity(oneHot(3), oneHot(3)), 1);
   assert.equal(cosineSimilarity(oneHot(3), oneHot(4)), 0);
+});
+
+// P2-4 (SPEC_SAFETY_NET_2026-10-31 §4.4): attributedKeys must be exposed even
+// when EVERY attributed chunk is dropped as sys-covered echo — finalize's
+// micSegmented derivation depends on it, and without it the talk-time
+// chunk-count fallback double-counts "Me" (the review's 600s listen-only
+// reproduction).
+// Self-contained copies of the closure-scoped helpers from the
+// runMicEchoAttributionStep test block above.
+const makeSessionGlobal = (sessionDir: string): Session => ({
+  id: "test-session",
+  title: "Test",
+  mode: "full",
+  startedAt: "2026-05-13T14:30:00.000Z",
+  chunkDurationSeconds: 15,
+  sessionDir,
+  outputFile: join(sessionDir, "transcript.md"),
+  capturePid: null,
+  status: "finalizing",
+  processedChunks: [],
+  lastError: null,
+  autoStopReason: null,
+  latestProcessedOffsetSeconds: 0,
+  lastMeaningfulTextAtOffsetSeconds: null,
+  hasMeaningfulText: false,
+  tags: [],
+});
+
+const writeFakeAnalysisBinGlobal = (dir: string): string => {
+  const bin = join(dir, "fake-audioanalysis.js");
+  writeFileSync(bin, [
+    "#!/usr/bin/env node",
+    'const i = process.argv.indexOf("--input");',
+    "const input = i >= 0 ? process.argv[i + 1] : '';",
+    "const m = /mic-(\\d+)/.exec(input);",
+    "const n = m ? parseInt(m[1], 10) % " + DIM + " : -1;",
+    "const emb = Array.from({ length: " + DIM + " }, (_, k) => (k === n ? 1 : 0));",
+    "process.stdout.write(JSON.stringify({ embedding: emb }));",
+    "",
+  ].join("\n"));
+  chmodSync(bin, 0o755);
+  return bin;
+};
+
+test("runMicEchoAttributionStep exposes attributedKeys even when all matches are dropped", async (t) => {
+  const noop = () => {};
+
+  await t.test("all candidates sys-covered: attributedKeys populated, micSegments empty", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "meet-test-mic-echo-"));
+    try {
+      // mic-001 embeds to oneHot(1) → "Speaker 1"; its text is covered by sys-1.
+      writeFileSync(join(sessionDir, "mic-001.wav"), makeSineWav(440, 16000, 16000, 0.9));
+      const config: Config = { ...DEFAULT_CONFIG, micEchoMatchThreshold: 0.7, analysisBin: writeFakeAnalysisBinGlobal(sessionDir) };
+      const session = makeSessionGlobal(sessionDir);
+      const entries: TranscriptEntry[] = [
+        { source: "sys", chunkIndex: 1, timestamp: "14:30:00", text: "совершенно другой текст на системном канале" },
+        { source: "mic", chunkIndex: 1, timestamp: "14:30:00", text: "совершенно другой текст на системном канале" },
+      ];
+      const speakersRecord: Record<string, unknown> = {
+        segments: [{ start: 0, end: 30, speaker: "Speaker 1" }],
+      };
+      const storedRms = new Map([["mic-001", -40]]);
+      const result = await runMicEchoAttributionStep(
+        session, config, entries, SPEAKERS, new Map(), null, storedRms, speakersRecord, noop, noop,
+      );
+      assert.equal(result.dropped, 1);
+      assert.equal(result.micSegments.length, 0);
+      assert.deepEqual([...result.attributedKeys].sort(), ["mic-001"]);
+      assert.ok(!result.entries.some((e) => e.source === "mic"), "the covered mic entry is dropped");
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
 });

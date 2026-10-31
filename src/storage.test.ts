@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { generateSlug, formatStartTime, getOutputDir, getOutputPath, reserveOutputDir, expandPath, findStaleSessions, getSessionsDir, sanitizeFileConfig, loadConfig, updateConfigFile, setConfigPathForTest } from "./storage.js";
+import { generateSlug, formatStartTime, getOutputDir, getOutputPath, reserveOutputDir, expandPath, findStaleSessions, getSessionsDir, sanitizeFileConfig, loadConfig, updateConfigFile, setConfigPathForTest, setSessionsDirForTest } from "./storage.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import { join } from "node:path";
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, unlinkSync, mkdtempSync } from "node:fs";
@@ -159,6 +159,19 @@ describe("sanitizeFileConfig", () => {
 
 describe("findStaleSessions", () => {
   const createdDirs: string[] = [];
+  // P3 (§7 row 12): the suite used to write meet-test-stale-* into the real
+  // ~/.meet/sessions — a crash before afterEach left them there permanently.
+  let sandboxedSessionsDir: string;
+
+  beforeEach(() => {
+    sandboxedSessionsDir = mkdtempSync(join(tmpdir(), "meet-storage-sessions-"));
+    setSessionsDirForTest(sandboxedSessionsDir);
+  });
+
+  afterEach(() => {
+    setSessionsDirForTest(null);
+    try { rmSync(sandboxedSessionsDir, { recursive: true, force: true }); } catch {}
+  });
 
   const makeSession = (status: Session["status"], suffix: string): string => {
     const sessionsDir = getSessionsDir();

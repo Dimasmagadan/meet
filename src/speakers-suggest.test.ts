@@ -28,7 +28,8 @@ describe("buildSuggestion", () => {
     // Anna is already matched — only Ivan/Maria remain unassigned.
     assert.ok(text.includes("Unassigned:   Ivan S., Maria K."));
     // The one unnamed Speaker row gets a suggested rename against the first unassigned attendee.
-    assert.ok(text.includes('meet rename ~/Meetings/2026-08-05_10-00-weekly-sync "Speaker 2" "Ivan S."'));
+    // P3 (§7 row 11): the meeting dir is quoted so copy-paste survives spaces.
+    assert.ok(text.includes('meet rename "~/Meetings/2026-08-05_10-00-weekly-sync" "Speaker 2" "Ivan S."'));
   });
 
   it("omits the calendar section entirely when the meeting has no attendees", () => {
@@ -57,5 +58,37 @@ describe("buildSuggestion", () => {
     });
     const suggestionLines = lines.filter((l) => l.trim().startsWith("meet rename"));
     assert.strictEqual(suggestionLines.length, 1);
+  });
+});
+
+// P3 row 11 (SPEC_SAFETY_NET_2026-10-31 §7): rename lines are copy-paste-safe —
+// quoted meetingDir, names with quotes/backticks/dollars escaped.
+describe("buildSuggestion shell-safe rename lines (P3 row 11)", () => {
+  const makeRecord = (attendees: string[]) => ({
+    talkTime: {
+      totalSeconds: 300,
+      speakers: [
+        { label: "Speaker 1", seconds: 100, percent: 33 },
+        { label: "Speaker 2", seconds: 100, percent: 33 },
+        { label: "Speaker 3", seconds: 100, percent: 34 },
+      ],
+    },
+    speakerRegistry: {},
+    calendarAttendees: attendees,
+  });
+
+  it("escapes double quotes, backticks and dollars in names", () => {
+    const lines = buildSuggestion("/tmp/meeting", makeRecord(['A"b', "`x`y", "$money"]));
+    const renames = lines.filter((l) => l.includes("meet rename")).join("\n");
+    assert.ok(renames.includes('"A\\"b"'), `expected escaped quote: ${renames}`);
+    assert.ok(renames.includes('"\\`x\\`y"'), `expected escaped backticks: ${renames}`);
+    assert.ok(renames.includes('"\\$money"'), `expected escaped dollar: ${renames}`);
+  });
+
+  it("keeps comma names intact inside quotes and quotes the meeting dir", () => {
+    const lines = buildSuggestion("/tmp/My Meetings/2026", makeRecord(["Doe, John"]));
+    const rename = lines.find((l) => l.includes("meet rename")) ?? "";
+    assert.ok(rename.includes('"Doe, John"'), `comma name intact: ${rename}`);
+    assert.ok(rename.includes('meet rename "/tmp/My Meetings/2026"'), `dir quoted: ${rename}`);
   });
 });

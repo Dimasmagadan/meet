@@ -35,6 +35,11 @@ enum WavIO {
         var offset = 12
         var channels = 1
         var bitsPerSample = 16
+        // P3 (§7 row 21): the fmt chunk's format tag and sample rate were
+        // ignored — a 48 kHz (or float-format) file was silently mis-timed
+        // instead of rejected. Read the full fmt chunk.
+        var formatTag = 1
+        var sampleRate = 16000
         var dataRange: Range<Int>?
 
         while offset + 8 <= data.count {
@@ -44,7 +49,9 @@ enum WavIO {
             let bodyEnd = min(bodyStart + chunkSize, data.count)
 
             if chunkId.elementsEqual("fmt ".utf8), bodyEnd - bodyStart >= 16 {
+                formatTag = Int(readUInt16LE(data, bodyStart))
                 channels = Int(readUInt16LE(data, bodyStart + 2))
+                sampleRate = Int(readUInt32LE(data, bodyStart + 4))
                 bitsPerSample = Int(readUInt16LE(data, bodyStart + 14))
             } else if chunkId.elementsEqual("data".utf8) {
                 dataRange = bodyStart..<bodyEnd
@@ -54,6 +61,12 @@ enum WavIO {
         }
 
         guard let range = dataRange else { throw WavIOError.missingDataChunk }
+        guard formatTag == 1 else {
+            throw WavIOError.unsupportedFormat("expected PCM (format tag 1), got \(formatTag)")
+        }
+        guard sampleRate == 16000 else {
+            throw WavIOError.unsupportedFormat("expected 16 kHz, got \(sampleRate) Hz")
+        }
         guard bitsPerSample == 16 else {
             throw WavIOError.unsupportedFormat("expected 16-bit PCM, got \(bitsPerSample)-bit")
         }

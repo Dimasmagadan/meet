@@ -8,7 +8,7 @@ import { Pipeline } from "./pipeline.js";
 import { copyLiveTranscript, runFinalPass } from "./final-pass.js";
 import { entriesFromSession, rewriteMarkdown, parseTranscriptEntries, transcriptEntriesToMap } from "./assembler.js";
 import { acquireFinalizerLock, releaseFinalizerLock, isActiveRecording, acquireGlobalFinalPassLock, releaseGlobalFinalPassLock, readGlobalFinalPassLock, acquireRegistryLock, releaseRegistryLock } from "./locks.js";
-import { analyzeWavFile } from "./audio-metrics.js";
+import { analyzeWavFileWithSamples } from "./audio-metrics.js";
 import { readEntryRecords } from "./entries-store.js";
 import { concatSysChunks, concatMicChunks, runDiarizer, assignSpeakers, assignLabeledSpeakers, relabelSegments, cleanupSysConcat, cleanupMicConcat, buildSpeakerLabelMap, buildEmbeddingsByLabel, type DiarSegment } from "./diarization.js";
 import { runDiarizationAbPass } from "./diarization-ab.js";
@@ -59,10 +59,14 @@ function makeProgress(phase: FinalizeProgress["phase"], done: number, total: num
   return { phase, done, total, message, pid: process.pid, updatedAt: new Date().toISOString() };
 }
 
-function createDebouncedProgressWriter(session: Session) {
+export function createDebouncedProgressWriter(session: Session) {
   let lastWriteTime = 0;
   let pendingProgress: FinalizeProgress | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // P3 (§7 row 9): the debounced timer fires flush() un-awaited — dispose()
+  // must await that in-flight write or it can land AFTER the terminal
+  // session.json (done/error) and overwrite it.
+  let inFlight: Promise<void> | null = null;
 
   const flush = async () => {
     if (pendingProgress) {
@@ -79,26 +83,32 @@ function createDebouncedProgressWriter(session: Session) {
     const now = Date.now();
     if (now - lastWriteTime >= PROGRESS_WRITE_INTERVAL_MS) {
       lastWriteTime = now;
-      await flush();
+      inFlight = flush();
+      await inFlight;
     } else if (!timer) {
-      timer = setTimeout(() => { lastWriteTime = Date.now(); void flush(); }, PROGRESS_WRITE_INTERVAL_MS);
+      timer = setTimeout(() => { lastWriteTime = Date.now(); inFlight = flush(); }, PROGRESS_WRITE_INTERVAL_MS);
     }
   };
 
   const forceFlush = async () => {
     if (timer) { clearTimeout(timer); timer = null; }
     lastWriteTime = Date.now();
-    await flush();
+    inFlight = flush();
+    await inFlight;
   };
 
-  // Cancels a pending debounced flush without running it. Terminal
-  // session.json writes (status done/error) already carry the final
-  // progress state, so a stale scheduled flush firing after them — possibly
-  // mid `rm(sessionDir)`, or clobbering the error write with old progress
-  // (N3) — serves no purpose and must not run.
-  const dispose = () => {
+  // Cancels a pending debounced flush without running it, and waits out any
+  // in-flight write. Terminal session.json writes (status done/error)
+  // already carry the final progress state, so a stale scheduled flush
+  // firing after them — possibly mid `rm(sessionDir)`, or clobbering the
+  // error write with old progress (N3) — serves no purpose and must not run.
+  const dispose = async () => {
     if (timer) { clearTimeout(timer); timer = null; }
     pendingProgress = null;
+    if (inFlight) {
+      try { await inFlight; } catch {}
+      inFlight = null;
+    }
   };
 
   return { update, forceFlush, dispose };
@@ -114,9 +124,11 @@ async function filterEntriesByAudio(
   for (const entry of entries) {
     const wav = `${entry.source}-${String(entry.chunkIndex).padStart(3, "0")}.wav`;
     const wavPath = join(session.sessionDir, wav);
-    const metrics = await analyzeWavFile(wavPath);
     const threshold = entry.source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
-    if (metrics.rmsDb >= threshold) {
+    const analysis = await analyzeWavFileWithSamples(wavPath);
+    // P2-2: a WAV whose contents cannot be read is never evidence of silence
+    // (fail closed) — keep the entry rather than drop it on an I/O error.
+    if (!analysis.ok || analysis.metrics.rmsDb >= threshold) {
       filtered.push(entry);
     }
   }
@@ -159,15 +171,21 @@ export async function filterStoredEntriesByAudio(
     }
 
     const key = `${source}-${indexKey}`;
+    const threshold = source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     let rmsDb = stored.get(key);
     if (rmsDb === undefined) {
       // No entries.jsonl record for this chunk (crashed/partial run) — analyze
       // the WAV directly instead of assuming silence, which previously dropped
       // the chunk (and, downstream, its WAV) unconditionally.
       const wavPath = join(session.sessionDir, `${key}.wav`);
-      rmsDb = existsSync(wavPath) ? (await analyzeWavFile(wavPath)).rmsDb : -Infinity;
+      const analysis = existsSync(wavPath) ? await analyzeWavFileWithSamples(wavPath) : null;
+      // P2-2: unreadable is not silence (fail closed) — keep the entry.
+      rmsDb = analysis === null
+        ? -Infinity
+        : analysis.ok
+          ? analysis.metrics.rmsDb
+          : Number.POSITIVE_INFINITY;
     }
-    const threshold = source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
     if (rmsDb >= threshold) {
       filtered.push(source === entry.source ? entry : { ...entry, source });
     }
@@ -243,6 +261,23 @@ export function buildBaseResults(
       .map((r) => [`${r.source}-${String(r.index).padStart(3, "0")}`, r.text] as const)
   );
   return new Map([...storedTextMap, ...transcriptEntriesToMap(fallbackEntries), ...liveResults]);
+}
+
+// P2-4 (SPEC_SAFETY_NET_2026-10-31 §4.4): either mic pass segmenting the
+// channel means diarSegments already accounts for every audible mic span —
+// the chunk-count fallback in computeTalkTime must then be skipped or it
+// double-counts relabeled (still source:"mic") keys toward "Me".
+// attributedKeys covers the all-dropped case: every match dropped as
+// sys-covered echo leaves micSegments empty, but the sys speaker timeline
+// already accounts for that speech, so the chunk-count fallback must not
+// fire either (the review's 600s listen-only reproduction: Me 600s + Speaker
+// 1 600s = 1200s total). Exported pure for the regression test.
+export function deriveMicSegmented(
+  micDiarSegmentCount: number,
+  echoMicSegmentCount: number,
+  echoAttributedKeyCount: number,
+): boolean {
+  return micDiarSegmentCount > 0 || echoMicSegmentCount > 0 || echoAttributedKeyCount > 0;
 }
 
 async function waitForInactiveRecording(
@@ -841,7 +876,15 @@ export async function finalizeSession(
     // Base results merge entries.jsonl (survives even chunks this process never
     // touched), the transcript.md fallback, and this run's own live drain.
     const baseResults = buildBaseResults(storedRecords, fallbackEntries, liveResults);
-    const sessionEntries = mergeRecoveryEntries(entriesFromSession(session, baseResults), fallbackEntries, baseResults);
+    // P3 (§7 row 6): JSONL records whose chunk never made it into
+    // processedChunks (crash between the entries.jsonl append and the
+    // session.json write) must still surface — previously entriesFromSession
+    // only iterated processedChunks, dropping those chunks entirely.
+    const sessionEntries = mergeRecoveryEntries(
+      entriesFromSession(session, baseResults, storedRecords.map((r) => ({ source: r.source, index: r.index }))),
+      fallbackEntries,
+      baseResults,
+    );
     // Non-silent candidate entries from stored+live text — used both as the
     // fallback when the final pass is unavailable/fails, and as the safety-net
     // comparison below (previously compared only against markdown, which is
@@ -977,8 +1020,12 @@ export async function finalizeSession(
         // Either mic pass segmenting the channel means diarSegments already
         // accounts for every audible mic span — the chunk-count fallback in
         // computeTalkTime must then be skipped or it double-counts relabeled
-        // (still source:"mic") keys toward "Me".
-        const micSegmented = micOutcome.micDiarSegments.length > 0 || echoOutcome.micSegments.length > 0;
+        // (still source:"mic") keys toward "Me" (see deriveMicSegmented).
+        const micSegmented = deriveMicSegmented(
+          micOutcome.micDiarSegments.length,
+          echoOutcome.micSegments.length,
+          echoOutcome.attributedKeys.size,
+        );
         const mergedLabelOverrides = new Map([...labelOverrides, ...micOutcome.labelOverrides]);
 
         const talkTime = applyLabelOverridesToTalkTime(
@@ -1009,7 +1056,11 @@ export async function finalizeSession(
         // finalize fails every retry the same way even though the audio is
         // intact.
         await mkdir(outputDir, { recursive: true });
-        await writeAtomic(join(outputDir, "speakers.json"), JSON.stringify(speakersRecord, null, 2)).catch(() => {});
+        await writeAtomic(join(outputDir, "speakers.json"), JSON.stringify(speakersRecord, null, 2)).catch((err) => {
+          // P3 (§7 row 10): a silently swallowed write here hid rename/suggest
+          // breakage (rename validates against speakers.json) — surface it.
+          warn(`speakers.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
 
         await rewriteMarkdown(session.outputFile, session.title, session.startedAt, entries, talkTime);
 
@@ -1040,8 +1091,9 @@ export async function finalizeSession(
     // Cancel any still-pending debounced progress flush before the terminal
     // writes below (including the later error write if unrecoveredKeys is
     // non-empty) — otherwise it can fire mid `rm(sessionDir)` or clobber
-    // whichever terminal status wins the race (N3).
-    progressWriter.dispose();
+    // whichever terminal status wins the race (N3). Awaited: an in-flight
+    // write must not land after the terminal session.json (P3 row 9).
+    await progressWriter.dispose();
 
     session.status = "done";
     session.finalize = makeProgress("done", entries.length, entries.length);
@@ -1062,9 +1114,16 @@ export async function finalizeSession(
       if (recoveredKeys.has(key) || unrecoveredKeys.includes(key)) return;
       const wavPath = join(sessionDir, wavFile);
       if (!existsSync(wavPath)) return;
-      const metrics = await analyzeWavFile(wavPath);
+      const analysis = await analyzeWavFileWithSamples(wavPath);
+      // P2-2: a WAV whose contents cannot be read is unrecovered — it is
+      // never evidence of silence (the old re-read-with-same-broken-analyzer
+      // path concluded "below threshold" and deleted the session).
+      if (!analysis.ok) {
+        unrecoveredKeys.push(key);
+        return;
+      }
       const threshold = source === "mic" ? config.micRmsThresholdDb : config.sysRmsThresholdDb;
-      if (metrics.rmsDb >= threshold) unrecoveredKeys.push(key);
+      if (analysis.metrics.rmsDb >= threshold) unrecoveredKeys.push(key);
     };
     for (const chunk of session.processedChunks) {
       if (chunk.status !== "failed") continue;
@@ -1106,7 +1165,7 @@ export async function finalizeSession(
     // Same rationale as the success path's dispose() above — an exception
     // raised before that point means this is the first chance to cancel a
     // pending flush, and it must happen before the error write below.
-    progressWriter.dispose();
+    await progressWriter.dispose();
     session.status = "error";
     session.lastError = err instanceof Error ? err.message : String(err);
     session.finalize = makeProgress("error", 0, 0, session.lastError);
