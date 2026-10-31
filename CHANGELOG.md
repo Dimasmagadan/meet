@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-31
+
+### Fixed
+- land CI linux remediation (CI_LINUX_FINDINGS_2026-10-31)
+
 ## [1.2.0] - 2026-10-31
 
 ### Added
