@@ -9,7 +9,8 @@
 //
 // Test-file selection: the directory form (`node --test dist`) is preferred
 // — no glob at any version — but Node 24.x treats a bare directory as a
-// module path and fails, so on that failure the wrapper retries with the
+// module path and fails (verified: dir form works on 26, fails on 24), so the
+// wrapper only attempts it on Node >= 26 and otherwise goes straight to the
 // glob form, which Node 24/26 expand themselves. Either way the REAL safety
 // net is the parsed-count guard below: a runner that matched zero files can
 // never report success.
@@ -43,8 +44,10 @@ export function parseTestCount(output) {
 // A single leaked handle (e.g. recorder.test.js abandoning a live Recorder —
 // CI_LINUX_FINDINGS_2026-10-31.md §2) hangs the file's process forever, and
 // node --test then waits forever with it. Kill and fail loudly instead: the
-// partial output has no summary line, so the count guard below reports the
-// failure (no summary → exit 1, never a silent pass).
+// hang message prints at kill time and main() exits 1 before the count guard
+// (whose "matched zero test files" diagnosis would be false there, §7.3.3).
+// One window per full `npm test`: a timed-out attempt never triggers the
+// glob retry, so 10 min is the true ceiling.
 const TEST_RUN_TIMEOUT_MS = 10 * 60_000;
 
 // Returns the src/*.ts files containing a literal NUL byte.
@@ -58,11 +61,26 @@ export async function findNulByteFiles(srcDir) {
   return bad;
 }
 
+// Kill the runner AND its whole process group (CI_LINUX_FINDINGS §7.3.4):
+// node --test spawns a child per test file, and SIGKILLing only the runner
+// orphaned the per-file child — a local `npm test` could leave a stray node
+// behind even after the "loud" timeout failure. The runner is spawned
+// detached so it leads its own process group and the group kill reaches
+// everything.
+function killTestRunTree(child) {
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    try { child.kill("SIGKILL"); } catch {}
+  }
+}
+
 function runNodeTest(root, args) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ["--test", ...args], {
       cwd: root,
       stdio: ["ignore", "pipe", "inherit"],
+      detached: process.platform !== "win32",
     });
     let output = "";
     let timedOut = false;
@@ -73,16 +91,16 @@ function runNodeTest(root, args) {
     });
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killTestRunTree(child);
     }, TEST_RUN_TIMEOUT_MS);
     child.on("close", (code) => {
       clearTimeout(timer);
       if (timedOut) {
         console.error(`\n[run-tests] test run exceeded ${TEST_RUN_TIMEOUT_MS / 60_000} min and was killed — a test file is hanging. Refusing to report success.`);
-        resolve({ code: 1, output: "" });
+        resolve({ code: 1, output: "", timedOut: true });
         return;
       }
-      resolve({ code: code ?? 1, output });
+      resolve({ code: code ?? 1, output, timedOut: false });
     });
   });
 }
@@ -97,13 +115,29 @@ async function main() {
     process.exit(1);
   }
 
-  let { code, output } = await runNodeTest(root, [distDir]);
-  if (code !== 0 && output.includes("Cannot find module") && output.includes(distDir)) {
-    // Directory-as-module failure (Node 24.x): retry with the glob form the
-    // runner expands itself. A zero-match glob still lands in the count
-    // guard below, so this fallback can never silently pass.
+  // Directory-arg support probed by version (CI_LINUX_FINDINGS §7.3.3): on
+  // Node 24 the bare directory is treated as a module path and every run
+  // dumped a MODULE_NOT_FOUND stack before the glob retry. Verified boundary:
+  // dir form works on 26, fails on 24. A future Node that drops it again just
+  // falls through the retry below — fail-open to the glob form.
+  const nodeMajor = Number(process.versions.node.split(".")[0]);
+  let { code, output, timedOut } = await runNodeTest(
+    root,
+    nodeMajor >= 26 ? [distDir] : [join("dist", "**", "*.test.js")],
+  );
+  if (!timedOut && code !== 0 && output.includes("Cannot find module") && output.includes(distDir)) {
+    // Directory-as-module failure: retry with the glob form the runner
+    // expands itself. A zero-match glob still lands in the count guard
+    // below, so this fallback can never silently pass.
     console.error(`\n[run-tests] bare-directory test args unsupported on ${process.version}; retrying with the runner-expanded glob`);
-    ({ code, output } = await runNodeTest(root, [join("dist", "**", "*.test.js")]));
+    ({ code, output, timedOut } = await runNodeTest(root, [join("dist", "**", "*.test.js")]));
+  }
+
+  if (timedOut) {
+    // The hang message already printed at kill time; the partial output has
+    // no summary line but the run DID match files — reaching the count guard
+    // here would misdiagnose "matched zero test files" (§7.3.3).
+    process.exit(1);
   }
 
   const count = parseTestCount(output);

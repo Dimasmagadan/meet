@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseLoadavg,
@@ -90,8 +90,24 @@ Pages wired down:                    54321.`;
   });
 });
 
+// The default sensor shells out to darwin-only `sysctl`/`vm_stat` probes
+// (CI_LINUX_FINDINGS §7.3.9) — on any other platform load/free-memory read
+// null and the threshold tests can never trip. Per-test skip, not a
+// suite-level skip option: node 24 drops suite-skipped subtests from the
+// summary count entirely, which would make the expected count
+// platform-dependent. The parser suites and the PATH-stubbed suite below are
+// platform-neutral and stay live everywhere.
+function skipIfNotDarwin(t: TestContext): boolean {
+  if (process.platform !== "darwin") {
+    t.skip("default sensor probes are macOS-only");
+    return true;
+  }
+  return false;
+}
+
 describe("getSystemPressure", () => {
-  it("returns non-overloaded when load and memory are healthy", async () => {
+  it("returns non-overloaded when load and memory are healthy", async (t) => {
+    if (skipIfNotDarwin(t)) return;
     const p = await getSystemPressure({ cpuThresholdLoad: 100, memThresholdMb: 0 });
     assert.strictEqual(p.overloaded, false);
     assert.strictEqual(p.reason, null);
@@ -101,28 +117,32 @@ describe("getSystemPressure", () => {
     assert.ok(typeof p.freeMemoryMb === "number");
   });
 
-  it("flips to overloaded when CPU threshold is exceeded", async () => {
+  it("flips to overloaded when CPU threshold is exceeded", async (t) => {
+    if (skipIfNotDarwin(t)) return;
     // Set a threshold so low that the actual loadavg will exceed it on any machine.
     const p = await getSystemPressure({ cpuThresholdLoad: -1, memThresholdMb: 0 });
     assert.strictEqual(p.overloaded, true);
     assert.match(p.reason ?? "", /cpu/);
   });
 
-  it("flips to overloaded when memory threshold is unreachable", async () => {
+  it("flips to overloaded when memory threshold is unreachable", async (t) => {
+    if (skipIfNotDarwin(t)) return;
     // Require absurdly high free memory so any real machine is "low".
     const p = await getSystemPressure({ cpuThresholdLoad: 1e9, memThresholdMb: 1_000_000 });
     assert.strictEqual(p.overloaded, true);
     assert.match(p.reason ?? "", /mem/);
   });
 
-  it("reports both reasons when both thresholds are breached", async () => {
+  it("reports both reasons when both thresholds are breached", async (t) => {
+    if (skipIfNotDarwin(t)) return;
     const p = await getSystemPressure({ cpuThresholdLoad: -1, memThresholdMb: 1_000_000 });
     assert.strictEqual(p.overloaded, true);
     assert.match(p.reason ?? "", /cpu/);
     assert.match(p.reason ?? "", /mem/);
   });
 
-  it("populates the reason with cpu ratio including core count", async () => {
+  it("populates the reason with cpu ratio including core count", async (t) => {
+    if (skipIfNotDarwin(t)) return;
     const p = await getSystemPressure({ cpuThresholdLoad: -1, memThresholdMb: 0 });
     // e.g. "cpu 2.3/8c"
     assert.match(p.reason ?? "", new RegExp(`cpu \\d+\\.\\d+/${p.cpuCores}c`));
@@ -153,12 +173,14 @@ describe("isAudioAnalysisRunning cache", () => {
 });
 
 describe("getSystemPressure heavy-child attribution", () => {
-  it("populates audioAnalysisRunning as a boolean", async () => {
+  it("populates audioAnalysisRunning as a boolean", async (t) => {
+    if (skipIfNotDarwin(t)) return;
     const p = await getSystemPressure({ cpuThresholdLoad: 100, memThresholdMb: 0 });
     assert.strictEqual(typeof p.audioAnalysisRunning, "boolean");
   });
 
-  it("attributes the heavy child in the reason when overloaded", async () => {
+  it("attributes the heavy child in the reason when overloaded", async (t) => {
+    if (skipIfNotDarwin(t)) return;
     // Force overloaded via thresholds; attribute string depends on whether a
     // heavy child is actually running on this machine, so we only assert the
     // base cpu reason is present (heavy-child suffix is informational).

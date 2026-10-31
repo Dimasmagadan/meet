@@ -13,9 +13,13 @@ jobs:
   test:
     name: Lint + build + test (Node)
     # macOS runner, not ubuntu: the product is macOS-only and the suite is not
-    # platform-independent (ps/comm identity, sysctl/vm_stat probes, recorder
-    # shutdown race — specs/CI_LINUX_FINDINGS_2026-10-31.md). On ubuntu the
-    # 2026-10-31 v1.2.0 run hung forever on a leaked recorder.test.js process.
+    # (fully) platform-independent — getSystemPressure probes darwin-only
+    # sysctl/vm_stat. (The original ubuntu hang was the hardcoded
+    # `comm: "node"` lock-identity probe, which misclassified live owners as
+    # dead on linux because ps -o comm= reports the main-thread title there;
+    # fixed in specs/CI_LINUX_FINDINGS_2026-10-31.md §4/§7.3.1.) The gate runs
+    # where the product runs; the linux-canary job below tracks the rest
+    # non-blocking.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +40,34 @@ jobs:
 
       # Tests run against compiled dist/ with temp-dir I/O and fake
       # executables; some probes shell out to darwin tools (see job comment).
+      - name: Run tests
+        run: npm test
+
+  # Non-blocking linux signal (CI_LINUX_FINDINGS §7.3.9/§7.4.5): with the
+  # run-level 10-min hang bound a regression can only go red, never hang a
+  # release. Re-enable ubuntu as a required gate only once this canary is
+  # actually green on CI.
+  linux-canary:
+    name: Linux canary (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
       - name: Run tests
         run: npm test
 

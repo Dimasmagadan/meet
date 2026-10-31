@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { acquireFinalizerLock, releaseFinalizerLock, isPidAlive, readFinalizerLock, readActiveRecordingLock, acquireRegistryLock, releaseRegistryLock, releaseAllRegistryLocks, setSessionsDirForTest, getLocksSessionsDirForTest } from "./locks.js";
+import { spawn } from "node:child_process";
+import { acquireFinalizerLock, releaseFinalizerLock, isPidAlive, readPidComm, readFinalizerLock, readActiveRecordingLock, acquireRegistryLock, releaseRegistryLock, releaseAllRegistryLocks, setSessionsDirForTest, getLocksSessionsDirForTest } from "./locks.js";
 
 describe("isPidAlive", () => {
   it("returns true for current process", () => {
@@ -15,8 +16,12 @@ describe("isPidAlive", () => {
   });
 
   it("confirms the process identity when the comm matches (B9)", () => {
-    // This test process runs as node, so a node identity must confirm.
-    assert.strictEqual(isPidAlive(process.pid, { comm: "node" }), true);
+    // The comm must be whatever ps actually reports for this process — on
+    // linux that is the main-thread title ("MainThread"), not "node"
+    // (CI_LINUX_FINDINGS §2), so a literal "node" here fails off-platform.
+    const comm = readPidComm(process.pid);
+    if (comm === null) return; // ps unavailable → production fail-opens identically
+    assert.strictEqual(isPidAlive(process.pid, { comm }), true);
   });
 
   it("rejects a live PID whose command does not match (B9)", () => {
@@ -27,6 +32,42 @@ describe("isPidAlive", () => {
 
   it("treats a dead PID as dead regardless of the identity requested", () => {
     assert.strictEqual(isPidAlive(99999999, { comm: "node" }), false);
+  });
+
+  // CI_LINUX_FINDINGS §2/§7.4.1 regression: the stub-only suites below can't
+  // see what the platform's real ps reports (linux answers "MainThread" for a
+  // live node process, not "node" — the hardcoded name reclaimed live locks).
+  // These probes run the real ps and pin the stored-vs-current round-trip.
+  it("real probe: a spawned node child is alive under the comm ps reports for it", async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { stdio: "ignore" });
+    try {
+      // Give the child a moment to exec so comm names it, not the parent.
+      await new Promise((r) => setTimeout(r, 150));
+      const pid = child.pid;
+      if (pid === undefined) return;
+      const comm = readPidComm(pid);
+      if (comm === null) return; // ps unavailable in this environment → fail-open, like production
+      assert.strictEqual(isPidAlive(pid, { comm }), true);
+    } finally {
+      // A live child keeps this file's event loop drained forever — kill and
+      // wait so the runner never stalls on this test.
+      child.kill("SIGKILL");
+      await new Promise((r) => child.once("exit", r));
+    }
+  });
+
+  it("real probe: a lock acquired by this process reads back as live (no hardcoded comm)", () => {
+    const dir = join(tmpdir(), `meet-test-lock-probe-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      // Uses the real ps end to end: acquire stores pidComm/pidStartTime from
+      // this process; the reader must classify its own live lock as alive.
+      assert.strictEqual(acquireFinalizerLock(dir), true);
+      assert.notStrictEqual(readFinalizerLock(dir), null, "a live owner's lock must read back as live");
+    } finally {
+      releaseFinalizerLock(dir);
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
   });
 });
 
@@ -234,6 +275,25 @@ describe("acquireRegistryLock", () => {
 describe("isPidAlive pidStartTime (P3 row 5)", () => {
   let stubDir: string;
   let savedPath: string | undefined;
+  let sandboxDir: string;
+
+  beforeEach(() => {
+    // N8/CI_LINUX_FINDINGS §7.3.5: this suite hand-writes active-recording
+    // locks and the "lock kept" cases deliberately leave them on disk —
+    // without the sandbox those bytes land in the real ~/.meet/sessions,
+    // where a concurrent `meet start` is refused and `meet status` reports a
+    // phantom recording for as long as the suite runs.
+    sandboxDir = join(tmpdir(), `meet-test-sessions-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(sandboxDir, { recursive: true });
+    setSessionsDirForTest(sandboxDir);
+  });
+
+  afterEach(() => {
+    setSessionsDirForTest(null);
+    try { rmSync(sandboxDir, { recursive: true, force: true }); } catch {}
+    if (savedPath !== undefined) process.env.PATH = savedPath;
+    try { rmSync(stubDir, { recursive: true, force: true }); } catch {}
+  });
 
   const makePsStub = (): void => {
     stubDir = join(tmpdir(), `meet-test-ps-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -251,11 +311,6 @@ fi
     savedPath = process.env.PATH;
     process.env.PATH = `${stubDir}:${savedPath ?? ""}`;
   };
-
-  afterEach(() => {
-    if (savedPath !== undefined) process.env.PATH = savedPath;
-    try { rmSync(stubDir, { recursive: true, force: true }); } catch {}
-  });
 
   const writeLock = (startTime: string): void => {
     writeFileSync(join(getLocksSessionsDirForTest(), "active-recording.lock"), JSON.stringify({

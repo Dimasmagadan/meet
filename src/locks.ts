@@ -41,18 +41,47 @@ export interface PidIdentity {
   startTime?: string;
 }
 
-// The owner's process start time, stored in lock payloads at acquire so
-// isPidAlive can detect PID reuse. Returns null when ps is unavailable or
-// fails — callers stay fail-open.
-function readPidStartTime(pid: number): string | null {
+// `ps` renders `lstart=` through strftime in the READING process's locale and
+// timezone, so a lock written by the LaunchAgent (TZ unset, launchd LANG) must
+// read back identically from a shell with TZ=UTC or LANG=ru_RU.UTF-8 — pin
+// both on every ps call or the same live process answers two different
+// strings and the mismatch reclaims a live lock (CI_LINUX_FINDINGS §7.3.2).
+function psField(pid: number, field: string): string | null {
   try {
-    return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    return execFileSync("ps", ["-o", field, "-p", String(pid)], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
     }).trim() || null;
   } catch {
     return null;
   }
+}
+
+// The owner's process start time, stored in lock payloads at acquire so
+// isPidAlive can detect PID reuse. Returns null when ps is unavailable or
+// fails — callers stay fail-open.
+function readPidStartTime(pid: number): string | null {
+  return psField(pid, "lstart=");
+}
+
+// The comm ps reports for pid. Platform-asymmetric: darwin's BSD ps prints the
+// executable name ("node"); linux procps prints the main-thread title node
+// sets ("MainThread"). Never compare it against a hardcoded binary name —
+// store what acquire saw and compare it back (readPidIdentityFields /
+// CI_LINUX_FINDINGS §2, §7.3.1). Exported for tests.
+export function readPidComm(pid: number): string | null {
+  return psField(pid, "comm=");
+}
+
+// Self-describing owner identity: every lock payload records the comm and
+// start time ps reported for this process at acquire, and readers compare
+// stored-vs-current. Hardcoding `comm: "node"` misclassified live owners as
+// dead on linux and reclaimed live locks (CI_LINUX_FINDINGS §2); a null
+// pidComm (ps unavailable at acquire) and legacy payloads without the fields
+// both skip the identity check — fail-open, never orphan a real owner.
+function readPidIdentityFields(): { pidComm: string | null; pidStartTime: string | null } {
+  return { pidComm: readPidComm(process.pid), pidStartTime: readPidStartTime(process.pid) };
 }
 
 export function isPidAlive(pid: number, identity?: PidIdentity): boolean {
@@ -105,7 +134,7 @@ function unlinkIfUnchanged(lockPath: string, raw: string): boolean {
 function activeLockData(session: Session): string {
   return JSON.stringify({
     pid: process.pid,
-    pidStartTime: readPidStartTime(process.pid),
+    ...readPidIdentityFields(),
     sessionDir: session.sessionDir,
     outputFile: session.outputFile,
     title: session.title,
@@ -167,8 +196,11 @@ export function clearActiveRecordingLock(): void {
 
 export interface ActiveRecordingLock {
   pid: number;
+  // Self-describing owner identity (CI_LINUX_FINDINGS §7.3.1): the comm and
+  // start time ps reported for the owner at acquire.
+  pidComm?: string | null;
   // P3 (§7 row 5): `ps -o lstart=` at acquire — detects a recycled PID.
-  pidStartTime?: string;
+  pidStartTime?: string | null;
   sessionDir: string;
   outputFile: string;
   title: string;
@@ -189,10 +221,11 @@ export function readActiveRecordingLock(): ActiveRecordingLock | null {
     }
     try {
       const data = JSON.parse(raw) as ActiveRecordingLock;
-      // The recorder is always `node dist/main.js`, so a live lock's PID must
-      // name a node process — PID reuse can otherwise make a stale lock point
-      // at an unrelated app (B9).
-      if (Number.isSafeInteger(data.pid) && data.pid > 0 && isPidAlive(data.pid, { comm: "node", startTime: data.pidStartTime })) return data;
+      // Identity is what acquire recorded, not an assumed binary name: linux
+      // reports a node process's comm as its main-thread title ("MainThread"),
+      // so hardcoding "node" marked live owners dead and reclaimed live locks
+      // (CI_LINUX_FINDINGS §2). Legacy payloads without pidComm fail open.
+      if (Number.isSafeInteger(data.pid) && data.pid > 0 && isPidAlive(data.pid, { comm: data.pidComm ?? undefined, startTime: data.pidStartTime ?? undefined })) return data;
       // Dead owner: reclaim, but only the exact descriptor we read.
       unlinkIfUnchanged(lockPath, raw);
       return null;
@@ -214,6 +247,11 @@ export function isActiveRecording(): boolean {
 
 export interface FinalizerLock {
   pid: number;
+  // CI_LINUX_FINDINGS §7.3.1: stored owner identity, same shape as the active
+  // lock's — the other lock types share this payload contract via
+  // cleanStaleLock, which reads these fields off whatever it parses.
+  pidComm?: string | null;
+  pidStartTime?: string | null;
   token?: string;
   startedAt: string;
   updatedAt: string;
@@ -235,7 +273,7 @@ function cleanStaleLock(lockPath: string): boolean {
   }
   try {
     const existing = JSON.parse(raw) as FinalizerLock;
-    if (existing.pid && isPidAlive(existing.pid, { comm: "node" })) return false;
+    if (existing.pid && isPidAlive(existing.pid, { comm: existing.pidComm ?? undefined, startTime: existing.pidStartTime ?? undefined })) return false;
   } catch {}
   // The failed publisher may have raced a stale-owner reclaimer. Only remove
   // the exact descriptor observed above; a newly published lock has a unique
@@ -265,7 +303,7 @@ export function acquireFinalizerLock(sessionDir: string): boolean {
   const token = randomUUID();
   const lockData = JSON.stringify({
     pid: process.pid,
-    pidStartTime: readPidStartTime(process.pid),
+    ...readPidIdentityFields(),
     token,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -300,6 +338,10 @@ export function releaseFinalizerLock(sessionDir: string): void {
 // Live drains stay unlocked (cheap); this serializes the heavy whisper-cli pass.
 export interface GlobalFinalPassLock {
   pid: number;
+  // CI_LINUX_FINDINGS §7.3.1: stored owner identity (was missing here, so the
+  // identity check rested entirely on the broken hardcoded comm).
+  pidComm?: string | null;
+  pidStartTime?: string | null;
   token?: string;
   sessionDir: string;
   startedAt: string;
@@ -314,6 +356,7 @@ export function acquireGlobalFinalPassLock(sessionDir: string): boolean {
   const token = randomUUID();
   const lockData = JSON.stringify({
     pid: process.pid,
+    ...readPidIdentityFields(),
     token,
     sessionDir,
     startedAt: new Date().toISOString(),
@@ -340,7 +383,7 @@ export function readGlobalFinalPassLock(): GlobalFinalPassLock | null {
   if (!existsSync(lockPath)) return null;
   try {
     const data = JSON.parse(readFileSync(lockPath, "utf-8")) as GlobalFinalPassLock;
-    if (data.pid && isPidAlive(data.pid, { comm: "node" })) return data;
+    if (data.pid && isPidAlive(data.pid, { comm: data.pidComm ?? undefined, startTime: data.pidStartTime ?? undefined })) return data;
   } catch {}
   cleanStaleLock(lockPath);
   return null;
@@ -358,7 +401,7 @@ export function readFinalizerLock(sessionDir: string): FinalizerLock | null {
   if (!existsSync(lockPath)) return null;
   try {
     const data = JSON.parse(readFileSync(lockPath, "utf-8")) as FinalizerLock;
-    if (data.pid && isPidAlive(data.pid, { comm: "node" })) return data;
+    if (data.pid && isPidAlive(data.pid, { comm: data.pidComm ?? undefined, startTime: data.pidStartTime ?? undefined })) return data;
   } catch {}
   cleanStaleLock(lockPath);
   return null;
@@ -372,6 +415,9 @@ export function readFinalizerLock(sessionDir: string): FinalizerLock | null {
 // for the actual JSON mutation.
 export interface RegistryLock {
   pid: number;
+  // CI_LINUX_FINDINGS §7.3.1: stored owner identity (was missing here).
+  pidComm?: string | null;
+  pidStartTime?: string | null;
   token?: string;
   reason: string;
   startedAt: string;
@@ -394,6 +440,7 @@ export function acquireRegistryLock(reason: string): boolean {
   const token = randomUUID();
   const lockData = JSON.stringify({
     pid: process.pid,
+    ...readPidIdentityFields(),
     token,
     reason,
     startedAt: new Date().toISOString(),
@@ -413,7 +460,7 @@ export function acquireRegistryLock(reason: string): boolean {
       registryLockDepth += 1;
       return true;
     }
-    if (existing && isPidAlive(existing.pid, { comm: "node" })) return false;
+    if (existing && isPidAlive(existing.pid, { comm: existing.pidComm ?? undefined, startTime: existing.pidStartTime ?? undefined })) return false;
   } catch {}
 
   if (!cleanStaleLock(lockPath) || !publishLockAtomically(lockPath, lockData)) return false;

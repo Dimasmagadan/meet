@@ -106,7 +106,12 @@ export class Recorder {
     // latestProcessedOffsetSeconds stays 0) until max-duration, forever with
     // --max-duration 0.
     if (this.captureExited || this.captureProcess?.exitCode !== null) {
-      void this.shutdown();
+      // Awaited, not fire-and-forget (CI_LINUX_FINDINGS §4): run() resolving
+      // while shutdown is still mutating world state made the P2-5 "settles
+      // with exit code 0" contract degrade to "first exit call wins" — in an
+      // embed/test context (stubbed process.exit) the caller can observe the
+      // half-shutdown recorder.
+      await this.shutdown();
       return { startNextMeeting: this.startNextMeeting };
     }
 
@@ -524,6 +529,12 @@ export class Recorder {
       console.log(chalk.gray(`Transcript: ${this.outputFile}`));
       process.exit(0);
     } catch (err) {
+      // Best-effort watcher close (CI_LINUX_FINDINGS §4): any throw after
+      // stopRecording() — the meta.md write included — must not leave the
+      // chokidar watcher open. Production hard-exits right below so it was
+      // invisible; an embed/test context (stubbed process.exit) wedges the
+      // event loop on the leaked handle.
+      await this.pipeline.close().catch(() => {});
       console.log(chalk.red(`Failed: ${formatError(err)}`));
       console.log(chalk.yellow(`Recoverable session: ${this.session.sessionDir}`));
       process.exit(1);

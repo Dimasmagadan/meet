@@ -167,6 +167,8 @@ async function withRecorderHarness(
   };
   const sessionDir = mkdtempSync(join(tmpdir(), "meet-recorder-session-"));
   const meetingDir = mkdtempSync(join(tmpdir(), "meet-recorder-meeting-"));
+  let runPromise: Promise<{ startNextMeeting: boolean }> | null = null;
+  let fnThrew = false;
   try {
     const session = makeRecorderSession(sessionDir, meetingDir);
     await writeAtomic(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
@@ -185,10 +187,23 @@ async function withRecorderHarness(
       spawnFinalizer: () => 12345,
     };
     const recorder = new Recorder(session, config, opts);
-    const runPromise = recorder.run();
+    runPromise = recorder.run();
     await fn({ sessionDir, lockPath: join(tempHome, ".meet", "sessions", "active-recording.lock"), exitCalls });
     await runPromise;
+  } catch (err) {
+    fnThrew = true;
+    throw err;
   } finally {
+    // CI_LINUX_FINDINGS §4/§7.3.6: when fn() throws, the old code skipped the
+    // await below and rmSync'd the dirs mid-shutdown — the abandoned instance
+    // lost its target dir (the ENOENT in the linux log) and its open handles
+    // kept the file's event loop alive, hanging node --test. Await the run
+    // even on the failure path; restore the stubbed exit only after it
+    // settles (shutdown ends in process.exit, which must stay stubbed).
+    if (fnThrew) {
+      console.error(`[recorder.test] fn threw; active resources at harness exit: ${JSON.stringify(process.getActiveResourcesInfo())}`);
+    }
+    if (runPromise) await runPromise.catch(() => {});
     process.env.HOME = savedHome;
     (process as unknown as { exit: (code?: number) => never }).exit = savedExit;
     rmSync(sessionDir, { recursive: true, force: true });
@@ -386,6 +401,7 @@ test("a real capture binary exiting at spawn settles run() (P2-5 fake-binary var
     exitCalls.push(code ?? 0);
   };
   const t0 = Date.now();
+  let runPromise: Promise<{ startNextMeeting: boolean }> | null = null;
   try {
     const session = makeRecorderSession(sessionDir, meetingDir);
     assert.equal(acquireActiveRecordingLock(session), true);
@@ -399,7 +415,7 @@ test("a real capture binary exiting at spawn settles run() (P2-5 fake-binary var
       captureBinPath: fakeBin,
       spawnFinalizer: () => 12345,
     });
-    const runPromise = recorder.run();
+    runPromise = recorder.run();
     const lockPath = join(tempHome, ".meet", "sessions", "active-recording.lock");
     await awaitCondition(() => !existsSync(lockPath), 2000);
     await awaitCondition(() => exitCalls.length > 0, 2000);
@@ -407,6 +423,9 @@ test("a real capture binary exiting at spawn settles run() (P2-5 fake-binary var
     assert.ok(Date.now() - t0 < 5000, "run must settle promptly after the fake capture dies");
     await runPromise;
   } finally {
+    // Same cleanup-abandoned-instance race the harness fixed
+    // (CI_LINUX_FINDINGS §4): drain the run before deleting its dirs.
+    if (runPromise) await runPromise.catch(() => {});
     process.env.HOME = savedHome;
     (process as unknown as { exit: (code?: number) => never }).exit = savedExit;
     rmSync(sessionDir, { recursive: true, force: true });
