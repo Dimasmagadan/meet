@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-31
+
+### Fixed
+- upgrade chokidar to v4, drop braces (CVE-2026-93687)
+
 ## [1.3.0] - 2026-10-31
 
 ### Fixed
