@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-31
+
+### Added
+- **menubar:** add Reset Notch Panel menu item
+
+### Fixed
+- land safety-net remediation (SPEC_SAFETY_NET_2026-10-31)
+- **menubar:** raise notch panel above full-screen reveal window
+
 ## [1.1.0] - 2026-09-28
 
 ### Added
