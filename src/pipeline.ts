@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import chokidar from "chokidar";
+import { watch, type FSWatcher } from "chokidar";
 import type { Session, Config } from "./types.js";
 import { writeSession, loadConfig, createWarnOnce } from "./storage.js";
 import { transcribeChunk, parseChunkFilename } from "./transcriber.js";
@@ -20,7 +20,7 @@ export type HealthWarningCallback = (warning: HealthWarning) => void;
 
 export class Pipeline {
   private session: Session;
-  private watcher: chokidar.FSWatcher | null = null;
+  private watcher: FSWatcher | null = null;
   private queue: Array<{ source: "mic" | "sys"; index: number; wav: string }> = [];
   private processing = false;
   private results = new Map<string, string>();
@@ -92,8 +92,12 @@ export class Pipeline {
       console.error(`[meet] transcript rescan failed: ${err instanceof Error ? err.message : String(err)}`);
     });
 
-    this.watcher = chokidar.watch(join(this.session.sessionDir, "*.wav"), {
-      ignored: /.*\.wav\.tmp$/,
+    // chokidar v4 dropped glob watch paths — the very support that pulled in
+    // braces (CVE-2026-93687). Watch the session dir itself and filter:
+    // only finalized *.wav chunks, never the *.wav.tmp handoff files.
+    const watchDir = this.session.sessionDir;
+    this.watcher = watch(watchDir, {
+      ignored: (p: string) => p !== watchDir && (!p.endsWith(".wav") || p.endsWith(".wav.tmp")),
       persistent: true,
       ignoreInitial: true,
       awaitWriteFinish: {
